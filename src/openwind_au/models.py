@@ -163,11 +163,27 @@ class ObstructionInventoryResult(BaseModel):
     obstructions: list[ObstructionRecord]
     missing_height_count: int
     reviewed_height_count: int
+    data_source_status: Literal["ok", "unavailable"] = "ok"
+    warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "OpenWind-AU provides obstruction inventory data for shielding review only. "
         "Ms cannot be assessed without reliable obstruction heights and competent "
         "engineering review."
     )
+
+
+class CombinedMapRequest(SiteAnalysisRequest):
+    """Request for the unified site + obstruction map with toggleable layers.
+
+    Extends :class:`SiteAnalysisRequest` with the obstruction inventory fields so
+    a single map can be rendered that combines the terrain analysis radius, the
+    8-direction profile lines, candidate topographic features, and the nearby
+    building obstruction footprints.
+    """
+
+    obstruction_radius_m: int = Field(default=500, ge=50, le=4000)
+    default_storey_height_m: float = Field(default=3.0, gt=0, le=6)
+    manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -51,6 +51,15 @@
               Storey height for obstruction levels (m)
               <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
             </label>
+            <label>
+              Obstruction inventory radius (m)
+              <select id="obstruction_radius_m" name="obstruction_radius_m">
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500" selected>500</option>
+                <option value="1000">1000</option>
+              </select>
+            </label>
           </div>
           <button type="submit">Run Analysis</button>
         </form>
@@ -115,44 +124,46 @@
           <button id="obstruction-export" type="button">Export Reviewed JSON</button>
         </div>
         <p id="obstruction-warning" class="note">Run an analysis to inventory nearby buildings.</p>
-        <div class="split">
-          <div>
-            <h3>Obstruction Map</h3>
-            <iframe id="obstruction-frame" title="Obstruction inventory map"></iframe>
-          </div>
-          <div>
-            <h3>Building Table</h3>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Distance</th>
-                    <th>Bearing</th>
-                    <th>Height</th>
-                    <th>Levels</th>
-                    <th>Source</th>
-                    <th>Confidence</th>
-                  </tr>
-                </thead>
-                <tbody id="obstruction-table">
-                  <tr><td colspan="7">Obstruction inventory will appear after analysis.</td></tr>
-                </tbody>
-              </table>
-            </div>
+        <div>
+          <h3>Building Table</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Distance</th>
+                  <th>Bearing</th>
+                  <th>Height</th>
+                  <th>Levels</th>
+                  <th>Source</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody id="obstruction-table">
+                <tr><td colspan="7">Obstruction inventory will appear after analysis.</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
 
-      <section class="panel split">
-        <div>
-          <h2>Terrain Profiles</h2>
-          <iframe id="profile-frame" title="Terrain profiles"></iframe>
-        </div>
-        <div>
-          <h2>Map</h2>
-          <iframe id="map-frame" title="Site map"></iframe>
-        </div>
+      <section class="panel">
+        <h2>Combined Map</h2>
+        <p class="note">
+          Toggleable layers: site and analysis radius, terrain profiles, topographic feature
+          candidates, and building obstructions. Use the layer control inside the map to switch
+          layers on or off.
+        </p>
+        <iframe id="map-frame" class="map-iframe" title="Combined map"></iframe>
+      </section>
+
+      <section class="panel">
+        <h2>Terrain Profile Chart</h2>
+        <p class="note">
+          Elevation vs distance for each radial profile, with candidate base, crest, H, and Lu
+          overlays.
+        </p>
+        <iframe id="profile-frame" title="Terrain profiles"></iframe>
       </section>
     </main>
 

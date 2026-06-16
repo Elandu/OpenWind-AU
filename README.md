@@ -28,6 +28,8 @@ contribution, and regression testing. It is not a certified design tool.
   significant feature outcomes.
 - Builds a nearby building obstruction inventory for shielding input review, including footprint,
   distance, bearing, height source, confidence, and missing-height flags.
+- Uses a separate obstruction inventory radius so terrain/profile sampling can extend farther than
+  the building footprint dataset used for shielding review.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
 
@@ -46,6 +48,10 @@ OpenWind-AU does not calculate:
 Outputs are preliminary and must be reviewed by a competent engineer. Public DEM data may not
 reflect local survey levels, recent earthworks, retaining structures, vegetation, or built
 obstructions.
+
+The obstruction inventory uses public OpenStreetMap/Overpass building data when available. If the
+public footprint source is unavailable or rate-limited, OpenWind-AU returns an empty obstruction
+inventory with warnings rather than calculating shielding from incomplete data.
 
 ## Screenshots
 
@@ -115,6 +121,7 @@ POST /api/report/html
 POST /api/report/pdf
 POST /api/plots/profile
 POST /api/maps/site
+POST /api/map/combined
 POST /api/obstructions/inventory
 POST /api/obstructions/map
 POST /api/obstructions/report/html

@@ -4,7 +4,6 @@ const profileFrame = document.getElementById("profile-frame");
 const mapFrame = document.getElementById("map-frame");
 const profileSummary = document.getElementById("profile-summary");
 const topographySummary = document.getElementById("topography-summary");
-const obstructionFrame = document.getElementById("obstruction-frame");
 const obstructionTable = document.getElementById("obstruction-table");
 const obstructionWarning = document.getElementById("obstruction-warning");
 const obstructionCsv = document.getElementById("obstruction-csv");
@@ -12,6 +11,7 @@ const obstructionJson = document.getElementById("obstruction-json");
 const obstructionExport = document.getElementById("obstruction-export");
 
 let reviewedObstructions = [];
+let currentObstructionInventory = null;
 
 function formPayload() {
   const data = new FormData(form);
@@ -29,28 +29,42 @@ function formPayload() {
   return payload;
 }
 
+function manualOverrides() {
+  return reviewedObstructions
+    .filter((item) => item.height_source === "manual_override")
+    .map((item) => ({
+      obstruction_id: item.obstruction_id,
+      height_m: item.height_m,
+      building_levels: item.building_levels,
+      height_source: "manual_review",
+      notes: "Reviewed in browser",
+    }));
+}
+
 function obstructionPayload() {
   const data = new FormData(form);
   const payload = {
     address: data.get("address") || null,
     latitude: data.get("latitude") ? Number(data.get("latitude")) : null,
     longitude: data.get("longitude") ? Number(data.get("longitude")) : null,
-    radius_m: Number(data.get("radius_m")),
+    radius_m: Number(data.get("obstruction_radius_m") || 500),
     default_storey_height_m: Number(data.get("default_storey_height_m") || 3),
-    manual_overrides: reviewedObstructions
-      .filter((item) => item.height_source === "manual_override")
-      .map((item) => ({
-        obstruction_id: item.obstruction_id,
-        height_m: item.height_m,
-        building_levels: item.building_levels,
-        height_source: "manual_review",
-        notes: "Reviewed in browser",
-      })),
+    manual_overrides: manualOverrides(),
   };
   if (!payload.address) delete payload.address;
   if (payload.latitude === null) delete payload.latitude;
   if (payload.longitude === null) delete payload.longitude;
   return payload;
+}
+
+function combinedMapPayload() {
+  const data = new FormData(form);
+  return {
+    ...formPayload(),
+    obstruction_radius_m: Number(data.get("obstruction_radius_m") || 500),
+    default_storey_height_m: Number(data.get("default_storey_height_m") || 3),
+    manual_overrides: manualOverrides(),
+  };
 }
 
 async function postJson(url, payload) {
@@ -69,10 +83,10 @@ async function postJson(url, payload) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formPayload();
+  const mapPayload = combinedMapPayload();
   summary.textContent = "Running analysis...";
   profileFrame.removeAttribute("srcdoc");
   mapFrame.removeAttribute("srcdoc");
-  obstructionFrame.removeAttribute("srcdoc");
   profileSummary.innerHTML = "<p>Running terrain profile analysis...</p>";
   topographySummary.innerHTML = "<tr><td colspan=\"10\">Running topographic screening...</td></tr>";
   obstructionTable.innerHTML = "<tr><td colspan=\"7\">Querying building footprints...</td></tr>";
@@ -98,10 +112,10 @@ form.addEventListener("submit", async (event) => {
     const profileResponse = await postJson("/api/plots/profile", payload);
     profileFrame.srcdoc = await profileResponse.text();
 
-    const mapResponse = await postJson("/api/maps/site", payload);
-    mapFrame.srcdoc = await mapResponse.text();
-
     await runObstructionInventory();
+
+    const mapResponse = await postJson("/api/map/combined", mapPayload);
+    mapFrame.srcdoc = await mapResponse.text();
   } catch (error) {
     summary.textContent = `Analysis failed: ${error.message}`;
     profileSummary.innerHTML = "<p>Analysis failed.</p>";
@@ -144,63 +158,26 @@ function renderTopographySummary(features) {
 }
 
 async function runObstructionInventory() {
-  try {
-    const payload = obstructionPayload();
-    const inventoryResponse = await postJson("/api/obstructions/inventory", payload);
-    const inventory = await inventoryResponse.json();
-    reviewedObstructions = inventory.obstructions;
-    renderObstructionInventory(inventory);
-    renderObstructionMap(inventory);
-  } catch (error) {
-    obstructionWarning.textContent = `Obstruction inventory failed: ${error.message}`;
-    obstructionTable.innerHTML = "<tr><td colspan=\"7\">Obstruction inventory failed.</td></tr>";
-  }
-}
-
-function renderObstructionMap(inventory) {
-  const polygons = JSON.stringify(inventory.obstructions);
-  obstructionFrame.srcdoc = `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-        <style>html, body, #map { height: 100%; margin: 0; }</style>
-      </head>
-      <body>
-        <div id="map"></div>
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>
-        <script>
-          const site = [${inventory.site.latitude}, ${inventory.site.longitude}];
-          const obstructions = ${polygons};
-          const map = L.map("map").setView(site, 16);
-          L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-            maxZoom: 19,
-            attribution: "OpenStreetMap"
-          }).addTo(map);
-          L.marker(site).addTo(map).bindPopup("Subject site");
-          L.circle(site, { radius: ${inventory.input.radius_m}, color: "#17324d", fill: false }).addTo(map);
-          const colors = { verified: "#047857", high: "#0f766e", medium: "#b45309", unknown: "#b42318" };
-          for (const item of obstructions) {
-            const color = colors[item.confidence] || "#57606a";
-            L.geoJSON(item.footprint_geometry, {
-              style: { color, fillColor: color, fillOpacity: 0.25, weight: 2 }
-            }).addTo(map).bindPopup(
-              item.obstruction_id + "<br>Height: " + (item.height_m === null ? "missing" : item.height_m.toFixed(1) + " m") +
-              "<br>Confidence: " + item.confidence
-            );
-          }
-        <\/script>
-      </body>
-    </html>
-  `;
+  const payload = obstructionPayload();
+  const inventoryResponse = await postJson("/api/obstructions/inventory", payload);
+  const inventory = await inventoryResponse.json();
+  currentObstructionInventory = inventory;
+  reviewedObstructions = inventory.obstructions;
+  renderObstructionInventory(inventory);
 }
 
 function renderObstructionInventory(inventory) {
   const missing = inventory.obstructions.filter((item) => item.height_m === null).length;
-  obstructionWarning.textContent = `${inventory.obstructions.length} building footprints found. ${missing} require verified heights. Ms is not calculated.`;
+  const warnings = inventory.warnings || [];
+  const status =
+    inventory.data_source_status === "unavailable"
+      ? "Building footprint source unavailable. "
+      : "";
+  obstructionWarning.textContent = `${status}${inventory.obstructions.length} building footprints found within ${inventory.input?.radius_m || "the selected"} m. ${missing} require verified heights. Ms is not calculated.${warnings.length ? ` ${warnings[0]}` : ""}`;
   if (inventory.obstructions.length === 0) {
-    obstructionTable.innerHTML = "<tr><td colspan=\"7\">No building footprints found in the selected radius.</td></tr>";
+    obstructionTable.innerHTML = inventory.data_source_status === "unavailable"
+      ? "<tr><td colspan=\"7\">Building footprints could not be retrieved. Try a smaller obstruction radius or import reviewed obstruction data after the footprint source is available.</td></tr>"
+      : "<tr><td colspan=\"7\">No building footprints found in the selected radius.</td></tr>";
     return;
   }
   obstructionTable.innerHTML = inventory.obstructions.map((item) => obstructionRow(item)).join("");
@@ -250,7 +227,11 @@ function updateObstructionFromInput(input) {
   item.height_source = "manual_override";
   item.confidence = item.height_m === null ? "unknown" : "verified";
   item.manual_review_required = item.height_m === null;
-  renderObstructionInventory({ obstructions: reviewedObstructions });
+  currentObstructionInventory = {
+    ...(currentObstructionInventory || {}),
+    obstructions: reviewedObstructions,
+  };
+  renderObstructionInventory(currentObstructionInventory);
 }
 
 obstructionCsv.addEventListener("change", async (event) => {
@@ -264,11 +245,21 @@ obstructionJson.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   const imported = JSON.parse(await file.text());
+  if (!Array.isArray(imported) && imported.site && imported.input) {
+    currentObstructionInventory = imported;
+    reviewedObstructions = imported.obstructions || [];
+    renderObstructionInventory(currentObstructionInventory);
+    return;
+  }
   applyBrowserOverrides(Array.isArray(imported) ? imported : imported.obstructions || []);
 });
 
 obstructionExport.addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify({ obstructions: reviewedObstructions }, null, 2)], {
+  const exportData = {
+    ...(currentObstructionInventory || {}),
+    obstructions: reviewedObstructions,
+  };
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
@@ -292,7 +283,11 @@ function parseCsvOverrides(text) {
 function applyBrowserOverrides(overrides) {
   for (const override of overrides) {
     const id = override.obstruction_id;
-    const item = reviewedObstructions.find((obstruction) => obstruction.obstruction_id === id);
+    let item = reviewedObstructions.find((obstruction) => obstruction.obstruction_id === id);
+    if (!item && override.footprint_geometry) {
+      item = { ...override };
+      reviewedObstructions.push(item);
+    }
     if (!item) continue;
     item.height_m = parseOptionalNumber(override.height_m);
     item.building_levels = parseOptionalNumber(override.building_levels);
@@ -303,7 +298,16 @@ function applyBrowserOverrides(overrides) {
     item.confidence = item.height_m === null ? "unknown" : "verified";
     item.manual_review_required = item.height_m === null;
   }
-  renderObstructionInventory({ obstructions: reviewedObstructions });
+  const inventory = {
+    ...(currentObstructionInventory || {}),
+    input: currentObstructionInventory?.input || { radius_m: "imported" },
+    site: currentObstructionInventory?.site,
+    obstructions: reviewedObstructions,
+    data_source_status: currentObstructionInventory?.data_source_status || "ok",
+    warnings: currentObstructionInventory?.warnings || [],
+  };
+  currentObstructionInventory = inventory;
+  renderObstructionInventory(inventory);
 }
 
 function parseOptionalNumber(value) {

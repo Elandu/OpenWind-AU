@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
+    CombinedMapRequest,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
     SiteAnalysisRequest,
@@ -23,6 +24,7 @@ from openwind_au.obstructions import (
     run_obstruction_inventory,
 )
 from openwind_au.reports import (
+    combined_map_html,
     map_html,
     obstruction_map_html,
     profile_plot_html,
@@ -125,6 +127,25 @@ def create_app() -> FastAPI:
     def obstruction_map(request: ObstructionInventoryRequest) -> str:
         result = obstruction_inventory(request)
         return obstruction_map_html(result)
+
+    @app.post("/api/map/combined", response_class=HTMLResponse)
+    def map_combined(request: CombinedMapRequest) -> str:
+        try:
+            site_result = analyse(request)
+            obstruction_request = ObstructionInventoryRequest(
+                address=request.address,
+                latitude=request.latitude,
+                longitude=request.longitude,
+                radius_m=request.obstruction_radius_m,
+                default_storey_height_m=request.default_storey_height_m,
+                manual_overrides=request.manual_overrides,
+            )
+            obstruction_result = run_obstruction_inventory(obstruction_request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return combined_map_html(site_result, obstruction_result)
 
     @app.post("/api/obstructions/report/html", response_class=HTMLResponse)
     def obstruction_report_html(request: ObstructionInventoryRequest) -> str:

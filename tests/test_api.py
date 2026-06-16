@@ -75,6 +75,40 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert "not a certified" in body["disclaimer"]
 
 
+def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/map/combined",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+            "sample_interval_m": 100,
+            "obstruction_radius_m": 500,
+            "default_storey_height_m": 3.0,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "leaflet" in body.lower()
+    for label in (
+        "Site & analysis radius",
+        "Terrain profiles",
+        "Topographic feature candidates",
+        "Obstructions",
+    ):
+        assert label in body
+
+
 def test_validation_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(validation_module, "SRTMProvider", lambda: FlatDEM())
     client = TestClient(api_module.create_app())

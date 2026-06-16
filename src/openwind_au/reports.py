@@ -459,6 +459,136 @@ def obstruction_map_html(result: ObstructionInventoryResult) -> str:
     return fmap.get_root().render()
 
 
+def combined_map_html(
+    site_result: SiteAnalysisResult,
+    obstruction_result: ObstructionInventoryResult,
+) -> str:
+    """Return a Folium map with toggleable layers for site, profiles, features, and obstructions.
+
+    The returned document embeds a Folium/Leaflet map with a non-collapsed layer control so
+    reviewers can show or hide the four layer groups: site & analysis radius, terrain profiles,
+    topographic feature candidates, and building obstructions. The terrain analysis radius and
+    the obstruction inventory radius are both drawn so the difference in coverage is visible.
+    """
+
+    fmap = folium.Map(
+        location=[site_result.site.latitude, site_result.site.longitude],
+        zoom_start=14,
+        control_scale=True,
+    )
+
+    site_layer = folium.FeatureGroup(name="Site & analysis radius", show=True)
+    profile_layer = folium.FeatureGroup(name="Terrain profiles", show=True)
+    feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
+    obstruction_layer = folium.FeatureGroup(name="Obstructions", show=True)
+
+    folium.Marker(
+        [site_result.site.latitude, site_result.site.longitude],
+        tooltip="Site",
+        popup=f"Ground RL {site_result.site.ground_elevation_m:.1f} m",
+    ).add_to(site_layer)
+    folium.Circle(
+        location=[site_result.site.latitude, site_result.site.longitude],
+        radius=site_result.input.radius_m,
+        color="#0f766e",
+        weight=2,
+        fill=False,
+        tooltip=f"Terrain analysis radius: {site_result.input.radius_m} m",
+    ).add_to(site_layer)
+    if obstruction_result.input.radius_m != site_result.input.radius_m:
+        folium.Circle(
+            location=[site_result.site.latitude, site_result.site.longitude],
+            radius=obstruction_result.input.radius_m,
+            color="#17324d",
+            weight=2,
+            dash_array="6 4",
+            fill=False,
+            tooltip=f"Obstruction inventory radius: {obstruction_result.input.radius_m} m",
+        ).add_to(site_layer)
+
+    for profile in site_result.profiles:
+        coordinates = [(point.latitude, point.longitude) for point in profile.points]
+        folium.PolyLine(
+            locations=coordinates,
+            color="#17324d",
+            weight=2,
+            opacity=0.75,
+            tooltip=f"{profile.direction} profile ({profile.azimuth_deg:.0f} deg)",
+        ).add_to(profile_layer)
+        folium.CircleMarker(
+            location=[profile.endpoint_latitude, profile.endpoint_longitude],
+            radius=4,
+            color="#0f766e",
+            fill=True,
+            fill_opacity=0.85,
+            tooltip=f"{profile.direction} endpoint",
+            popup=(
+                f"{profile.direction} endpoint<br>"
+                f"Azimuth {profile.azimuth_deg:.0f} deg<br>"
+                f"Radius {profile.radius_m} m"
+            ),
+        ).add_to(profile_layer)
+
+    for feature in site_result.features:
+        if feature.feature_type == "no significant feature":
+            continue
+        feature_lat, feature_lon = destination_point(
+            site_result.site.latitude,
+            site_result.site.longitude,
+            feature.azimuth_deg,
+            feature.x_m,
+        )
+        folium.CircleMarker(
+            location=[feature_lat, feature_lon],
+            radius=5,
+            color="#b42318",
+            fill=True,
+            tooltip=f"{feature.feature_type} {feature.azimuth_deg:.0f} deg",
+            popup=(
+                f"{feature.feature_type}: H={feature.h_m:.1f} m, "
+                f"Lu={feature.lu_m:.0f} m, x={feature.x_m:.0f} m"
+            ),
+        ).add_to(feature_layer)
+
+    for obstruction in obstruction_result.obstructions:
+        color = _obstruction_color(obstruction.confidence)
+        folium.GeoJson(
+            obstruction.footprint_geometry,
+            style_function=lambda _feature, color=color: {
+                "color": color,
+                "weight": 2,
+                "fillColor": color,
+                "fillOpacity": 0.25,
+            },
+            tooltip=(
+                f"{obstruction.obstruction_id}: {obstruction.height_m:.1f} m"
+                if obstruction.height_m is not None
+                else f"{obstruction.obstruction_id}: height missing"
+            ),
+        ).add_to(obstruction_layer)
+        folium.CircleMarker(
+            location=[obstruction.centroid_latitude, obstruction.centroid_longitude],
+            radius=3,
+            color=color,
+            fill=True,
+            popup=(
+                f"{obstruction.obstruction_id}<br>"
+                f"Distance {obstruction.distance_m:.1f} m<br>"
+                f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
+                f"Height source {obstruction.height_source}<br>"
+                f"Confidence {obstruction.confidence}"
+            ),
+        ).add_to(obstruction_layer)
+
+    site_layer.add_to(fmap)
+    profile_layer.add_to(fmap)
+    feature_layer.add_to(fmap)
+    obstruction_layer.add_to(fmap)
+    folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
+
+    return fmap.get_root().render()
+
+
 def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
     """Render an HTML obstruction inventory report."""
 
@@ -488,11 +618,18 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
     th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; }
     th { background: #f6f8fa; }
     .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
+    .warning { border-left: 4px solid #b45309; padding: 12px; background: #fff7ed; }
   </style>
 </head>
 <body>
   <h1>OpenWind-AU Obstruction Inventory Report</h1>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if result.warnings %}
+  <div class="warning">
+    <strong>Inventory warning</strong>
+    <ul>{% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
 
   <h2>Subject Site</h2>
   <table>
