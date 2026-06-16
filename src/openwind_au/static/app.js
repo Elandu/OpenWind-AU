@@ -69,7 +69,7 @@ function renderProfileSummary(profiles) {
     <article class="profile-card">
       <h3>${profile.direction}</h3>
       <dl>
-        <div><dt>Azimuth</dt><dd>${profile.azimuth_deg.toFixed(0)}°</dd></div>
+        <div><dt>Azimuth</dt><dd>${profile.azimuth_deg.toFixed(0)} deg</dd></div>
         <div><dt>Endpoint</dt><dd>${profile.endpoint_latitude.toFixed(5)}, ${profile.endpoint_longitude.toFixed(5)}</dd></div>
         <div><dt>Min RL</dt><dd>${profile.min_elevation_m.toFixed(2)} m</dd></div>
         <div><dt>Max RL</dt><dd>${profile.max_elevation_m.toFixed(2)} m</dd></div>
