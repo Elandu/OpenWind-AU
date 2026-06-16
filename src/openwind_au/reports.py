@@ -14,7 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from openwind_au.geo import destination_point
-from openwind_au.models import SiteAnalysisResult
+from openwind_au.models import ObstructionInventoryResult, SiteAnalysisResult
 
 REPORT_TEMPLATE = Template(
     """
@@ -404,3 +404,154 @@ def map_html(result: SiteAnalysisResult) -> str:
             ),
         ).add_to(fmap)
     return fmap.get_root().render()
+
+
+def obstruction_map_html(result: ObstructionInventoryResult) -> str:
+    """Return a Folium map HTML document for obstruction footprint review."""
+
+    fmap = folium.Map(
+        location=[result.site.latitude, result.site.longitude],
+        zoom_start=16,
+        control_scale=True,
+    )
+    folium.Marker(
+        [result.site.latitude, result.site.longitude],
+        tooltip="Subject site",
+        popup="Subject site",
+    ).add_to(fmap)
+    folium.Circle(
+        location=[result.site.latitude, result.site.longitude],
+        radius=result.input.radius_m,
+        color="#17324d",
+        weight=2,
+        fill=False,
+        tooltip=f"Obstruction inventory radius: {result.input.radius_m} m",
+    ).add_to(fmap)
+    for obstruction in result.obstructions:
+        color = _obstruction_color(obstruction.confidence)
+        folium.GeoJson(
+            obstruction.footprint_geometry,
+            style_function=lambda _feature, color=color: {
+                "color": color,
+                "weight": 2,
+                "fillColor": color,
+                "fillOpacity": 0.25,
+            },
+            tooltip=(
+                f"{obstruction.obstruction_id}: {obstruction.height_m:.1f} m"
+                if obstruction.height_m is not None
+                else f"{obstruction.obstruction_id}: height missing"
+            ),
+        ).add_to(fmap)
+        folium.CircleMarker(
+            location=[obstruction.centroid_latitude, obstruction.centroid_longitude],
+            radius=3,
+            color=color,
+            fill=True,
+            popup=(
+                f"{obstruction.obstruction_id}<br>"
+                f"Distance {obstruction.distance_m:.1f} m<br>"
+                f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
+                f"Height source {obstruction.height_source}<br>"
+                f"Confidence {obstruction.confidence}"
+            ),
+        ).add_to(fmap)
+    return fmap.get_root().render()
+
+
+def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
+    """Render an HTML obstruction inventory report."""
+
+    return OBSTRUCTION_REPORT_TEMPLATE.render(result=result)
+
+
+def _obstruction_color(confidence: str) -> str:
+    return {
+        "verified": "#047857",
+        "high": "#0f766e",
+        "medium": "#b45309",
+        "unknown": "#b42318",
+    }.get(confidence, "#57606a")
+
+
+OBSTRUCTION_REPORT_TEMPLATE = Template(
+    """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenWind-AU Obstruction Inventory Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
+    h1, h2 { color: #17324d; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; }
+    th { background: #f6f8fa; }
+    .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
+  </style>
+</head>
+<body>
+  <h1>OpenWind-AU Obstruction Inventory Report</h1>
+  <p class="disclaimer">{{ result.disclaimer }}</p>
+
+  <h2>Subject Site</h2>
+  <table>
+    <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
+    <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
+    <tr><th>Inventory radius</th><td>{{ result.input.radius_m }} m</td></tr>
+    <tr>
+      <th>Default storey height</th>
+      <td>{{ "%.2f"|format(result.input.default_storey_height_m) }} m</td>
+    </tr>
+  </table>
+
+  <h2>Missing Height Summary</h2>
+  <table>
+    <tr><th>Total obstructions</th><th>Missing heights</th><th>Reviewed heights</th></tr>
+    <tr>
+      <td>{{ result.obstructions|length }}</td>
+      <td>{{ result.missing_height_count }}</td>
+      <td>{{ result.reviewed_height_count }}</td>
+    </tr>
+  </table>
+
+  <h2>Obstruction Map</h2>
+  <p>
+    Use <code>POST /api/obstructions/map</code> for the interactive footprint map. Footprints are
+    coloured by height confidence.
+  </p>
+
+  <h2>Obstruction Table</h2>
+  <table>
+    <tr>
+      <th>ID</th><th>Distance</th><th>Bearing</th><th>Height</th><th>Levels</th>
+      <th>Source</th><th>Confidence</th><th>Manual review</th>
+    </tr>
+    {% for obstruction in result.obstructions %}
+    <tr>
+      <td>{{ obstruction.obstruction_id }}</td>
+      <td>{{ "%.1f"|format(obstruction.distance_m) }} m</td>
+      <td>{{ "%.0f"|format(obstruction.bearing_deg) }} deg</td>
+      <td>
+        {% if obstruction.height_m is not none %}
+        {{ "%.2f"|format(obstruction.height_m) }} m
+        {% else %}
+        missing
+        {% endif %}
+      </td>
+      <td>{{ obstruction.building_levels if obstruction.building_levels is not none else "" }}</td>
+      <td>{{ obstruction.height_source }}</td>
+      <td>{{ obstruction.confidence }}</td>
+      <td>{{ obstruction.manual_review_required }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <p>
+    Ms cannot be assessed without reliable obstruction heights. This report is an inventory for
+    shielding input review only.
+  </p>
+</body>
+</html>
+"""
+)

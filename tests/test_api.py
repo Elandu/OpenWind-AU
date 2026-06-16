@@ -7,11 +7,29 @@ from fastapi.testclient import TestClient
 import openwind_au.api as api_module
 import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
+from openwind_au.obstructions import run_obstruction_inventory
 
 
 class FlatDEM(DEMProvider):
     def elevation(self, latitude: float, longitude: float) -> float:
         return 75.0
+
+
+def sample_footprints() -> list[dict]:
+    ring = [
+        [151.21095, -33.86005],
+        [151.21105, -33.86005],
+        [151.21105, -33.85995],
+        [151.21095, -33.85995],
+        [151.21095, -33.86005],
+    ]
+    return [
+        {
+            "source_id": "osm-way-1",
+            "footprint_geometry": {"type": "Polygon", "coordinates": [ring]},
+            "tags": {"height": "9"},
+        }
+    ]
 
 
 def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
@@ -75,3 +93,42 @@ def test_validation_endpoints(monkeypatch) -> None:
     assert "not proof of AS/NZS 1170.2 compliance" in report.json()["disclaimer"]
     assert html.status_code == 200
     assert "OpenWind-AU Validation Report" in html.text
+
+
+def test_obstruction_inventory_endpoints(monkeypatch) -> None:
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "radius_m": 500,
+        "default_storey_height_m": 3.0,
+    }
+    inventory = client.post("/api/obstructions/inventory", json=payload)
+    fmap = client.post("/api/obstructions/map", json=payload)
+    report = client.post("/api/obstructions/report/html", json=payload)
+    csv_import = client.post(
+        "/api/obstructions/import/csv",
+        content="obstruction_id,height_m\nosm-way-1,8.5",
+    )
+    json_import = client.post(
+        "/api/obstructions/import/json",
+        content='[{"obstruction_id":"osm-way-1","height_m":8.5}]',
+    )
+
+    assert inventory.status_code == 200
+    body = inventory.json()
+    assert body["obstructions"][0]["height_m"] == 9
+    assert body["obstructions"][0]["height_source"] == "explicit_height"
+    assert "Ms cannot be assessed" in body["disclaimer"]
+    assert fmap.status_code == 200
+    assert "leaflet" in fmap.text.lower()
+    assert report.status_code == 200
+    assert "Missing Height Summary" in report.text
+    assert "Ms cannot be assessed" in report.text
+    assert csv_import.json()[0]["height_m"] == 8.5
+    assert json_import.json()[0]["height_m"] == 8.5

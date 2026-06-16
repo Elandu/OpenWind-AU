@@ -47,6 +47,10 @@
               Sample interval (m)
               <input id="sample_interval_m" name="sample_interval_m" type="number" value="50" />
             </label>
+            <label>
+              Storey height for obstruction levels (m)
+              <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
+            </label>
           </div>
           <button type="submit">Run Analysis</button>
         </form>
@@ -91,6 +95,53 @@
           </table>
         </div>
         <p class="note">Candidate features require review by a competent engineer.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Obstruction Inventory For Shielding Review</h2>
+        <p class="disclaimer">
+          Ms is not calculated. Reliable obstruction heights are required before shielding can be
+          assessed by a competent engineer.
+        </p>
+        <div class="toolbar">
+          <label class="file-control">
+            CSV height import
+            <input id="obstruction-csv" type="file" accept=".csv,text/csv" />
+          </label>
+          <label class="file-control">
+            JSON review import
+            <input id="obstruction-json" type="file" accept=".json,application/json" />
+          </label>
+          <button id="obstruction-export" type="button">Export Reviewed JSON</button>
+        </div>
+        <p id="obstruction-warning" class="note">Run an analysis to inventory nearby buildings.</p>
+        <div class="split">
+          <div>
+            <h3>Obstruction Map</h3>
+            <iframe id="obstruction-frame" title="Obstruction inventory map"></iframe>
+          </div>
+          <div>
+            <h3>Building Table</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Distance</th>
+                    <th>Bearing</th>
+                    <th>Height</th>
+                    <th>Levels</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                  </tr>
+                </thead>
+                <tbody id="obstruction-table">
+                  <tr><td colspan="7">Obstruction inventory will appear after analysis.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="panel split">

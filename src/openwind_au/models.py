@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -101,6 +101,73 @@ class SiteAnalysisResult(BaseModel):
     assumptions: list[str]
     limitations: list[str]
     disclaimer: str = DISCLAIMER
+
+
+class ObstructionManualOverride(BaseModel):
+    """Reviewed obstruction height data supplied by a user."""
+
+    obstruction_id: str
+    height_m: float | None = Field(default=None, ge=0)
+    building_levels: float | None = Field(default=None, ge=0)
+    height_source: str = "manual_review"
+    notes: str | None = None
+
+
+class ObstructionInventoryRequest(BaseModel):
+    """Input payload for building obstruction inventory."""
+
+    address: str | None = Field(default=None, description="Street address to geocode.")
+    latitude: float | None = Field(default=None, ge=-44.5, le=-9.0)
+    longitude: float | None = Field(default=None, ge=112.0, le=154.5)
+    radius_m: int = Field(default=500, ge=50, le=4000)
+    default_storey_height_m: float = Field(default=3.0, gt=0, le=6)
+    manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_location(self) -> ObstructionInventoryRequest:
+        """Require either an address or a complete coordinate pair."""
+
+        has_address = bool(self.address and self.address.strip())
+        has_coords = self.latitude is not None and self.longitude is not None
+        if not has_address and not has_coords:
+            raise ValueError("Provide either address or latitude and longitude.")
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Provide both latitude and longitude when using coordinates.")
+        return self
+
+
+class ObstructionRecord(BaseModel):
+    """Building obstruction record for shielding input review."""
+
+    obstruction_id: str
+    source_id: str | None = None
+    footprint_geometry: dict[str, Any]
+    centroid_latitude: float
+    centroid_longitude: float
+    distance_m: float
+    bearing_deg: float
+    height_m: float | None
+    building_levels: float | None
+    height_source: Literal["explicit_height", "building_levels", "manual_override", "missing"]
+    confidence: Literal["verified", "high", "medium", "unknown"]
+    manual_review_required: bool
+    tags: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ObstructionInventoryResult(BaseModel):
+    """Complete obstruction inventory result."""
+
+    input: ObstructionInventoryRequest
+    site: SiteLocation
+    obstructions: list[ObstructionRecord]
+    missing_height_count: int
+    reviewed_height_count: int
+    disclaimer: str = (
+        "OpenWind-AU provides obstruction inventory data for shielding review only. "
+        "Ms cannot be assessed without reliable obstruction heights and competent "
+        "engineering review."
+    )
 
 
 @dataclass(frozen=True)

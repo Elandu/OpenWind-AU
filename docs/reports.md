@@ -39,3 +39,13 @@ GET /api/validation/report/html
 
 The validation report lists representative validation cases, detected broad behaviour, and
 pass/warn/fail outcomes.
+
+## Obstruction Inventory Report
+
+```text
+POST /api/obstructions/report/html
+POST /api/obstructions/map
+```
+
+The obstruction report includes a footprint map endpoint, obstruction table, missing-height
+summary, and a note that `Ms` cannot be assessed without reliable obstruction heights.

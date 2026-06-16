@@ -68,6 +68,10 @@ select {
   background: white;
 }
 
+td input {
+  min-width: 80px;
+}
+
 button {
   margin-top: 16px;
   border: 0;
@@ -77,6 +81,18 @@ button {
   color: white;
   font-weight: 700;
   cursor: pointer;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.file-control {
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 .button-link {

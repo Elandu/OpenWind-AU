@@ -26,6 +26,8 @@ contribution, and regression testing. It is not a certified design tool.
 - Supports analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Performs conservative rule-based screening for candidate ridge, hill, escarpment, valley, or no
   significant feature outcomes.
+- Builds a nearby building obstruction inventory for shielding input review, including footprint,
+  distance, bearing, height source, confidence, and missing-height flags.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
 
@@ -38,6 +40,7 @@ OpenWind-AU does not calculate:
 - shielding;
 - design wind pressures;
 - AS 4055 wind classifications;
+- shielding multiplier `Ms`;
 - certified design compliance.
 
 Outputs are preliminary and must be reviewed by a competent engineer. Public DEM data may not
@@ -112,6 +115,9 @@ POST /api/report/html
 POST /api/report/pdf
 POST /api/plots/profile
 POST /api/maps/site
+POST /api/obstructions/inventory
+POST /api/obstructions/map
+POST /api/obstructions/report/html
 GET  /validation
 GET  /api/validation
 GET  /api/validation/report/html

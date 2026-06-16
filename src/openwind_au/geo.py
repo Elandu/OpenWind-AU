@@ -81,6 +81,38 @@ def destination_point(
     return math.degrees(lat2), ((math.degrees(lon2) + 540) % 360) - 180
 
 
+def haversine_distance_m(
+    latitude_a: float,
+    longitude_a: float,
+    latitude_b: float,
+    longitude_b: float,
+) -> float:
+    """Return great-circle distance between two WGS84 points in metres."""
+
+    lat1 = math.radians(latitude_a)
+    lat2 = math.radians(latitude_b)
+    dlat = lat2 - lat1
+    dlon = math.radians(longitude_b - longitude_a)
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return EARTH_RADIUS_M * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def bearing_deg(
+    latitude_a: float,
+    longitude_a: float,
+    latitude_b: float,
+    longitude_b: float,
+) -> float:
+    """Return initial bearing from one WGS84 point to another in degrees clockwise from north."""
+
+    lat1 = math.radians(latitude_a)
+    lat2 = math.radians(latitude_b)
+    dlon = math.radians(longitude_b - longitude_a)
+    y = math.sin(dlon) * math.cos(lat2)
+    x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
 def _get_json(url: str, params: dict[str, Any], user_agent: str) -> Any:
     """GET JSON from a public API using curl first, then requests."""
 

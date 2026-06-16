@@ -5,17 +5,29 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import SRTMProvider
-from openwind_au.models import SiteAnalysisRequest, SiteAnalysisResult
+from openwind_au.models import (
+    ObstructionInventoryRequest,
+    ObstructionInventoryResult,
+    SiteAnalysisRequest,
+    SiteAnalysisResult,
+)
+from openwind_au.obstructions import (
+    manual_overrides_from_json,
+    parse_manual_overrides_csv,
+    run_obstruction_inventory,
+)
 from openwind_au.reports import (
     map_html,
+    obstruction_map_html,
     profile_plot_html,
     render_html_report,
+    render_obstruction_report_html,
     result_to_json,
     write_pdf_report,
 )
@@ -97,6 +109,45 @@ def create_app() -> FastAPI:
     def site_map(request: SiteAnalysisRequest) -> str:
         result = analyse(request)
         return map_html(result)
+
+    @app.post("/api/obstructions/inventory", response_model=ObstructionInventoryResult)
+    def obstruction_inventory(
+        request: ObstructionInventoryRequest,
+    ) -> ObstructionInventoryResult:
+        try:
+            return run_obstruction_inventory(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/obstructions/map", response_class=HTMLResponse)
+    def obstruction_map(request: ObstructionInventoryRequest) -> str:
+        result = obstruction_inventory(request)
+        return obstruction_map_html(result)
+
+    @app.post("/api/obstructions/report/html", response_class=HTMLResponse)
+    def obstruction_report_html(request: ObstructionInventoryRequest) -> str:
+        result = obstruction_inventory(request)
+        return render_obstruction_report_html(result)
+
+    @app.post("/api/obstructions/import/csv")
+    async def obstruction_import_csv(request: Request) -> Response:
+        content = (await request.body()).decode("utf-8")
+        overrides = parse_manual_overrides_csv(content)
+        return Response(
+            content=json.dumps([override.model_dump() for override in overrides], indent=2),
+            media_type="application/json",
+        )
+
+    @app.post("/api/obstructions/import/json")
+    async def obstruction_import_json(request: Request) -> Response:
+        content = (await request.body()).decode("utf-8")
+        overrides = manual_overrides_from_json(content)
+        return Response(
+            content=json.dumps([override.model_dump() for override in overrides], indent=2),
+            media_type="application/json",
+        )
 
     @app.get("/api/validation/cases")
     def validation_cases() -> Response:

@@ -42,6 +42,21 @@ POST /api/maps/site
 The terrain profile plot includes site, candidate base, candidate crest, `H`, and `Lu` overlays
 where a candidate feature is detected.
 
+## Obstruction Inventory
+
+```text
+POST /api/obstructions/inventory
+POST /api/obstructions/map
+POST /api/obstructions/report/html
+POST /api/obstructions/import/csv
+POST /api/obstructions/import/json
+```
+
+The obstruction inventory queries nearby OpenStreetMap building footprints for shielding input
+review. Heights are taken only from explicit height tags, `building:levels` converted with the
+configured storey height, or manual reviewed data. Missing heights are not inferred from footprint
+size. `Ms` is not calculated.
+
 ## Validation
 
 ```text
