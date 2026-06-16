@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenWind-AU Sample Validation Report</title>
+</head>
+<body>
+  <h1>OpenWind-AU Validation Report</h1>
+  <p>
+    Validation cases are broad qualitative checks against representative Australian terrain
+    settings. They are not proof of AS/NZS 1170.2 compliance, design accuracy, or suitability for
+    a specific project.
+  </p>
+
+  <h2>Summary</h2>
+  <table>
+    <tr><th>Pass</th><th>Warning</th><th>Fail</th></tr>
+    <tr><td>1</td><td>1</td><td>1</td></tr>
+  </table>
+
+  <h2>Validation Cases</h2>
+  <table>
+    <tr>
+      <th>Status</th><th>Case</th><th>Expected behaviour</th><th>Detected feature types</th>
+      <th>Reason</th>
+    </tr>
+    <tr>
+      <td>pass</td>
+      <td>Flat suburban representative case</td>
+      <td>Generally no significant topographic feature.</td>
+      <td>no significant feature</td>
+      <td>No significant candidate features were detected.</td>
+    </tr>
+    <tr>
+      <td>warn</td>
+      <td>Hilltop representative case</td>
+      <td>Hill or ridge behaviour expected.</td>
+      <td>valley</td>
+      <td>Candidate features were detected, but the broad type did not match the expectation.</td>
+    </tr>
+    <tr>
+      <td>fail</td>
+      <td>Escarpment representative case</td>
+      <td>At least one escarpment, hill, ridge, or valley candidate expected.</td>
+      <td>no significant feature</td>
+      <td>No candidate topographic feature was detected.</td>
+    </tr>
+  </table>
+</body>
+</html>

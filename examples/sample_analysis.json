@@ -1,0 +1,161 @@
+{
+  "input": {
+    "address": null,
+    "latitude": -33.8568,
+    "longitude": 151.2153,
+    "building_height_m": 12.0,
+    "radius_m": 1000,
+    "sample_interval_m": 500.0
+  },
+  "site": {
+    "latitude": -33.8568,
+    "longitude": 151.2153,
+    "ground_elevation_m": 42.0,
+    "source": "Example DEM",
+    "display_name": "Example public-output sample"
+  },
+  "profiles": [
+    {
+      "direction": "N",
+      "azimuth_deg": 0.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.847807,
+      "endpoint_longitude": 151.2153,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.847807, "longitude": 151.2153, "elevation_m": 43.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 43.0,
+      "average_slope": 0.001
+    },
+    {
+      "direction": "NE",
+      "azimuth_deg": 45.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.850441,
+      "endpoint_longitude": 151.222947,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.850441, "longitude": 151.222947, "elevation_m": 45.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 45.0,
+      "average_slope": 0.003
+    },
+    {
+      "direction": "E",
+      "azimuth_deg": 90.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.8568,
+      "endpoint_longitude": 151.226113,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.8568, "longitude": 151.226113, "elevation_m": 46.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 46.0,
+      "average_slope": 0.004
+    },
+    {
+      "direction": "SE",
+      "azimuth_deg": 135.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.863159,
+      "endpoint_longitude": 151.222947,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.863159, "longitude": 151.222947, "elevation_m": 44.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 44.0,
+      "average_slope": 0.002
+    },
+    {
+      "direction": "S",
+      "azimuth_deg": 180.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.865793,
+      "endpoint_longitude": 151.2153,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.865793, "longitude": 151.2153, "elevation_m": 41.0}
+      ],
+      "min_elevation_m": 41.0,
+      "max_elevation_m": 42.0,
+      "average_slope": -0.001
+    },
+    {
+      "direction": "SW",
+      "azimuth_deg": 225.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.863159,
+      "endpoint_longitude": 151.207653,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.863159, "longitude": 151.207653, "elevation_m": 42.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 42.0,
+      "average_slope": 0.0
+    },
+    {
+      "direction": "W",
+      "azimuth_deg": 270.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.8568,
+      "endpoint_longitude": 151.204487,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.8568, "longitude": 151.204487, "elevation_m": 43.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 43.0,
+      "average_slope": 0.001
+    },
+    {
+      "direction": "NW",
+      "azimuth_deg": 315.0,
+      "radius_m": 1000,
+      "endpoint_latitude": -33.850441,
+      "endpoint_longitude": 151.207653,
+      "points": [
+        {"distance_m": 0.0, "latitude": -33.8568, "longitude": 151.2153, "elevation_m": 42.0},
+        {"distance_m": 1000.0, "latitude": -33.850441, "longitude": 151.207653, "elevation_m": 44.0}
+      ],
+      "min_elevation_m": 42.0,
+      "max_elevation_m": 44.0,
+      "average_slope": 0.002
+    }
+  ],
+  "features": [
+    {
+      "direction": "N",
+      "azimuth_deg": 0.0,
+      "feature_type": "no significant feature",
+      "site_rl_m": 42.0,
+      "crest_rl_m": 42.0,
+      "base_rl_m": 42.0,
+      "h_m": 0.0,
+      "lu_m": 0.0,
+      "x_m": 0.0,
+      "base_x_m": 0.0,
+      "crest_x_m": 0.0,
+      "average_upwind_slope": 0.0,
+      "confidence": "none",
+      "notes": [
+        "No ridge, hill, escarpment, or valley candidate met the conservative screening thresholds.",
+        "Candidate only; detected features require review by a competent engineer against survey data, imagery, and site context."
+      ]
+    }
+  ],
+  "assumptions": [
+    "Terrain profiles are sampled in the eight cardinal and intercardinal directions.",
+    "Topographic screening is rule-based and conservative."
+  ],
+  "limitations": [
+    "This MVP does not calculate terrain category, shielding, topographic multipliers, or design wind pressures.",
+    "DEM resolution and vertical accuracy may be insufficient for final design decisions."
+  ],
+  "disclaimer": "OpenWind-AU provides preliminary terrain and topographic analysis only. Outputs must be reviewed by a competent engineer and are not a certified AS/NZS 1170.2 design assessment."
+}

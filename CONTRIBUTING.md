@@ -52,6 +52,38 @@ Please include:
 
 Do not share private project addresses, client names, claim numbers, or confidential assessment material in public issues.
 
+## Reporting Terrain Or Topography Issues
+
+Terrain/topography reports are most useful when they include evidence that can be checked without
+private project material. Please include:
+
+- coordinates rounded enough to protect privacy, or a public representative location;
+- analysis radius and sample interval;
+- screenshots or exported JSON/HTML where possible;
+- which direction appears wrong, such as `N`, `NE`, or `W`;
+- what public reference suggests a different broad behaviour;
+- whether the concern is DEM elevation, profile geometry, candidate feature classification, report
+  output, or validation behaviour.
+
+Useful public evidence includes government mapping portals, public contour/topographic maps,
+public LiDAR metadata, published terrain descriptions, or reproducible screenshots from the app.
+
+Do not report exact confidential project outcomes, client instructions, claim data, or private
+survey extracts in public issues.
+
+## Adding Validation Cases
+
+Validation cases are broad qualitative checks, not engineering benchmarks. When proposing or
+adding a case:
+
+- use a public representative site;
+- include `case_id`, site name, latitude, longitude, building height, expected general terrain
+  description, expected broad topographic behaviour, notes, and source/reference;
+- use broad expected behaviour only, such as "generally flat" or "likely escarpment behaviour";
+- do not include exact design values, code multipliers, or compliance claims;
+- add or update tests when validation logic changes;
+- use `.github/ISSUE_TEMPLATE/validation_example.yml` for proposed examples.
+
 ## Feature Requests
 
 Please describe:
