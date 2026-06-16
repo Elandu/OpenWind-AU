@@ -1,0 +1,29 @@
+name: Data source request
+description: Propose a public geospatial dataset or elevation service.
+title: "[Data]: "
+labels: ["data"]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Dataset or service
+    validations:
+      required: true
+  - type: textarea
+    id: coverage
+    attributes:
+      label: Coverage and resolution
+    validations:
+      required: true
+  - type: textarea
+    id: licence
+    attributes:
+      label: Licence or usage constraints
+    validations:
+      required: true
+  - type: textarea
+    id: integration
+    attributes:
+      label: Integration notes
+    validations:
+      required: false

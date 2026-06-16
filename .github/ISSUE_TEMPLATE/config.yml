@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Safety disclaimer
+    url: https://github.com/Elandu/OpenWind-AU#safety-disclaimer
+    about: Read the project safety scope before relying on outputs.

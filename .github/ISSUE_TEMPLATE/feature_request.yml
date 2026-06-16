@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a new terrain analysis, reporting, data-source, or UI feature.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Engineering workflow
+      description: What workflow should this support?
+    validations:
+      required: true
+  - type: textarea
+    id: inputs_outputs
+    attributes:
+      label: Inputs and outputs
+      description: List expected inputs and outputs with units.
+    validations:
+      required: true
+  - type: textarea
+    id: data_sources
+    attributes:
+      label: Data sources
+      description: Public datasets or services that could support the feature.
+    validations:
+      required: false
+  - type: textarea
+    id: safety
+    attributes:
+      label: Scope and safety notes
+      description: Note whether this is preliminary terrain analysis or future wind-code logic.
+    validations:
+      required: true
