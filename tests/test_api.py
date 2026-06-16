@@ -41,4 +41,16 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
         "W",
         "NW",
     ]
+    assert [feature["direction"] for feature in body["features"]] == [
+        "N",
+        "NE",
+        "E",
+        "SE",
+        "S",
+        "SW",
+        "W",
+        "NW",
+    ]
+    assert all(feature["feature_type"] == "no significant feature" for feature in body["features"])
+    assert all("competent engineer" in " ".join(feature["notes"]) for feature in body["features"])
     assert "not a certified" in body["disclaimer"]

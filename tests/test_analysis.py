@@ -85,11 +85,11 @@ def test_detect_topographic_features_finds_ridge_or_escarpment() -> None:
 
     features = detect_topographic_features(profiles, site_elevation_m=100)
 
-    assert features
+    assert len(features) == 8
     assert any(feature.feature_type in {"ridge", "hill", "escarpment"} for feature in features)
     assert any(feature.direction == "E" for feature in features)
-    assert all(feature.h_m > 0 for feature in features)
-    assert all(feature.lu_m > 0 for feature in features)
+    assert all(feature.site_rl_m == 100 for feature in features)
+    assert all("competent engineer" in " ".join(feature.notes) for feature in features)
 
 
 def test_run_site_analysis_returns_required_metrics() -> None:
@@ -107,8 +107,12 @@ def test_run_site_analysis_returns_required_metrics() -> None:
     assert result.site.ground_elevation_m == pytest.approx(100, abs=1)
     assert len(result.profiles) == 8
     assert result.disclaimer
-    if result.features:
-        feature = result.features[0]
+    assert len(result.features) == 8
+    significant_features = [
+        feature for feature in result.features if feature.feature_type != "no significant feature"
+    ]
+    if significant_features:
+        feature = significant_features[0]
         assert feature.crest_rl_m >= feature.base_rl_m
         assert feature.h_m == pytest.approx(feature.crest_rl_m - feature.base_rl_m)
         assert feature.average_upwind_slope > 0

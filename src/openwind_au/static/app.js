@@ -3,6 +3,7 @@ const summary = document.getElementById("summary");
 const profileFrame = document.getElementById("profile-frame");
 const mapFrame = document.getElementById("map-frame");
 const profileSummary = document.getElementById("profile-summary");
+const topographySummary = document.getElementById("topography-summary");
 
 function formPayload() {
   const data = new FormData(form);
@@ -40,18 +41,24 @@ form.addEventListener("submit", async (event) => {
   profileFrame.removeAttribute("srcdoc");
   mapFrame.removeAttribute("srcdoc");
   profileSummary.innerHTML = "<p>Running terrain profile analysis...</p>";
+  topographySummary.innerHTML = "<tr><td colspan=\"10\">Running topographic screening...</td></tr>";
 
   try {
     const resultResponse = await postJson("/api/analyse", payload);
     const result = await resultResponse.json();
+    const significantFeatures = result.features.filter(
+      (feature) => feature.feature_type !== "no significant feature",
+    );
     summary.textContent = JSON.stringify({
       site: result.site,
       profile_directions: result.profiles.map((profile) => profile.direction),
-      feature_count: result.features.length,
-      features: result.features.slice(0, 10),
+      topographic_screening_count: result.features.length,
+      candidate_feature_count: significantFeatures.length,
+      topographic_screening: result.features,
       disclaimer: result.disclaimer,
     }, null, 2);
     renderProfileSummary(result.profiles);
+    renderTopographySummary(result.features);
 
     const profileResponse = await postJson("/api/plots/profile", payload);
     profileFrame.srcdoc = await profileResponse.text();
@@ -61,6 +68,7 @@ form.addEventListener("submit", async (event) => {
   } catch (error) {
     summary.textContent = `Analysis failed: ${error.message}`;
     profileSummary.innerHTML = "<p>Analysis failed.</p>";
+    topographySummary.innerHTML = "<tr><td colspan=\"10\">Analysis failed.</td></tr>";
   }
 });
 
@@ -76,5 +84,22 @@ function renderProfileSummary(profiles) {
         <div><dt>Avg slope</dt><dd>${profile.average_slope.toFixed(4)}</dd></div>
       </dl>
     </article>
+  `).join("");
+}
+
+function renderTopographySummary(features) {
+  topographySummary.innerHTML = features.map((feature) => `
+    <tr>
+      <td>${feature.direction}</td>
+      <td>${feature.feature_type}</td>
+      <td>${feature.site_rl_m.toFixed(2)} m</td>
+      <td>${feature.crest_rl_m.toFixed(2)} m</td>
+      <td>${feature.base_rl_m.toFixed(2)} m</td>
+      <td>${feature.h_m.toFixed(2)} m</td>
+      <td>${feature.lu_m.toFixed(1)} m</td>
+      <td>${feature.x_m.toFixed(1)} m</td>
+      <td>${feature.average_upwind_slope.toFixed(3)}</td>
+      <td>${feature.confidence}</td>
+    </tr>
   `).join("");
 }

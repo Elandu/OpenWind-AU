@@ -20,9 +20,12 @@ The application can:
 - Download/query public SRTM DEM terrain tiles.
 - Generate 8-direction terrain profiles around the site: N, NE, E, SE, S, SW, W, and NW.
 - Support configurable analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
-- Detect preliminary topographic features, including ridges, hills, escarpments, and valleys.
-- Report crest RL, base RL, `H`, `Lu`, `x`, and average upwind slope for detected features.
-- Display interactive terrain profile plots with Plotly.
+- Screen each terrain profile for preliminary candidate topographic features: ridge, hill,
+  escarpment, valley, or no significant feature.
+- Report site RL, crest RL, base RL, `H`, `Lu`, `x`, average upwind slope, confidence, and
+  review notes for each directional screening result.
+- Display interactive terrain profile plots with Plotly, including candidate site, base, crest,
+  `H`, and `Lu` overlays.
 - Display an interactive site map with Folium/Leaflet.
 - Export results as JSON.
 - Generate HTML and PDF summary reports.
@@ -169,19 +172,26 @@ POST /api/maps/site
 
 ## Output Metrics
 
-For detected topographic features, OpenWind-AU reports:
+For preliminary topographic screening, OpenWind-AU reports one result for each of the 8 profile
+directions:
 
+- `direction`
+- `azimuth_deg`
+- `feature_type`
+- `site_rl_m`
 - `crest_rl_m`
 - `base_rl_m`
 - `h_m`
 - `lu_m`
 - `x_m`
 - `average_upwind_slope`
-- feature type
-- confidence level
-- review notes
+- `confidence`
+- `notes`
 
-These are preliminary geometric indicators from public DEM profiles. They are not code multipliers and are not design values.
+Feature types are limited to `ridge`, `hill`, `escarpment`, `valley`, and
+`no significant feature`. These are preliminary geometric indicators from public DEM profiles.
+They are not AS/NZS 1170.2 topographic multipliers, certified design values, or final wind
+assessment conclusions.
 
 Terrain profiles are exported with:
 
@@ -200,7 +210,7 @@ Terrain profiles are exported with:
 MVP priorities:
 
 - Robust 8-direction terrain profile generation.
-- Topographic feature detection.
+- Conservative topographic feature screening for engineer review.
 - Interactive maps and profile plots.
 - JSON, HTML, and PDF outputs.
 - Deterministic tests and CI.

@@ -46,17 +46,19 @@ REPORT_TEMPLATE = Template(
     <tr><th>Location source</th><td>{{ result.site.source }}</td></tr>
   </table>
 
-  <h2>Detected Topographic Features</h2>
+  <h2>Preliminary Topographic Screening</h2>
   <table>
     <tr>
-      <th>Type</th><th>Direction</th><th>Azimuth</th><th>Crest RL</th><th>Base RL</th>
-      <th>H</th><th>Lu</th><th>x</th><th>Average upwind slope</th><th>Confidence</th>
+      <th>Direction</th><th>Azimuth</th><th>Feature</th><th>Site RL</th><th>Crest RL</th>
+      <th>Base RL</th><th>H</th><th>Lu</th><th>x</th><th>Average upwind slope</th>
+      <th>Confidence</th><th>Notes</th>
     </tr>
     {% for feature in result.features %}
     <tr>
-      <td>{{ feature.feature_type }}</td>
       <td>{{ feature.direction }}</td>
       <td>{{ "%.0f"|format(feature.azimuth_deg) }} deg</td>
+      <td>{{ feature.feature_type }}</td>
+      <td>{{ "%.2f"|format(feature.site_rl_m) }} m</td>
       <td>{{ "%.2f"|format(feature.crest_rl_m) }} m</td>
       <td>{{ "%.2f"|format(feature.base_rl_m) }} m</td>
       <td>{{ "%.2f"|format(feature.h_m) }} m</td>
@@ -64,9 +66,8 @@ REPORT_TEMPLATE = Template(
       <td>{{ "%.1f"|format(feature.x_m) }} m</td>
       <td>{{ "%.3f"|format(feature.average_upwind_slope) }}</td>
       <td>{{ feature.confidence }}</td>
+      <td>{{ feature.notes|join(" ") }}</td>
     </tr>
-    {% else %}
-    <tr><td colspan="10">No significant features detected by MVP heuristics.</td></tr>
     {% endfor %}
   </table>
 
@@ -148,17 +149,30 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
             hAlign="LEFT",
         ),
         Spacer(1, 12),
-        Paragraph("Detected Topographic Features", styles["Heading2"]),
+        Paragraph("Preliminary Topographic Screening", styles["Heading2"]),
     ]
     feature_rows = [
-        ["Type", "Dir.", "Az.", "Crest RL", "Base RL", "H", "Lu", "x", "Slope", "Conf."]
+        [
+            "Dir.",
+            "Az.",
+            "Feature",
+            "Site RL",
+            "Crest RL",
+            "Base RL",
+            "H",
+            "Lu",
+            "x",
+            "Slope",
+            "Conf.",
+        ]
     ]
     for feature in result.features:
         feature_rows.append(
             [
-                feature.feature_type,
                 feature.direction,
                 f"{feature.azimuth_deg:.0f}",
+                feature.feature_type,
+                f"{feature.site_rl_m:.1f}",
                 f"{feature.crest_rl_m:.1f}",
                 f"{feature.base_rl_m:.1f}",
                 f"{feature.h_m:.1f}",
@@ -167,10 +181,6 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
                 f"{feature.average_upwind_slope:.3f}",
                 feature.confidence,
             ]
-        )
-    if len(feature_rows) == 1:
-        feature_rows.append(
-            ["No significant features detected", "", "", "", "", "", "", "", "", ""]
         )
     table = Table(feature_rows, repeatRows=1)
     table.setStyle(
@@ -184,6 +194,13 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
         )
     )
     story.append(table)
+    story.append(Spacer(1, 8))
+    story.append(
+        Paragraph(
+            "Candidate topographic features require review by a competent engineer.",
+            styles["BodyText"],
+        )
+    )
     profile_rows = [["Dir.", "Az.", "Min RL", "Max RL", "Avg slope"]]
     for profile in result.profiles:
         profile_rows.append(
@@ -227,7 +244,9 @@ def profile_plot_html(result: SiteAnalysisResult) -> str:
     """Return a Plotly HTML fragment for terrain profile plots."""
 
     fig = go.Figure()
+    features_by_direction = {feature.direction: feature for feature in result.features}
     for profile in result.profiles:
+        feature = features_by_direction.get(profile.direction)
         fig.add_trace(
             go.Scatter(
                 x=[point.distance_m for point in profile.points],
@@ -241,8 +260,79 @@ def profile_plot_html(result: SiteAnalysisResult) -> str:
                 ),
             )
         )
+        if not feature:
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=[0],
+                y=[feature.site_rl_m],
+                mode="markers",
+                name=f"{profile.direction} site",
+                marker={"symbol": "circle", "size": 8, "color": "#0f766e"},
+                hovertemplate=(
+                    f"{profile.direction} site<br>Distance: 0 m<br>RL: %{{y:.2f}} m<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+        if feature.feature_type == "no significant feature":
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=[feature.base_x_m],
+                y=[feature.base_rl_m],
+                mode="markers",
+                name=f"{profile.direction} candidate base",
+                marker={"symbol": "square", "size": 8, "color": "#f59e0b"},
+                hovertemplate=(
+                    f"{profile.direction} base<br>"
+                    "Distance: %{x:.0f} m<br>"
+                    "RL: %{y:.2f} m<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[feature.crest_x_m],
+                y=[feature.crest_rl_m],
+                mode="markers",
+                name=f"{profile.direction} candidate crest",
+                marker={"symbol": "diamond", "size": 9, "color": "#b42318"},
+                hovertemplate=(
+                    f"{profile.direction} crest<br>"
+                    "Distance: %{x:.0f} m<br>"
+                    "RL: %{y:.2f} m<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[feature.crest_x_m, feature.crest_x_m],
+                y=[feature.base_rl_m, feature.crest_rl_m],
+                mode="lines",
+                name=f"{profile.direction} H",
+                line={"color": "#b42318", "width": 2, "dash": "dot"},
+                hovertemplate=f"H: {feature.h_m:.2f} m<extra></extra>",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[feature.base_x_m, feature.crest_x_m],
+                y=[feature.base_rl_m, feature.base_rl_m],
+                mode="lines",
+                name=f"{profile.direction} Lu",
+                line={"color": "#f59e0b", "width": 2, "dash": "dash"},
+                hovertemplate=f"Lu: {feature.lu_m:.1f} m<extra></extra>",
+                showlegend=False,
+            )
+        )
     fig.update_layout(
-        title="Radial terrain profiles",
+        title="Radial terrain profiles with preliminary topographic screening overlays",
         xaxis_title="Distance from site (m)",
         yaxis_title="Elevation RL (m)",
         template="plotly_white",
@@ -294,6 +384,8 @@ def map_html(result: SiteAnalysisResult) -> str:
             ),
         ).add_to(fmap)
     for feature in result.features:
+        if feature.feature_type == "no significant feature":
+            continue
         feature_lat, feature_lon = destination_point(
             result.site.latitude,
             result.site.longitude,

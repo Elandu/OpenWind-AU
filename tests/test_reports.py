@@ -32,8 +32,15 @@ def test_report_helpers_render_outputs() -> None:
 
     assert data["site"]["ground_elevation_m"] == 50
     assert data["profiles"][0]["direction"] == "N"
+    assert len(data["features"]) == 8
+    assert data["features"][0]["feature_type"] == "no significant feature"
+    assert "competent engineer" in " ".join(data["features"][0]["notes"])
     assert "Preliminary Terrain Report" in html
     assert "Terrain Profile Summary" in html
+    assert "Preliminary Topographic Screening" in html
+    assert "no significant feature" in html
+    assert "competent engineer" in html
     assert "plotly" in plot.lower()
+    assert "site" in plot
     assert "leaflet" in fmap.lower()
     assert "Analysis radius" in fmap

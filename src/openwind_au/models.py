@@ -75,16 +75,19 @@ class TerrainProfile(BaseModel):
 class TopographicFeature(BaseModel):
     """Detected topographic feature relevant to preliminary wind review."""
 
-    feature_type: Literal["ridge", "hill", "escarpment", "valley"]
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     azimuth_deg: float
+    feature_type: Literal["ridge", "hill", "escarpment", "valley", "no significant feature"]
+    site_rl_m: float
     crest_rl_m: float
     base_rl_m: float
     h_m: float
     lu_m: float
     x_m: float
+    base_x_m: float
+    crest_x_m: float
     average_upwind_slope: float
-    confidence: Literal["low", "medium", "high"]
+    confidence: Literal["none", "low", "medium", "high"]
     notes: list[str]
 
 
