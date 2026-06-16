@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
+import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
 
 
@@ -54,3 +55,23 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert all(feature["feature_type"] == "no significant feature" for feature in body["features"])
     assert all("competent engineer" in " ".join(feature["notes"]) for feature in body["features"])
     assert "not a certified" in body["disclaimer"]
+
+
+def test_validation_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(validation_module, "SRTMProvider", lambda: FlatDEM())
+    client = TestClient(api_module.create_app())
+
+    page = client.get("/validation")
+    cases = client.get("/api/validation/cases")
+    report = client.get("/api/validation")
+    html = client.get("/api/validation/report/html")
+
+    assert page.status_code == 200
+    assert "Validation Scope" in page.text
+    assert cases.status_code == 200
+    assert len(cases.json()) >= 5
+    assert report.status_code == 200
+    assert set(report.json()["summary"]) == {"pass", "warn", "fail"}
+    assert "not proof of AS/NZS 1170.2 compliance" in report.json()["disclaimer"]
+    assert html.status_code == 200
+    assert "OpenWind-AU Validation Report" in html.text

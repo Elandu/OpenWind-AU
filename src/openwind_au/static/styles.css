@@ -13,6 +13,10 @@ header {
   background: #17324d;
   color: white;
   padding: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 header h1 {
@@ -21,6 +25,11 @@ header h1 {
 
 header p {
   margin: 0;
+}
+
+header a {
+  color: white;
+  font-weight: 700;
 }
 
 main {
@@ -70,6 +79,17 @@ button {
   cursor: pointer;
 }
 
+.button-link {
+  display: inline-block;
+  margin: 16px 0 0 10px;
+  border-radius: 6px;
+  padding: 11px 16px;
+  background: #17324d;
+  color: white;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 pre {
   white-space: pre-wrap;
   overflow: auto;
@@ -111,6 +131,21 @@ td {
 th {
   background: #f6f8fa;
   color: #17324d;
+}
+
+.status-pass {
+  color: #047857;
+  font-weight: 700;
+}
+
+.status-warn {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.status-fail {
+  color: #b42318;
+  font-weight: 700;
 }
 
 .split {

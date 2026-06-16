@@ -18,6 +18,8 @@ OpenWind-AU is early-stage. This roadmap separates MVP terrain analysis from fut
 - JSON export.
 - HTML report.
 - PDF report.
+- Qualitative validation runner with representative Australian terrain examples.
+- JSON and HTML validation reports.
 - Unit tests and GitHub Actions CI.
 
 ## Near-Term Improvements
@@ -28,7 +30,8 @@ OpenWind-AU is early-stage. This roadmap separates MVP terrain analysis from fut
 - More robust feature grouping across adjacent radials.
 - Better report layout with embedded maps and plots.
 - More tests with synthetic terrain fixtures.
-- Documented validation examples against known terrain cases.
+- More documented validation examples against known public terrain cases.
+- Contributor workflow for reviewing proposed validation examples.
 
 ## Roadmap Only
 

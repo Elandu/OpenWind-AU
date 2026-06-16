@@ -29,6 +29,7 @@ The application can:
 - Display an interactive site map with Folium/Leaflet.
 - Export results as JSON.
 - Generate HTML and PDF summary reports.
+- Run qualitative validation checks against representative Australian terrain examples.
 
 ## Safety Disclaimer
 
@@ -165,10 +166,30 @@ POST /api/plots/profile
 POST /api/maps/site
 ```
 
+Run validation checks:
+
+```text
+GET /validation
+GET /api/validation
+GET /api/validation/report/html
+```
+
 ## Example Files
 
 - [`examples/sample_request.json`](examples/sample_request.json)
 - [`examples/workflow.md`](examples/workflow.md)
+- [`docs/validation.md`](docs/validation.md)
+
+## Validation
+
+OpenWind-AU includes a qualitative validation runner for representative Australian terrain
+settings, including flat suburban, coastal escarpment, hilltop, valley, and inland-flat examples.
+The runner executes the normal terrain-profile and topographic-screening workflow for each case
+and reports pass, warning, or fail against broad expected behaviour.
+
+Validation is an audit and regression tool. It does not prove design accuracy, AS/NZS 1170.2
+compliance, or suitability for a specific project. See [`docs/validation.md`](docs/validation.md)
+for details and contribution guidance.
 
 ## Output Metrics
 
@@ -213,6 +234,7 @@ MVP priorities:
 - Conservative topographic feature screening for engineer review.
 - Interactive maps and profile plots.
 - JSON, HTML, and PDF outputs.
+- Qualitative validation framework for representative Australian terrain examples.
 - Deterministic tests and CI.
 
 Roadmap-only items:

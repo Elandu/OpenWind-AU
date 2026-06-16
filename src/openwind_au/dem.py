@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import subprocess
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -81,11 +82,16 @@ class SRTMProvider(DEMProvider):
 
         folder = tile_name[:3]
         url = f"https://s3.amazonaws.com/elevation-tiles-prod/skadi/{folder}/{tile_name}.hgt.gz"
-        gz_path = self.cache_dir / f"{tile_name}.hgt.gz"
+        token = uuid.uuid4().hex
+        gz_path = self.cache_dir / f"{tile_name}.{token}.hgt.gz"
+        temp_target = self.cache_dir / f"{tile_name}.{token}.hgt.tmp"
         try:
             _download_file(url, gz_path)
-            with gzip.open(gz_path, "rb") as source, target.open("wb") as destination:
+            if target.exists():
+                return target
+            with gzip.open(gz_path, "rb") as source, temp_target.open("wb") as destination:
                 destination.write(source.read())
+            os.replace(temp_target, target)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to download SRTM tile {tile_name} from {url}: {exc}"
@@ -93,6 +99,8 @@ class SRTMProvider(DEMProvider):
         finally:
             if gz_path.exists():
                 gz_path.unlink()
+            if temp_target.exists():
+                temp_target.unlink()
 
         return target
 

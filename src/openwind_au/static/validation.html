@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenWind-AU Validation</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>OpenWind-AU Validation</h1>
+        <p>Qualitative validation checks for representative Australian terrain settings.</p>
+      </div>
+      <nav>
+        <a href="/">Analysis</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="panel">
+        <h2>Validation Scope</h2>
+        <p>
+          Validation checks run the normal terrain-profile and preliminary topographic screening
+          workflow against manually selected representative Australian sites.
+        </p>
+        <p class="disclaimer">
+          Validation is qualitative only. It does not prove AS/NZS 1170.2 compliance, wind-design
+          accuracy, or suitability for a specific project.
+        </p>
+        <button id="run-validation" type="button">Run Validation</button>
+        <a class="button-link" href="/api/validation/report/html" target="_blank" rel="noreferrer">
+          Open HTML Report
+        </a>
+      </section>
+
+      <section class="panel">
+        <h2>Validation Summary</h2>
+        <pre id="validation-summary">Run validation to see pass, warning, and fail counts.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>Validation Cases</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Case</th>
+                <th>Expected Terrain</th>
+                <th>Expected Behaviour</th>
+                <th>Detected Types</th>
+                <th>Max H</th>
+                <th>Reasons</th>
+              </tr>
+            </thead>
+            <tbody id="validation-results">
+              <tr><td colspan="7">Validation results will appear here.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/validation.js"></script>
+  </body>
+</html>

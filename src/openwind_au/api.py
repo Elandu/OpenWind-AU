@@ -19,6 +19,12 @@ from openwind_au.reports import (
     result_to_json,
     write_pdf_report,
 )
+from openwind_au.validation import (
+    DEFAULT_VALIDATION_CASES,
+    render_validation_report_html,
+    run_validation_cases,
+    validation_report_to_json,
+)
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -39,6 +45,10 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/validation", response_class=HTMLResponse)
+    def validation_page() -> str:
+        return (STATIC_DIR / "validation.html").read_text(encoding="utf-8")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -87,6 +97,31 @@ def create_app() -> FastAPI:
     def site_map(request: SiteAnalysisRequest) -> str:
         result = analyse(request)
         return map_html(result)
+
+    @app.get("/api/validation/cases")
+    def validation_cases() -> Response:
+        content = json.dumps(
+            [case.model_dump() for case in DEFAULT_VALIDATION_CASES],
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/validation")
+    def validation_report() -> Response:
+        try:
+            report = run_validation_cases()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        content = json.dumps(validation_report_to_json(report), indent=2)
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/validation/report/html", response_class=HTMLResponse)
+    def validation_report_html() -> str:
+        try:
+            report = run_validation_cases()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return render_validation_report_html(report)
 
     return app
 

@@ -1,0 +1,63 @@
+name: Validation example
+description: Suggest a representative Australian validation site.
+title: "[Validation] "
+labels: ["validation", "data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Suggest public, representative validation examples only. Do not include private project,
+        client, claim, or property-owner information. Validation examples should describe broad
+        expected terrain behaviour, not exact design outcomes or AS/NZS 1170.2 multipliers.
+  - type: input
+    id: site_name
+    attributes:
+      label: Site name
+      description: Public or general location name.
+      placeholder: "Example: coastal escarpment near ..."
+    validations:
+      required: true
+  - type: input
+    id: coordinates
+    attributes:
+      label: Latitude and longitude
+      description: Approximate public coordinates for the representative site.
+      placeholder: "-34.000000, 151.000000"
+    validations:
+      required: true
+  - type: dropdown
+    id: representative_type
+    attributes:
+      label: Representative terrain type
+      options:
+        - flat suburban site
+        - coastal escarpment site
+        - hilltop site
+        - valley site
+        - inland flat site
+        - other representative terrain
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behaviour
+    attributes:
+      label: Expected broad topographic behaviour
+      description: Describe broad behaviour only. Do not provide design values.
+      placeholder: "Profiles are expected to show broad escarpment behaviour in at least one direction."
+    validations:
+      required: true
+  - type: textarea
+    id: source_reference
+    attributes:
+      label: Source/reference
+      description: Public reference used to justify the broad terrain expectation.
+      placeholder: "Public map/topographic context, government mapping portal, or published terrain description."
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Add any caveats, uncertainty, or reason this site is useful for validation.
+    validations:
+      required: false
