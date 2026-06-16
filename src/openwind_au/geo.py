@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
+import shutil
+import subprocess
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
@@ -35,14 +40,11 @@ def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[s
         "limit": 1,
         "countrycodes": "au",
     }
-    headers = {"User-Agent": user_agent}
     try:
-        response = requests.get(NOMINATIM_URL, params=params, headers=headers, timeout=20)
-        response.raise_for_status()
-    except requests.RequestException as exc:
+        data = _get_json(NOMINATIM_URL, params, user_agent)
+    except Exception as exc:
         raise RuntimeError(f"Failed to geocode address with Nominatim: {exc}") from exc
 
-    data = response.json()
     if not data:
         raise ValueError(f"No geocoding result found for address: {address}")
 
@@ -77,3 +79,42 @@ def destination_point(
     lon2 = lon1 + math.atan2(y, x)
 
     return math.degrees(lat2), ((math.degrees(lon2) + 540) % 360) - 180
+
+
+def _get_json(url: str, params: dict[str, Any], user_agent: str) -> Any:
+    """GET JSON from a public API using curl first, then requests."""
+
+    curl = shutil.which("curl") or shutil.which("curl.exe")
+    full_url = f"{url}?{urlencode(params)}"
+    if curl:
+        command = [
+            curl,
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--user-agent",
+            user_agent,
+        ]
+        if os.name == "nt":
+            command.append("--ssl-no-revoke")
+        command.append(full_url)
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(completed.stderr.strip() or f"curl exited {completed.returncode}")
+        return json.loads(completed.stdout)
+
+    response = requests.get(
+        url,
+        params=params,
+        headers={"User-Agent": user_agent},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json()
