@@ -48,4 +48,5 @@ POST /api/obstructions/map
 ```
 
 The obstruction report includes a footprint map endpoint, obstruction table, missing-height
-summary, and a note that `Ms` cannot be assessed without reliable obstruction heights.
+summary, public-footprint-source warnings, and a note that `Ms` cannot be assessed without
+reliable obstruction heights.

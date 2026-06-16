@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+import openwind_au.obstructions as obstructions_module
 from openwind_au.models import ObstructionInventoryRequest, ObstructionManualOverride
 from openwind_au.obstructions import (
+    FootprintQueryError,
     apply_manual_overrides,
     build_obstruction_records,
     height_from_tags,
@@ -130,3 +132,26 @@ def test_run_obstruction_inventory_uses_supplied_footprints() -> None:
         "building_levels",
         "missing",
     }
+
+
+def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(
+    monkeypatch,
+) -> None:
+    def fail_query(*_args, **_kwargs):
+        raise FootprintQueryError("Overpass unavailable")
+
+    monkeypatch.setattr(obstructions_module, "query_building_footprints", fail_query)
+
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            default_storey_height_m=3.0,
+        ),
+    )
+
+    assert result.data_source_status == "unavailable"
+    assert result.obstructions == []
+    assert result.warnings
+    assert "Ms is not calculated" in result.warnings[0]

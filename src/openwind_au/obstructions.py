@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 from io import StringIO
+from json import JSONDecodeError
 from typing import Any
 
 import requests
@@ -25,6 +26,12 @@ OVERPASS_URLS = (
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 )
+OVERPASS_QUERY_TIMEOUT_SECONDS = 15
+OVERPASS_HTTP_TIMEOUT_SECONDS = 25
+
+
+class FootprintQueryError(RuntimeError):
+    """Raised when public building footprint data cannot be retrieved."""
 
 
 def run_obstruction_inventory(
@@ -35,12 +42,23 @@ def run_obstruction_inventory(
 
     site = resolve_obstruction_site(request)
     raw_footprints = footprints
+    warnings: list[str] = []
+    data_source_status = "ok"
     if raw_footprints is None:
-        raw_footprints = query_building_footprints(
-            site.latitude,
-            site.longitude,
-            request.radius_m,
-        )
+        try:
+            raw_footprints = query_building_footprints(
+                site.latitude,
+                site.longitude,
+                request.radius_m,
+            )
+        except FootprintQueryError as exc:
+            raw_footprints = []
+            data_source_status = "unavailable"
+            warnings.append(
+                "Building footprint query failed. The obstruction inventory is empty "
+                "until footprints can be fetched or manually supplied; Ms is not calculated."
+            )
+            warnings.append(str(exc))
     records = build_obstruction_records(
         raw_footprints,
         site.latitude,
@@ -62,6 +80,8 @@ def run_obstruction_inventory(
             item.height_source == "manual_override" and item.height_m is not None
             for item in records
         ),
+        data_source_status=data_source_status,
+        warnings=warnings,
     )
 
 
@@ -96,7 +116,7 @@ def query_building_footprints(
     """Query OpenStreetMap building footprints around a site using Overpass."""
 
     query = f"""
-    [out:json][timeout:25];
+    [out:json][timeout:{OVERPASS_QUERY_TIMEOUT_SECONDS}];
     (
       way["building"](around:{radius_m},{latitude},{longitude});
       relation["building"](around:{radius_m},{latitude},{longitude});
@@ -368,7 +388,7 @@ def _post_overpass(query: str, user_agent: str) -> dict[str, Any]:
             return _post_overpass_url(url, query, user_agent)
         except Exception as exc:
             errors.append(f"{url}: {exc}")
-    raise RuntimeError("; ".join(errors))
+    raise FootprintQueryError("; ".join(errors))
 
 
 def _post_overpass_url(url: str, query: str, user_agent: str) -> dict[str, Any]:
@@ -387,24 +407,34 @@ def _post_overpass_url(url: str, query: str, user_agent: str) -> dict[str, Any]:
         ]
         if os.name == "nt":
             command.insert(4, "--ssl-no-revoke")
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=OVERPASS_HTTP_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            timeout = exc.timeout or OVERPASS_HTTP_TIMEOUT_SECONDS
+            raise RuntimeError(f"request timed out after {timeout:g} seconds") from exc
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or f"curl exited {completed.returncode}")
         if not completed.stdout:
             raise RuntimeError("empty Overpass response")
-        return json.loads(completed.stdout)
+        try:
+            return json.loads(completed.stdout)
+        except (TypeError, JSONDecodeError) as exc:
+            raise RuntimeError(f"invalid Overpass JSON response: {exc}") from exc
 
     response = requests.post(
         url,
         data={"data": query},
         headers={"User-Agent": user_agent},
-        timeout=45,
+        timeout=OVERPASS_HTTP_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
-    return response.json()
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"invalid Overpass JSON response: {exc}") from exc

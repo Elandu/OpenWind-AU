@@ -57,6 +57,12 @@ review. Heights are taken only from explicit height tags, `building:levels` conv
 configured storey height, or manual reviewed data. Missing heights are not inferred from footprint
 size. `Ms` is not calculated.
 
+The obstruction inventory radius is independent from the terrain analysis radius. In the browser UI
+it defaults to 500 m so dense urban building-footprint queries do not inherit a 2 km or 4 km
+terrain radius. If public Overpass data is unavailable, the inventory response remains HTTP 200
+with `data_source_status: "unavailable"`, an empty obstruction list, and warning text for the
+reviewer.
+
 ## Validation
 
 ```text
