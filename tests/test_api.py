@@ -24,7 +24,6 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
             "longitude": 151.21,
             "building_height_m": 10,
             "radius_m": 500,
-            "radial_count": 8,
             "sample_interval_m": 100,
         },
     )
@@ -32,5 +31,14 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["site"]["ground_elevation_m"] == 75
-    assert body["profiles"]
+    assert [profile["direction"] for profile in body["profiles"]] == [
+        "N",
+        "NE",
+        "E",
+        "SE",
+        "S",
+        "SW",
+        "W",
+        "NW",
+    ]
     assert "not a certified" in body["disclaimer"]

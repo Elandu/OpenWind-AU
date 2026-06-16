@@ -36,11 +36,12 @@
             </label>
             <label>
               Radius (m)
-              <input id="radius_m" name="radius_m" type="number" value="2000" />
-            </label>
-            <label>
-              Radials
-              <input id="radial_count" name="radial_count" type="number" value="36" />
+              <select id="radius_m" name="radius_m">
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+                <option value="2000" selected>2000</option>
+                <option value="4000">4000</option>
+              </select>
             </label>
             <label>
               Sample interval (m)
@@ -57,6 +58,13 @@
       <section class="panel">
         <h2>Summary</h2>
         <pre id="summary">Run an analysis to see results.</pre>
+      </section>
+
+      <section class="panel">
+        <h2>8-Direction Terrain Analysis</h2>
+        <div id="profile-summary" class="profile-grid">
+          <p>Terrain profile summaries will appear here after analysis.</p>
+        </div>
       </section>
 
       <section class="panel split">

@@ -6,16 +6,15 @@ import numpy as np
 from scipy.signal import find_peaks
 
 from openwind_au.dem import DEMProvider
-from openwind_au.geo import destination_point, geocode_address
+from openwind_au.geo import geocode_address
 from openwind_au.models import (
-    ElevationSample,
     SiteAnalysisRequest,
     SiteAnalysisResult,
     SiteLocation,
-    TerrainPoint,
     TerrainProfile,
     TopographicFeature,
 )
+from openwind_au.terrain import generate_standard_terrain_profiles
 
 
 def run_site_analysis(
@@ -25,12 +24,11 @@ def run_site_analysis(
     """Run preliminary terrain and topographic site analysis."""
 
     location = resolve_site_location(request, dem_provider)
-    profiles = generate_terrain_profiles(
+    profiles = generate_standard_terrain_profiles(
         latitude=location.latitude,
         longitude=location.longitude,
         dem_provider=dem_provider,
         radius_m=request.radius_m,
-        radial_count=request.radial_count,
         sample_interval_m=request.sample_interval_m,
     )
     features = detect_topographic_features(profiles, location.ground_elevation_m)
@@ -40,7 +38,7 @@ def run_site_analysis(
         profiles=profiles,
         features=features,
         assumptions=[
-            "Terrain profiles are sampled radially from the resolved site coordinate.",
+            "Terrain profiles are sampled in the eight cardinal and intercardinal directions.",
             "DEM elevations are public terrain data and may not reflect local survey levels.",
             "Feature metrics are geometric indicators for preliminary engineering review.",
             "Building height is recorded for context and future wind workflow integration.",
@@ -78,77 +76,6 @@ def resolve_site_location(request: SiteAnalysisRequest, dem_provider: DEMProvide
         ground_elevation_m=ground_elevation,
         source=source,
         display_name=display_name,
-    )
-
-
-def generate_terrain_profiles(
-    latitude: float,
-    longitude: float,
-    dem_provider: DEMProvider,
-    radius_m: float = 2000,
-    radial_count: int = 36,
-    sample_interval_m: float = 50,
-) -> list[TerrainProfile]:
-    """Generate 360-degree terrain profiles around a site."""
-
-    if radius_m <= 0:
-        raise ValueError("radius_m must be greater than zero.")
-    if radial_count < 1:
-        raise ValueError("radial_count must be at least 1.")
-    if sample_interval_m <= 0:
-        raise ValueError("sample_interval_m must be greater than zero.")
-
-    distances = np.arange(0, radius_m + sample_interval_m, sample_interval_m)
-    distances = distances[distances <= radius_m]
-    if distances[-1] < radius_m:
-        distances = np.append(distances, radius_m)
-
-    profiles: list[TerrainProfile] = []
-    for azimuth in np.linspace(0, 360, radial_count, endpoint=False):
-        samples = [
-            sample_elevation(latitude, longitude, float(azimuth), float(distance), dem_provider)
-            for distance in distances
-        ]
-        elevations = np.array([sample.elevation_m for sample in samples])
-        total_rise = elevations[-1] - elevations[0]
-        average_slope = float(total_rise / max(distances[-1], 1))
-        profiles.append(
-            TerrainProfile(
-                azimuth_deg=float(azimuth),
-                points=[
-                    TerrainPoint(
-                        distance_m=sample.distance_m,
-                        latitude=sample.latitude,
-                        longitude=sample.longitude,
-                        elevation_m=sample.elevation_m,
-                    )
-                    for sample in samples
-                ],
-                min_elevation_m=float(np.min(elevations)),
-                max_elevation_m=float(np.max(elevations)),
-                average_slope=average_slope,
-            )
-        )
-
-    return profiles
-
-
-def sample_elevation(
-    latitude: float,
-    longitude: float,
-    azimuth_deg: float,
-    distance_m: float,
-    dem_provider: DEMProvider,
-) -> ElevationSample:
-    """Sample DEM elevation at a radial distance from the site."""
-
-    point_lat, point_lon = destination_point(latitude, longitude, azimuth_deg, distance_m)
-    elevation = dem_provider.elevation(point_lat, point_lon)
-    return ElevationSample(
-        distance_m=distance_m,
-        latitude=point_lat,
-        longitude=point_lon,
-        elevation_m=elevation,
     )
 
 
@@ -197,6 +124,9 @@ def detect_topographic_features(
         slope_feature = _feature_from_steep_slope(profile, distances, smoothed, site_elevation_m)
         if slope_feature:
             features.append(slope_feature)
+        endpoint_feature = _feature_from_endpoint_relief(profile, distances, smoothed)
+        if endpoint_feature:
+            features.append(endpoint_feature)
 
     features.sort(key=lambda item: (item.azimuth_deg, -item.h_m, item.x_m))
     return features
@@ -239,6 +169,7 @@ def _feature_from_peak(
         feature_type = "escarpment"
     return TopographicFeature(
         feature_type=feature_type,
+        direction=profile.direction,
         azimuth_deg=profile.azimuth_deg,
         crest_rl_m=crest_rl,
         base_rl_m=base_rl,
@@ -279,6 +210,7 @@ def _feature_from_valley(
     slope = h / lu
     return TopographicFeature(
         feature_type="valley",
+        direction=profile.direction,
         azimuth_deg=profile.azimuth_deg,
         crest_rl_m=crest_rl,
         base_rl_m=base_rl,
@@ -318,6 +250,7 @@ def _feature_from_steep_slope(
     lu = float(distances[end] - distances[start])
     return TopographicFeature(
         feature_type="escarpment",
+        direction=profile.direction,
         azimuth_deg=profile.azimuth_deg,
         crest_rl_m=crest_rl,
         base_rl_m=base_rl,
@@ -329,6 +262,42 @@ def _feature_from_steep_slope(
         notes=[
             f"Steep local slope detected relative to site RL {site_elevation_m:.1f} m.",
             "Treat as a preliminary escarpment indicator requiring manual review.",
+        ],
+    )
+
+
+def _feature_from_endpoint_relief(
+    profile: TerrainProfile,
+    distances: np.ndarray,
+    elevations: np.ndarray,
+) -> TopographicFeature | None:
+    """Detect a hill/rising feature where the crest is at the profile endpoint."""
+
+    endpoint_index = len(elevations) - 1
+    crest_rl = float(elevations[endpoint_index])
+    base_index = int(np.argmin(elevations))
+    base_rl = float(elevations[base_index])
+    h = crest_rl - base_rl
+    lu = abs(float(distances[endpoint_index] - distances[base_index]))
+    if h < 5 or lu <= 0:
+        return None
+    slope = h / lu
+    if slope < 0.03:
+        return None
+    return TopographicFeature(
+        feature_type="hill",
+        direction=profile.direction,
+        azimuth_deg=profile.azimuth_deg,
+        crest_rl_m=crest_rl,
+        base_rl_m=base_rl,
+        h_m=h,
+        lu_m=lu,
+        x_m=float(distances[endpoint_index]),
+        average_upwind_slope=slope,
+        confidence=_confidence(h, slope),
+        notes=[
+            "Rising terrain reaches a local maximum at the analysis radius endpoint.",
+            "Extend the radius or review wider terrain before treating this as a bounded hill.",
         ],
     )
 

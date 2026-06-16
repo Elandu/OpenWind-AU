@@ -18,7 +18,8 @@ The application can:
 - Geocode Australian street addresses with OpenStreetMap/Nominatim.
 - Resolve site coordinates and ground elevation.
 - Download/query public SRTM DEM terrain tiles.
-- Generate 360 degree terrain profiles around the site.
+- Generate 8-direction terrain profiles around the site: N, NE, E, SE, S, SW, W, and NW.
+- Support configurable analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Detect preliminary topographic features, including ridges, hills, escarpments, and valleys.
 - Report crest RL, base RL, `H`, `Lu`, `x`, and average upwind slope for detected features.
 - Display interactive terrain profile plots with Plotly.
@@ -126,7 +127,6 @@ curl -X POST http://127.0.0.1:8000/api/analyse \
     "longitude": 151.2153,
     "building_height_m": 12,
     "radius_m": 2000,
-    "radial_count": 36,
     "sample_interval_m": 50
   }'
 ```
@@ -138,7 +138,6 @@ Run an analysis using an address:
   "address": "1 Macquarie Street, Sydney NSW",
   "building_height_m": 12,
   "radius_m": 2000,
-  "radial_count": 36,
   "sample_interval_m": 50
 }
 ```
@@ -184,11 +183,23 @@ For detected topographic features, OpenWind-AU reports:
 
 These are preliminary geometric indicators from public DEM profiles. They are not code multipliers and are not design values.
 
+Terrain profiles are exported with:
+
+- `direction`
+- `azimuth_deg`
+- `radius_m`
+- `endpoint_latitude`
+- `endpoint_longitude`
+- sampled profile points with distance, latitude, longitude, and elevation
+- minimum RL
+- maximum RL
+- average slope
+
 ## Roadmap
 
 MVP priorities:
 
-- Robust terrain profile generation.
+- Robust 8-direction terrain profile generation.
 - Topographic feature detection.
 - Interactive maps and profile plots.
 - JSON, HTML, and PDF outputs.

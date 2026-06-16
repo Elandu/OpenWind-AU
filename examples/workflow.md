@@ -22,7 +22,8 @@ http://127.0.0.1:8000
 
 - Site coordinates.
 - Ground elevation.
-- Radial terrain profiles.
+- Eight terrain profiles: N, NE, E, SE, S, SW, W, and NW.
+- Analysis radius and profile endpoints.
 - Detected ridges, hills, escarpments, and valleys.
 - Crest RL, base RL, H, Lu, x, and average upwind slope.
 - Assumptions and limitations.

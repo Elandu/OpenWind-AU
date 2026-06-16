@@ -49,12 +49,13 @@ REPORT_TEMPLATE = Template(
   <h2>Detected Topographic Features</h2>
   <table>
     <tr>
-      <th>Type</th><th>Azimuth</th><th>Crest RL</th><th>Base RL</th>
+      <th>Type</th><th>Direction</th><th>Azimuth</th><th>Crest RL</th><th>Base RL</th>
       <th>H</th><th>Lu</th><th>x</th><th>Average upwind slope</th><th>Confidence</th>
     </tr>
     {% for feature in result.features %}
     <tr>
       <td>{{ feature.feature_type }}</td>
+      <td>{{ feature.direction }}</td>
       <td>{{ "%.0f"|format(feature.azimuth_deg) }} deg</td>
       <td>{{ "%.2f"|format(feature.crest_rl_m) }} m</td>
       <td>{{ "%.2f"|format(feature.base_rl_m) }} m</td>
@@ -65,7 +66,28 @@ REPORT_TEMPLATE = Template(
       <td>{{ feature.confidence }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="9">No significant features detected by MVP heuristics.</td></tr>
+    <tr><td colspan="10">No significant features detected by MVP heuristics.</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Terrain Profile Summary</h2>
+  <table>
+    <tr>
+      <th>Direction</th><th>Azimuth</th><th>Endpoint</th><th>Min RL</th>
+      <th>Max RL</th><th>Average slope</th>
+    </tr>
+    {% for profile in result.profiles %}
+    <tr>
+      <td>{{ profile.direction }}</td>
+      <td>{{ "%.0f"|format(profile.azimuth_deg) }} deg</td>
+      <td>
+        {{ "%.6f"|format(profile.endpoint_latitude) }},
+        {{ "%.6f"|format(profile.endpoint_longitude) }}
+      </td>
+      <td>{{ "%.2f"|format(profile.min_elevation_m) }} m</td>
+      <td>{{ "%.2f"|format(profile.max_elevation_m) }} m</td>
+      <td>{{ "%.4f"|format(profile.average_slope) }}</td>
+    </tr>
     {% endfor %}
   </table>
 
@@ -128,11 +150,14 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
         Spacer(1, 12),
         Paragraph("Detected Topographic Features", styles["Heading2"]),
     ]
-    feature_rows = [["Type", "Az.", "Crest RL", "Base RL", "H", "Lu", "x", "Slope", "Conf."]]
+    feature_rows = [
+        ["Type", "Dir.", "Az.", "Crest RL", "Base RL", "H", "Lu", "x", "Slope", "Conf."]
+    ]
     for feature in result.features:
         feature_rows.append(
             [
                 feature.feature_type,
+                feature.direction,
                 f"{feature.azimuth_deg:.0f}",
                 f"{feature.crest_rl_m:.1f}",
                 f"{feature.base_rl_m:.1f}",
@@ -144,7 +169,9 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
             ]
         )
     if len(feature_rows) == 1:
-        feature_rows.append(["No significant features detected", "", "", "", "", "", "", "", ""])
+        feature_rows.append(
+            ["No significant features detected", "", "", "", "", "", "", "", "", ""]
+        )
     table = Table(feature_rows, repeatRows=1)
     table.setStyle(
         TableStyle(
@@ -157,8 +184,33 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
         )
     )
     story.append(table)
+    profile_rows = [["Dir.", "Az.", "Min RL", "Max RL", "Avg slope"]]
+    for profile in result.profiles:
+        profile_rows.append(
+            [
+                profile.direction,
+                f"{profile.azimuth_deg:.0f}",
+                f"{profile.min_elevation_m:.1f}",
+                f"{profile.max_elevation_m:.1f}",
+                f"{profile.average_slope:.4f}",
+            ]
+        )
+    profile_table = Table(profile_rows, repeatRows=1)
+    profile_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("FONT", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
     story.extend(
         [
+            Spacer(1, 12),
+            Paragraph("Terrain Profile Summary", styles["Heading2"]),
+            profile_table,
             Spacer(1, 12),
             Paragraph("Assumptions", styles["Heading2"]),
             *[Paragraph(f"- {item}", styles["BodyText"]) for item in result.assumptions],
@@ -181,7 +233,12 @@ def profile_plot_html(result: SiteAnalysisResult) -> str:
                 x=[point.distance_m for point in profile.points],
                 y=[point.elevation_m for point in profile.points],
                 mode="lines",
-                name=f"{profile.azimuth_deg:.0f} deg",
+                name=f"{profile.direction} ({profile.azimuth_deg:.0f} deg)",
+                hovertemplate=(
+                    f"{profile.direction}<br>"
+                    "Distance: %{x:.0f} m<br>"
+                    "RL: %{y:.2f} m<extra></extra>"
+                ),
             )
         )
     fig.update_layout(
@@ -206,6 +263,36 @@ def map_html(result: SiteAnalysisResult) -> str:
         tooltip="Site",
         popup=f"Ground RL {result.site.ground_elevation_m:.1f} m",
     ).add_to(fmap)
+    folium.Circle(
+        location=[result.site.latitude, result.site.longitude],
+        radius=result.input.radius_m,
+        color="#0f766e",
+        weight=2,
+        fill=False,
+        tooltip=f"Analysis radius: {result.input.radius_m} m",
+    ).add_to(fmap)
+    for profile in result.profiles:
+        coordinates = [(point.latitude, point.longitude) for point in profile.points]
+        folium.PolyLine(
+            locations=coordinates,
+            color="#17324d",
+            weight=2,
+            opacity=0.75,
+            tooltip=f"{profile.direction} profile ({profile.azimuth_deg:.0f} deg)",
+        ).add_to(fmap)
+        folium.CircleMarker(
+            location=[profile.endpoint_latitude, profile.endpoint_longitude],
+            radius=4,
+            color="#0f766e",
+            fill=True,
+            fill_opacity=0.85,
+            tooltip=f"{profile.direction} endpoint",
+            popup=(
+                f"{profile.direction} endpoint<br>"
+                f"Azimuth {profile.azimuth_deg:.0f} deg<br>"
+                f"Radius {profile.radius_m} m"
+            ),
+        ).add_to(fmap)
     for feature in result.features:
         feature_lat, feature_lon = destination_point(
             result.site.latitude,

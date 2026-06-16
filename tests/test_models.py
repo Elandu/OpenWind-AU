@@ -36,3 +36,13 @@ def test_request_rejects_missing_location() -> None:
 def test_request_rejects_non_positive_height() -> None:
     with pytest.raises(ValidationError):
         SiteAnalysisRequest(latitude=-33.86, longitude=151.21, building_height_m=0)
+
+
+def test_request_rejects_unsupported_radius() -> None:
+    with pytest.raises(ValidationError, match="radius_m must be one of"):
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=10,
+            radius_m=1200,
+        )

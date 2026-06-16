@@ -21,8 +21,7 @@ class SiteAnalysisRequest(BaseModel):
     latitude: float | None = Field(default=None, ge=-44.5, le=-9.0)
     longitude: float | None = Field(default=None, ge=112.0, le=154.5)
     building_height_m: float = Field(gt=0, description="Building height in metres.")
-    radius_m: float = Field(default=2000, gt=100, le=10000)
-    radial_count: int = Field(default=36, ge=8, le=144)
+    radius_m: int = Field(default=2000, description="Analysis radius in metres.")
     sample_interval_m: float = Field(default=50, ge=5, le=500)
 
     @model_validator(mode="after")
@@ -35,6 +34,8 @@ class SiteAnalysisRequest(BaseModel):
             raise ValueError("Provide either address or latitude and longitude.")
         if (self.latitude is None) != (self.longitude is None):
             raise ValueError("Provide both latitude and longitude when using coordinates.")
+        if self.radius_m not in {500, 1000, 2000, 4000}:
+            raise ValueError("radius_m must be one of 500, 1000, 2000, or 4000.")
         return self
 
 
@@ -60,7 +61,11 @@ class TerrainPoint(BaseModel):
 class TerrainProfile(BaseModel):
     """Terrain profile for one azimuth around the site."""
 
+    direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     azimuth_deg: float
+    radius_m: int
+    endpoint_latitude: float
+    endpoint_longitude: float
     points: list[TerrainPoint]
     min_elevation_m: float
     max_elevation_m: float
@@ -71,6 +76,7 @@ class TopographicFeature(BaseModel):
     """Detected topographic feature relevant to preliminary wind review."""
 
     feature_type: Literal["ridge", "hill", "escarpment", "valley"]
+    direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     azimuth_deg: float
     crest_rl_m: float
     base_rl_m: float

@@ -20,7 +20,6 @@ def test_report_helpers_render_outputs() -> None:
             longitude=151.21,
             building_height_m=10,
             radius_m=500,
-            radial_count=8,
             sample_interval_m=100,
         ),
         FlatDEM(),
@@ -32,6 +31,9 @@ def test_report_helpers_render_outputs() -> None:
     fmap = map_html(result)
 
     assert data["site"]["ground_elevation_m"] == 50
+    assert data["profiles"][0]["direction"] == "N"
     assert "Preliminary Terrain Report" in html
+    assert "Terrain Profile Summary" in html
     assert "plotly" in plot.lower()
     assert "leaflet" in fmap.lower()
+    assert "Analysis radius" in fmap

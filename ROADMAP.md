@@ -7,7 +7,8 @@ OpenWind-AU is early-stage. This roadmap separates MVP terrain analysis from fut
 - Address and coordinate input.
 - Nominatim geocoding.
 - Public DEM querying using SRTM.
-- 360 degree terrain profile generation.
+- 8-direction terrain profile generation for N, NE, E, SE, S, SW, W, and NW.
+- Configurable analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Topographic feature detection for ridges, hills, escarpments, and valleys.
 - Crest RL, base RL, H, Lu, x, and average upwind slope outputs.
 - Interactive map display.
