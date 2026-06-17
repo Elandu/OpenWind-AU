@@ -3,6 +3,11 @@ description: Report an incorrect result, failed data query, UI issue, or report 
 title: "[Bug]: "
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        OpenWind-AU is an early-stage engineering support tool. Do not include private project,
+        client, claim, policy, or property-owner information.
   - type: textarea
     id: summary
     attributes:
@@ -35,5 +40,12 @@ body:
     attributes:
       label: Environment
       placeholder: OS, Python version, browser
+    validations:
+      required: false
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety or wording concern
+      description: Note any misleading compliance, certification, or design-value wording.
     validations:
       required: false

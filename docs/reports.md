@@ -48,5 +48,21 @@ POST /api/obstructions/map
 ```
 
 The obstruction report includes a footprint map endpoint, obstruction table, missing-height
-summary, public-footprint-source warnings, and a note that `Ms` cannot be assessed without
-reliable obstruction heights.
+summary, height-source summary, public-footprint-source warnings, classification, selected height,
+raw source height, DSM-DTM estimate fields, confidence, review-required flags, preliminary
+shielding sector table, sector confidence diagnostics, and indicative `Ms` values where enough
+reviewed obstruction height data is available.
+
+## Terrain Category Evidence Report
+
+```text
+POST /api/terrain-category/report/html
+POST /api/terrain-category/map
+```
+
+The terrain category evidence report includes a directional evidence summary for all eight wind
+directions, including built-up coverage, vegetation coverage, open terrain, obstruction height
+statistics, obstruction density, vegetation density, fetch distance, shielding confidence,
+suggested category range, confidence, warnings, and separate evidence score components.
+
+The report does not assign a final terrain category and does not calculate `Mz,cat`.

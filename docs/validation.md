@@ -64,3 +64,24 @@ Good validation cases should be:
 
 Validation examples can be proposed with the GitHub issue template:
 `.github/ISSUE_TEMPLATE/validation_example.yml`.
+
+## Terrain Category Evidence Examples
+
+Terrain category evidence scoring includes synthetic representative examples for:
+
+- coastal open terrain;
+- suburban housing;
+- dense suburban terrain;
+- industrial estate terrain;
+- CBD-like terrain;
+- rural vegetation.
+
+Use:
+
+```text
+GET /api/terrain-category/validation/cases
+GET /api/terrain-category/validation
+```
+
+These examples validate that suggested ranges are broadly reasonable prompts for review. They do
+not assign final terrain categories and do not calculate `Mz,cat`.

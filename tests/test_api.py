@@ -27,7 +27,7 @@ def sample_footprints() -> list[dict]:
         {
             "source_id": "osm-way-1",
             "footprint_geometry": {"type": "Polygon", "coordinates": [ring]},
-            "tags": {"height": "9"},
+            "tags": {"building": "yes", "height": "9"},
         }
     ]
 
@@ -137,6 +137,7 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
         "latitude": -33.86,
         "longitude": 151.21,
         "radius_m": 500,
+        "building_height_m": 8,
         "default_storey_height_m": 3.0,
     }
     inventory = client.post("/api/obstructions/inventory", json=payload)
@@ -150,16 +151,106 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
         "/api/obstructions/import/json",
         content='[{"obstruction_id":"osm-way-1","height_m":8.5}]',
     )
-
     assert inventory.status_code == 200
     body = inventory.json()
     assert body["obstructions"][0]["height_m"] == 9
-    assert body["obstructions"][0]["height_source"] == "explicit_height"
-    assert "Ms cannot be assessed" in body["disclaimer"]
+    assert body["obstructions"][0]["height_source"] == "OSM_HEIGHT"
+    assert body["obstructions"][0]["confidence"] == "medium"
+    assert body["height_source_summary"]["OSM Height"] == 1
+    assert body["data_quality"]["total_osm_building_footprints_found"] == 1
+    assert body["data_quality"]["total_usable_obstruction_polygons"] == 1
+    assert body["data_quality"]["source_summary"]["OSM"] == 1
+    assert len(body["shielding_sectors"]) == 8
+    assert any(sector["ns"] == 1 for sector in body["shielding_sectors"])
+    assert "Indicative Ms values are not certified" in body["disclaimer"]
     assert fmap.status_code == 200
     assert "leaflet" in fmap.text.lower()
+    assert "Raw OSM building polygons before filtering" in fmap.text
+    assert "Accepted obstruction polygons" in fmap.text
+    assert "OSM fallback and matched attributes" in fmap.text
+    assert "Microsoft building footprints" in fmap.text
+    assert "Vegetation polygons" in fmap.text
+    assert "Excluded objects" in fmap.text
+    assert "Shielding candidates" in fmap.text
+    assert "Missing height objects" in fmap.text
     assert report.status_code == 200
     assert "Missing Height Summary" in report.text
-    assert "Ms cannot be assessed" in report.text
+    assert "Obstruction Data Quality" in report.text
+    assert "Footprint Source Summary" in report.text
+    assert "Height Source Summary" in report.text
+    assert "DSM-DTM estimate" in report.text
+    assert "Overall confidence" in report.text
+    assert "Class" in report.text
+    assert "Preliminary Shielding Sector Analysis" in report.text
+    assert "Indicative Ms" in report.text
     assert csv_import.json()[0]["height_m"] == 8.5
     assert json_import.json()[0]["height_m"] == 8.5
+
+
+def test_obstruction_debug_endpoint(monkeypatch) -> None:
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+
+    response = client.get(
+        "/api/obstructions/debug",
+        params={"latitude": -33.86, "longitude": 151.21, "radius_m": 500},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["query_centre"] == {"latitude": -33.86, "longitude": 151.21}
+    assert body["radius"] == 500
+    assert "raw_counts" in body
+    assert "parsed_counts" in body
+    assert "excluded_counts" in body
+    assert "sample_building_ids" in body
+    assert "returned_geometry_bbox" in body
+    assert "pipeline_log" in body
+
+
+def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "default_storey_height_m": 3.0,
+    }
+
+    evidence = client.post("/api/terrain-category/evidence", json=payload)
+    fmap = client.post("/api/terrain-category/map", json=payload)
+    report = client.post("/api/terrain-category/report/html", json=payload)
+    cases = client.get("/api/terrain-category/validation/cases")
+    validation = client.get("/api/terrain-category/validation")
+    page = client.get("/terrain-category")
+
+    assert evidence.status_code == 200
+    body = evidence.json()
+    assert len(body["directions"]) == 8
+    assert "final AS/NZS 1170.2 terrain category" in body["disclaimer"]
+    assert "Mz,cat" in body["disclaimer"]
+    assert "suggested_category_range" in body["directions"][0]
+    assert "final_terrain_category" not in body["directions"][0]
+    assert fmap.status_code == 200
+    assert "Obstruction density overlays" in fmap.text
+    assert report.status_code == 200
+    assert "Terrain Category Evidence Summary" in report.text
+    assert "Mz,cat" in report.text
+    assert cases.status_code == 200
+    assert len(cases.json()) == 6
+    assert validation.status_code == 200
+    assert all(item["status"] == "pass" for item in validation.json())
+    assert page.status_code == 200
+    assert "Terrain Category Evidence" in page.text

@@ -1,7 +1,7 @@
 # Screenshots
 
-Screenshots are planned for the public README and release pages. Until hosted screenshots are
-captured, use the placeholders below as the required coverage list.
+Screenshots are planned for the public README and release pages. The v0.6.0 release includes a
+captured terrain category evidence screenshot and retains placeholders for remaining surfaces.
 
 ## Site Analysis Page
 
@@ -37,3 +37,10 @@ Future image: `docs/screenshots/validation-report.png`
 
 Expected content: validation summary with pass, warning, and fail counts plus representative case
 rows.
+
+## Terrain Category Evidence
+
+Image: `docs/screenshots/terrain-category-evidence.png`
+
+Expected content: terrain category evidence section with review disclaimer, directional evidence
+table, and map frame.

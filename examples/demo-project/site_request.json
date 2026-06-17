@@ -1,0 +1,12 @@
+{
+  "latitude": -33.86,
+  "longitude": 151.21,
+  "building_height_m": 10,
+  "radius_m": 500,
+  "sample_interval_m": 100,
+  "obstruction_radius_m": 500,
+  "default_storey_height_m": 3.0,
+  "residential_storey_height_m": 3.0,
+  "residential_two_storey_height_m": 6.0,
+  "commercial_storey_height_m": 4.0
+}

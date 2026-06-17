@@ -43,8 +43,8 @@ def run_site_analysis(
             "Building height is recorded for context and future wind workflow integration.",
         ],
         limitations=[
-            "This MVP does not calculate terrain category, shielding, "
-            "topographic multipliers, or design wind pressures.",
+            "This terrain endpoint does not calculate final terrain category, certified shielding "
+            "multipliers, topographic multipliers, or design wind pressures.",
             "Candidate ridges, hills, escarpments, and valleys require review "
             "by a competent engineer against project-specific context.",
             "DEM resolution and vertical accuracy may be insufficient for final design decisions.",

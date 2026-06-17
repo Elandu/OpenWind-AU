@@ -35,6 +35,12 @@ body:
         - hilltop site
         - valley site
         - inland flat site
+        - coastal open terrain
+        - suburban housing
+        - dense suburban terrain
+        - industrial estate
+        - CBD-like terrain
+        - rural vegetation
         - other representative terrain
     validations:
       required: true

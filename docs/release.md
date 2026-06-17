@@ -14,8 +14,11 @@ Use this checklist before tagging a public release.
 - Confirm README describes current capabilities and maturity.
 - Confirm README does not claim certified design compliance.
 - Update `CHANGELOG.md`.
+- Update `docs/releases/v0.6.0.md` or the current release note file.
+- Confirm `docs/workflow.md` and `docs/reviewer-checklist.md` match the current workflow.
 - Confirm `docs/installation.md`, `docs/api.md`, `docs/reports.md`, `docs/validation.md`,
   and `docs/limitations.md` still match current behaviour.
+- Confirm `CITATION.cff` has the release version.
 
 ## Example Outputs
 
@@ -40,3 +43,4 @@ Use this checklist before tagging a public release.
 - Tag the release.
 - Publish release notes with known limitations.
 - Include screenshots or screenshot placeholders.
+- Confirm GitHub issue templates and pull request template are present.

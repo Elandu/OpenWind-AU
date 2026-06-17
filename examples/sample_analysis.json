@@ -154,7 +154,7 @@
     "Topographic screening is rule-based and conservative."
   ],
   "limitations": [
-    "This MVP does not calculate terrain category, shielding, topographic multipliers, or design wind pressures.",
+    "This sample terrain endpoint does not calculate certified terrain categories, topographic multipliers, shielding multipliers, Mz,cat, or design wind pressures.",
     "DEM resolution and vertical accuracy may be insufficient for final design decisions."
   ],
   "disclaimer": "OpenWind-AU provides preliminary terrain and topographic analysis only. Outputs must be reviewed by a competent engineer and are not a certified AS/NZS 1170.2 design assessment."

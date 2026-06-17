@@ -3,6 +3,11 @@ description: Suggest a new terrain analysis, reporting, data-source, or UI featu
 title: "[Feature]: "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests should preserve the project's review-support scope. Do not request
+        unsupported compliance claims or certified design outputs without a clear safety plan.
   - type: textarea
     id: workflow
     attributes:

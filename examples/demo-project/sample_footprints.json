@@ -1,0 +1,45 @@
+[
+  {
+    "source_id": "demo-house-north-1",
+    "tags": {
+      "building": "house",
+      "height": "6.2"
+    },
+    "footprint_geometry": {
+      "type": "Polygon",
+      "coordinates": [[[151.2099, -33.8591], [151.2101, -33.8591], [151.2101, -33.8589], [151.2099, -33.8589], [151.2099, -33.8591]]]
+    }
+  },
+  {
+    "source_id": "demo-house-north-2",
+    "tags": {
+      "building": "house",
+      "building:levels": "2"
+    },
+    "footprint_geometry": {
+      "type": "Polygon",
+      "coordinates": [[[151.2102, -33.8587], [151.2104, -33.8587], [151.2104, -33.8585], [151.2102, -33.8585], [151.2102, -33.8587]]]
+    }
+  },
+  {
+    "source_id": "demo-warehouse-east",
+    "tags": {
+      "building": "warehouse",
+      "height": "10.5"
+    },
+    "footprint_geometry": {
+      "type": "Polygon",
+      "coordinates": [[[151.2114, -33.8602], [151.2119, -33.8602], [151.2119, -33.8598], [151.2114, -33.8598], [151.2114, -33.8602]]]
+    }
+  },
+  {
+    "source_id": "demo-tree-canopy-west",
+    "tags": {
+      "natural": "wood"
+    },
+    "footprint_geometry": {
+      "type": "Polygon",
+      "coordinates": [[[151.2082, -33.8602], [151.2086, -33.8602], [151.2086, -33.8598], [151.2082, -33.8598], [151.2082, -33.8602]]]
+    }
+  }
+]

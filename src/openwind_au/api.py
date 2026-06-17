@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -17,6 +17,8 @@ from openwind_au.models import (
     ObstructionInventoryResult,
     SiteAnalysisRequest,
     SiteAnalysisResult,
+    TerrainCategoryEvidenceRequest,
+    TerrainCategoryEvidenceResult,
 )
 from openwind_au.obstructions import (
     manual_overrides_from_json,
@@ -30,8 +32,15 @@ from openwind_au.reports import (
     profile_plot_html,
     render_html_report,
     render_obstruction_report_html,
+    render_terrain_category_report_html,
     result_to_json,
+    terrain_category_map_html,
     write_pdf_report,
+)
+from openwind_au.terrain_category import run_terrain_category_evidence
+from openwind_au.terrain_category_validation import (
+    DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES,
+    run_terrain_category_validation_cases,
 )
 from openwind_au.validation import (
     DEFAULT_VALIDATION_CASES,
@@ -52,12 +61,16 @@ def create_app() -> FastAPI:
         description=(
             "Preliminary wind site terrain and topographic analysis for Australian buildings."
         ),
-        version="0.1.0",
+        version="0.6.0",
     )
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
+        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+    @app.get("/terrain-category", response_class=HTMLResponse)
+    def terrain_category_page() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/validation", response_class=HTMLResponse)
@@ -128,6 +141,48 @@ def create_app() -> FastAPI:
         result = obstruction_inventory(request)
         return obstruction_map_html(result)
 
+    @app.get("/api/obstructions/debug")
+    def obstruction_debug(
+        address: str | None = Query(default=None),
+        latitude: float | None = Query(default=None),
+        longitude: float | None = Query(default=None),
+        radius_m: int = Query(default=500, ge=50, le=4000),
+        building_height_m: float | None = Query(default=None, gt=0),
+    ) -> dict:
+        try:
+            request = ObstructionInventoryRequest(
+                address=address,
+                latitude=latitude,
+                longitude=longitude,
+                radius_m=radius_m,
+                building_height_m=building_height_m,
+            )
+            result = run_obstruction_inventory(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "query_centre": result.data_quality.query_centre,
+            "radius": result.data_quality.query_radius_m,
+            "microsoft_source_status": result.data_quality.microsoft_source_status,
+            "microsoft_cache_status": result.data_quality.microsoft_cache_status,
+            "microsoft_cache_path": result.data_quality.microsoft_cache_path,
+            "microsoft_cache_files": result.data_quality.microsoft_cache_files,
+            "total_microsoft_building_footprints_found": (
+                result.data_quality.total_microsoft_building_footprints_found
+            ),
+            "osm_fallback_used": result.data_quality.osm_fallback_used,
+            "overpass_query": result.data_quality.overpass_query,
+            "raw_counts": result.data_quality.raw_overpass_counts,
+            "parsed_counts": result.data_quality.parsed_counts,
+            "excluded_counts": result.data_quality.excluded_reasons,
+            "sample_building_ids": result.data_quality.sample_building_ids,
+            "returned_geometry_bbox": result.data_quality.returned_geometry_bbox,
+            "warnings": result.data_quality.warnings,
+            "pipeline_log": result.data_quality.pipeline_log,
+        }
+
     @app.post("/api/map/combined", response_class=HTMLResponse)
     def map_combined(request: CombinedMapRequest) -> str:
         try:
@@ -137,8 +192,13 @@ def create_app() -> FastAPI:
                 latitude=request.latitude,
                 longitude=request.longitude,
                 radius_m=request.obstruction_radius_m,
+                building_height_m=request.building_height_m,
                 default_storey_height_m=request.default_storey_height_m,
+                residential_storey_height_m=request.residential_storey_height_m,
+                residential_two_storey_height_m=request.residential_two_storey_height_m,
+                commercial_storey_height_m=request.commercial_storey_height_m,
                 manual_overrides=request.manual_overrides,
+                reviewed_footprints=request.reviewed_footprints,
             )
             obstruction_result = run_obstruction_inventory(obstruction_request)
         except ValueError as exc:
@@ -151,6 +211,54 @@ def create_app() -> FastAPI:
     def obstruction_report_html(request: ObstructionInventoryRequest) -> str:
         result = obstruction_inventory(request)
         return render_obstruction_report_html(result)
+
+    @app.post("/api/terrain-category/evidence", response_model=TerrainCategoryEvidenceResult)
+    def terrain_category_evidence(
+        request: TerrainCategoryEvidenceRequest,
+    ) -> TerrainCategoryEvidenceResult:
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return evidence
+
+    @app.post("/api/terrain-category/map", response_class=HTMLResponse)
+    def terrain_category_map(request: TerrainCategoryEvidenceRequest) -> str:
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return terrain_category_map_html(site_result, obstruction_result, evidence)
+
+    @app.post("/api/terrain-category/report/html", response_class=HTMLResponse)
+    def terrain_category_report_html(request: TerrainCategoryEvidenceRequest) -> str:
+        try:
+            _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return render_terrain_category_report_html(evidence)
+
+    @app.get("/api/terrain-category/validation/cases")
+    def terrain_category_validation_cases() -> Response:
+        content = json.dumps(
+            [case.model_dump() for case in DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES],
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/terrain-category/validation")
+    def terrain_category_validation() -> Response:
+        content = json.dumps(
+            [result.model_dump() for result in run_terrain_category_validation_cases()],
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
 
     @app.post("/api/obstructions/import/csv")
     async def obstruction_import_csv(request: Request) -> Response:
@@ -196,6 +304,28 @@ def create_app() -> FastAPI:
         return render_validation_report_html(report)
 
     return app
+
+
+def _run_terrain_category_workflow(
+    request: TerrainCategoryEvidenceRequest,
+) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
+    site_result = run_site_analysis(request, SRTMProvider())
+    obstruction_request = ObstructionInventoryRequest(
+        address=request.address,
+        latitude=request.latitude,
+        longitude=request.longitude,
+        radius_m=request.obstruction_radius_m,
+        building_height_m=request.building_height_m,
+        default_storey_height_m=request.default_storey_height_m,
+        residential_storey_height_m=request.residential_storey_height_m,
+        residential_two_storey_height_m=request.residential_two_storey_height_m,
+        commercial_storey_height_m=request.commercial_storey_height_m,
+        manual_overrides=request.manual_overrides,
+        reviewed_footprints=request.reviewed_footprints,
+    )
+    obstruction_result = run_obstruction_inventory(obstruction_request)
+    evidence = run_terrain_category_evidence(site_result, obstruction_result)
+    return site_result, obstruction_result, evidence
 
 
 app = create_app()

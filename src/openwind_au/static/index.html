@@ -52,6 +52,18 @@
               <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
             </label>
             <label>
+              Residential 1-storey assumption (m)
+              <input id="residential_storey_height_m" name="residential_storey_height_m" type="number" step="0.1" value="3.0" />
+            </label>
+            <label>
+              Residential 2-storey assumption (m)
+              <input id="residential_two_storey_height_m" name="residential_two_storey_height_m" type="number" step="0.1" value="6.0" />
+            </label>
+            <label>
+              Commercial storey assumption (m)
+              <input id="commercial_storey_height_m" name="commercial_storey_height_m" type="number" step="0.1" value="4.0" />
+            </label>
+            <label>
               Obstruction inventory radius (m)
               <select id="obstruction_radius_m" name="obstruction_radius_m">
                 <option value="100">100</option>
@@ -109,8 +121,8 @@
       <section class="panel">
         <h2>Obstruction Inventory For Shielding Review</h2>
         <p class="disclaimer">
-          Ms is not calculated. Reliable obstruction heights are required before shielding can be
-          assessed by a competent engineer.
+          Preliminary sector shielding only. Indicative Ms values require verified obstruction
+          heights and competent engineering review.
         </p>
         <div class="toolbar">
           <label class="file-control">
@@ -122,8 +134,29 @@
             <input id="obstruction-json" type="file" accept=".json,application/json" />
           </label>
           <button id="obstruction-export" type="button">Export Reviewed JSON</button>
+          <label>
+            Filter
+            <select id="obstruction-filter">
+              <option value="all">All obstructions</option>
+              <option value="high">High confidence</option>
+              <option value="medium">Medium confidence</option>
+              <option value="low">Low confidence</option>
+              <option value="unknown">Unknown confidence</option>
+              <option value="review_required">Review required</option>
+            </select>
+          </label>
         </div>
-        <p id="obstruction-warning" class="note">Run an analysis to inventory nearby buildings.</p>
+        <p id="obstruction-warning" class="note">Run an analysis to inventory nearby obstructions.</p>
+        <div>
+          <h3>Obstruction Data Quality</h3>
+          <div class="table-wrap">
+            <table>
+              <tbody id="obstruction-quality-table">
+                <tr><td>Run an analysis to see source quality diagnostics.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
         <div>
           <h3>Building Table</h3>
           <div class="table-wrap">
@@ -131,16 +164,19 @@
               <thead>
                 <tr>
                   <th>ID</th>
+                  <th>Class</th>
                   <th>Distance</th>
                   <th>Bearing</th>
-                  <th>Height</th>
+                  <th>Selected height</th>
+                  <th>DSM-DTM estimate</th>
                   <th>Levels</th>
                   <th>Source</th>
                   <th>Confidence</th>
+                  <th>Review</th>
                 </tr>
               </thead>
               <tbody id="obstruction-table">
-                <tr><td colspan="7">Obstruction inventory will appear after analysis.</td></tr>
+                <tr><td colspan="10">Obstruction inventory will appear after analysis.</td></tr>
               </tbody>
             </table>
           </div>
@@ -148,10 +184,72 @@
       </section>
 
       <section class="panel">
+        <h2>Preliminary Shielding Sector Analysis</h2>
+        <p class="note">
+          Each wind direction uses a 45 degree upwind sector with radius 20 times the subject
+          building height. Obstructions are counted only where available hs is at least the subject
+          building height.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Dir.</th>
+                <th>Sector</th>
+                <th>Radius</th>
+                <th>ns</th>
+                <th>Avg hs</th>
+                <th>Avg bs</th>
+                <th>ls</th>
+                <th>s</th>
+                <th>Indicative Ms</th>
+                <th>Height confidence</th>
+              </tr>
+            </thead>
+            <tbody id="shielding-sector-table">
+              <tr><td colspan="10">Shielding sectors will appear after analysis.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Terrain Category Evidence</h2>
+        <p class="disclaimer">
+          Evidence support only. OpenWind-AU does not assign a final AS/NZS 1170.2 terrain
+          category and does not calculate Mz,cat values.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Dir.</th>
+                <th>Built-up</th>
+                <th>Vegetation</th>
+                <th>Open terrain</th>
+                <th>Avg height</th>
+                <th>Max height</th>
+                <th>Density</th>
+                <th>Spacing</th>
+                <th>Fetch</th>
+                <th>Suggested range</th>
+                <th>Confidence</th>
+                <th>Warnings</th>
+              </tr>
+            </thead>
+            <tbody id="terrain-category-table">
+              <tr><td colspan="12">Terrain category evidence will appear after analysis.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <iframe id="terrain-category-frame" class="map-iframe" title="Terrain category evidence map"></iframe>
+      </section>
+
+      <section class="panel">
         <h2>Combined Map</h2>
         <p class="note">
           Toggleable layers: site and analysis radius, terrain profiles, topographic feature
-          candidates, and building obstructions. Use the layer control inside the map to switch
+          candidates, and obstruction footprints. Use the layer control inside the map to switch
           layers on or off.
         </p>
         <iframe id="map-frame" class="map-iframe" title="Combined map"></iframe>

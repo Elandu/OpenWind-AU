@@ -164,6 +164,44 @@ th {
   font-weight: 700;
 }
 
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge-pass {
+  color: #075e54;
+  background: #d7f5ec;
+}
+
+.badge-warn {
+  color: #92400e;
+  background: #ffedd5;
+}
+
+.badge-fail {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.badge-neutral {
+  color: #374151;
+  background: #e5e7eb;
+}
+
+.muted {
+  display: block;
+  margin-top: 4px;
+  color: #57606a;
+  font-size: 0.78rem;
+}
+
 .split {
   display: grid;
   grid-template-columns: 1fr 1fr;

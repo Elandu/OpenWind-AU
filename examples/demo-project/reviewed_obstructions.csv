@@ -1,0 +1,5 @@
+obstruction_id,height_m,building_levels,notes
+demo-house-north-1,6.2,2,synthetic reviewed height
+demo-house-north-2,7.1,2,synthetic reviewed height
+demo-warehouse-east,10.5,,synthetic reviewed height
+demo-tree-canopy-west,8.0,,synthetic vegetation height

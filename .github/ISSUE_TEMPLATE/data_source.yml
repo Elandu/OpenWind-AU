@@ -1,8 +1,13 @@
-name: Data source request
-description: Propose a public geospatial dataset or elevation service.
+name: Data-source issue
+description: Report or propose public geospatial dataset and service behaviour.
 title: "[Data]: "
 labels: ["data"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Use public datasets only. Do not include private project data or restricted licensed data
+        unless you can explain the public usage rights.
   - type: input
     id: source
     attributes:
@@ -25,5 +30,12 @@ body:
     id: integration
     attributes:
       label: Integration notes
+    validations:
+      required: false
+  - type: textarea
+    id: failure_mode
+    attributes:
+      label: Failure mode or limitation
+      description: Describe timeouts, coverage gaps, datum concerns, licensing limits, or stale data.
     validations:
       required: false

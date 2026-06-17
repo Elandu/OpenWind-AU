@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use OpenWind-AU, please cite it using this metadata."
+title: "OpenWind-AU"
+version: "0.6.0"
+date-released: "2026-06-17"
+authors:
+  - name: "Elandu"
+repository-code: "https://github.com/Elandu/OpenWind-AU"
+license: "MIT"
+keywords:
+  - wind engineering
+  - terrain analysis
+  - topographic screening
+  - obstruction inventory
+  - terrain category evidence
+  - Australia
+abstract: >-
+  OpenWind-AU is an early-stage engineering support tool for preliminary terrain profiles,
+  topographic screening, obstruction inventory, shielding review evidence, and terrain category
+  evidence for Australian building sites. It does not produce certified design values.

@@ -14,7 +14,14 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from openwind_au.geo import destination_point
-from openwind_au.models import ObstructionInventoryResult, SiteAnalysisResult
+from openwind_au.models import (
+    ObstructionInventoryResult,
+    SiteAnalysisResult,
+    SiteLocation,
+    TerrainCategoryDirectionEvidence,
+    TerrainCategoryEvidenceResult,
+)
+from openwind_au.shielding import shielding_sector_polygon
 
 REPORT_TEMPLATE = Template(
     """
@@ -427,35 +434,8 @@ def obstruction_map_html(result: ObstructionInventoryResult) -> str:
         fill=False,
         tooltip=f"Obstruction inventory radius: {result.input.radius_m} m",
     ).add_to(fmap)
-    for obstruction in result.obstructions:
-        color = _obstruction_color(obstruction.confidence)
-        folium.GeoJson(
-            obstruction.footprint_geometry,
-            style_function=lambda _feature, color=color: {
-                "color": color,
-                "weight": 2,
-                "fillColor": color,
-                "fillOpacity": 0.25,
-            },
-            tooltip=(
-                f"{obstruction.obstruction_id}: {obstruction.height_m:.1f} m"
-                if obstruction.height_m is not None
-                else f"{obstruction.obstruction_id}: height missing"
-            ),
-        ).add_to(fmap)
-        folium.CircleMarker(
-            location=[obstruction.centroid_latitude, obstruction.centroid_longitude],
-            radius=3,
-            color=color,
-            fill=True,
-            popup=(
-                f"{obstruction.obstruction_id}<br>"
-                f"Distance {obstruction.distance_m:.1f} m<br>"
-                f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
-                f"Height source {obstruction.height_source}<br>"
-                f"Confidence {obstruction.confidence}"
-            ),
-        ).add_to(fmap)
+    _add_obstruction_review_layers(fmap, result)
+    folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
     return fmap.get_root().render()
 
 
@@ -467,7 +447,7 @@ def combined_map_html(
 
     The returned document embeds a Folium/Leaflet map with a non-collapsed layer control so
     reviewers can show or hide the four layer groups: site & analysis radius, terrain profiles,
-    topographic feature candidates, and building obstructions. The terrain analysis radius and
+    topographic feature candidates, and obstruction footprints. The terrain analysis radius and
     the obstruction inventory radius are both drawn so the difference in coverage is visible.
     """
 
@@ -480,7 +460,7 @@ def combined_map_html(
     site_layer = folium.FeatureGroup(name="Site & analysis radius", show=True)
     profile_layer = folium.FeatureGroup(name="Terrain profiles", show=True)
     feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
-    obstruction_layer = folium.FeatureGroup(name="Obstructions", show=True)
+    shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=False)
 
     folium.Marker(
         [site_result.site.latitude, site_result.site.longitude],
@@ -550,40 +530,29 @@ def combined_map_html(
             ),
         ).add_to(feature_layer)
 
-    for obstruction in obstruction_result.obstructions:
-        color = _obstruction_color(obstruction.confidence)
+    _add_obstruction_review_layers(fmap, obstruction_result)
+
+    for sector in obstruction_result.shielding_sectors:
+        color = _shielding_sector_color(sector.indicative_ms)
         folium.GeoJson(
-            obstruction.footprint_geometry,
+            shielding_sector_polygon(obstruction_result.site, sector),
             style_function=lambda _feature, color=color: {
                 "color": color,
-                "weight": 2,
+                "weight": 1,
                 "fillColor": color,
-                "fillOpacity": 0.25,
+                "fillOpacity": 0.08,
             },
             tooltip=(
-                f"{obstruction.obstruction_id}: {obstruction.height_m:.1f} m"
-                if obstruction.height_m is not None
-                else f"{obstruction.obstruction_id}: height missing"
+                f"{sector.direction} shielding sector: ns={sector.ns}, "
+                f"indicative Ms={sector.indicative_ms:.3f}, "
+                f"confidence={sector.overall_confidence}"
             ),
-        ).add_to(obstruction_layer)
-        folium.CircleMarker(
-            location=[obstruction.centroid_latitude, obstruction.centroid_longitude],
-            radius=3,
-            color=color,
-            fill=True,
-            popup=(
-                f"{obstruction.obstruction_id}<br>"
-                f"Distance {obstruction.distance_m:.1f} m<br>"
-                f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
-                f"Height source {obstruction.height_source}<br>"
-                f"Confidence {obstruction.confidence}"
-            ),
-        ).add_to(obstruction_layer)
+        ).add_to(shielding_layer)
 
     site_layer.add_to(fmap)
     profile_layer.add_to(fmap)
     feature_layer.add_to(fmap)
-    obstruction_layer.add_to(fmap)
+    shielding_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
     return fmap.get_root().render()
@@ -595,13 +564,348 @@ def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
     return OBSTRUCTION_REPORT_TEMPLATE.render(result=result)
 
 
+def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -> str:
+    """Render an HTML terrain category evidence report."""
+
+    return TERRAIN_CATEGORY_REPORT_TEMPLATE.render(result=result)
+
+
+def terrain_category_map_html(
+    site_result: SiteAnalysisResult,
+    obstruction_result: ObstructionInventoryResult,
+    evidence_result: TerrainCategoryEvidenceResult,
+) -> str:
+    """Return a Folium map for terrain category evidence review."""
+
+    fmap = folium.Map(
+        location=[site_result.site.latitude, site_result.site.longitude],
+        zoom_start=14,
+        control_scale=True,
+    )
+    sector_layer = folium.FeatureGroup(name="Open terrain evidence sectors", show=True)
+    built_layer = folium.FeatureGroup(name="Built-up areas", show=True)
+    vegetation_layer = folium.FeatureGroup(name="Vegetation areas", show=True)
+    density_layer = folium.FeatureGroup(name="Obstruction density overlays", show=True)
+
+    folium.Marker(
+        [site_result.site.latitude, site_result.site.longitude],
+        tooltip="Subject site",
+        popup="Terrain category evidence origin",
+    ).add_to(sector_layer)
+
+    for direction in evidence_result.directions:
+        color = _terrain_category_color(direction.suggested_category_range)
+        folium.GeoJson(
+            terrain_category_sector_polygon(evidence_result.site, direction),
+            style_function=lambda _feature, color=color: {
+                "color": color,
+                "weight": 1,
+                "fillColor": color,
+                "fillOpacity": 0.10,
+            },
+            tooltip=(
+                f"{direction.direction}: open={direction.open_terrain_percentage:.1f}%, "
+                f"built-up={direction.built_up_area_percentage:.1f}%, "
+                f"vegetation={direction.vegetation_area_percentage:.1f}%, "
+                f"density={direction.obstruction_density_per_km2:.1f}/km2, "
+                f"range={direction.suggested_category_range}"
+            ),
+        ).add_to(sector_layer)
+        folium.CircleMarker(
+            location=destination_point(
+                evidence_result.site.latitude,
+                evidence_result.site.longitude,
+                direction.azimuth_deg,
+                max(direction.assessment_radius_m * 0.55, 20),
+            ),
+            radius=max(4, min(18, direction.obstruction_density_per_km2 / 80)),
+            color=color,
+            fill=True,
+            fill_opacity=0.35,
+            tooltip=(
+                f"{direction.direction} obstruction density: "
+                f"{direction.obstruction_density_per_km2:.1f}/km2"
+            ),
+        ).add_to(density_layer)
+
+    for obstruction in obstruction_result.obstructions:
+        target_layer = (
+            vegetation_layer if obstruction.classification == "vegetation" else built_layer
+        )
+        fill_color = "#16a34a" if obstruction.classification == "vegetation" else "#475569"
+        height_label = (
+            f"{obstruction.height_m:.1f} m" if obstruction.height_m is not None else "unknown"
+        )
+        folium.GeoJson(
+            obstruction.footprint_geometry,
+            style_function=lambda _feature, fill_color=fill_color: {
+                "color": fill_color,
+                "weight": 1,
+                "fillColor": fill_color,
+                "fillOpacity": 0.25,
+            },
+            tooltip=(
+                f"{obstruction.obstruction_id}: {obstruction.classification}, "
+                f"height={height_label}, "
+                f"source={obstruction.height_source}, confidence={obstruction.confidence}"
+            ),
+        ).add_to(target_layer)
+
+    sector_layer.add_to(fmap)
+    built_layer.add_to(fmap)
+    vegetation_layer.add_to(fmap)
+    density_layer.add_to(fmap)
+    folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
+    return fmap.get_root().render()
+
+
+def terrain_category_sector_polygon(
+    site: SiteLocation,
+    evidence: TerrainCategoryDirectionEvidence,
+    steps: int = 8,
+) -> dict:
+    """Return a GeoJSON polygon for a terrain category evidence sector."""
+
+    start = evidence.sector_start_deg
+    end = evidence.sector_end_deg
+    sweep = (end - start) % 360
+    if sweep == 0:
+        sweep = 45.0
+    bearings = [start + (sweep * index / steps) for index in range(steps + 1)]
+    arc = [
+        list(
+            reversed(
+                destination_point(
+                    site.latitude,
+                    site.longitude,
+                    bearing,
+                    evidence.assessment_radius_m,
+                )
+            )
+        )
+        for bearing in bearings
+    ]
+    site_point = [site.longitude, site.latitude]
+    return {"type": "Polygon", "coordinates": [[site_point, *arc, site_point]]}
+
+
+def _add_obstruction_review_layers(
+    fmap: folium.Map,
+    result: ObstructionInventoryResult,
+) -> None:
+    """Add source-quality obstruction review layers to a Folium map."""
+
+    raw_osm_layer = folium.FeatureGroup(
+        name="Raw OSM building polygons before filtering",
+        show=False,
+    )
+    accepted_layer = folium.FeatureGroup(name="Accepted obstruction polygons", show=True)
+    manual_layer = folium.FeatureGroup(name="Manual reviewed obstruction geometry", show=True)
+    microsoft_layer = folium.FeatureGroup(name="Microsoft building footprints", show=True)
+    osm_layer = folium.FeatureGroup(name="OSM fallback and matched attributes", show=True)
+    vegetation_layer = folium.FeatureGroup(name="Vegetation polygons", show=True)
+    excluded_layer = folium.FeatureGroup(name="Excluded objects", show=False)
+    shielding_layer = folium.FeatureGroup(name="Shielding candidates", show=True)
+    missing_height_layer = folium.FeatureGroup(name="Missing height objects", show=False)
+
+    for footprint in result.data_quality.raw_osm_building_footprints:
+        geometry = footprint.get("footprint_geometry")
+        if not geometry:
+            continue
+        folium.GeoJson(
+            geometry,
+            style_function=lambda _feature: {
+                "color": "#2563eb",
+                "weight": 1,
+                "fillColor": "#93c5fd",
+                "fillOpacity": 0.10,
+            },
+            tooltip=f"{footprint.get('source_id', 'raw-osm-building')}: raw OSM building",
+        ).add_to(raw_osm_layer)
+
+    for obstruction in result.obstructions:
+        target_layer = _obstruction_source_layer(
+            obstruction,
+            manual_layer,
+            microsoft_layer,
+            osm_layer,
+            vegetation_layer,
+        )
+        _add_obstruction_polygon(
+            accepted_layer,
+            obstruction,
+            outline_color="#334155",
+            fill_color="#cbd5e1",
+            fill_opacity=0.18,
+        )
+        _add_obstruction_polygon(target_layer, obstruction)
+        _add_obstruction_centroid(target_layer, obstruction)
+        if _is_shielding_candidate(obstruction, result.input.building_height_m):
+            _add_obstruction_polygon(
+                shielding_layer,
+                obstruction,
+                outline_color="#047857",
+                fill_color="#047857",
+                fill_opacity=0.12,
+            )
+        if _is_missing_source_height(obstruction):
+            _add_obstruction_polygon(
+                missing_height_layer,
+                obstruction,
+                outline_color="#b42318",
+                fill_color="#fee2e2",
+                fill_opacity=0.30,
+            )
+
+    for excluded in result.data_quality.excluded_objects:
+        if not excluded.footprint_geometry:
+            continue
+        folium.GeoJson(
+            excluded.footprint_geometry,
+            style_function=lambda _feature: {
+                "color": "#7f1d1d",
+                "weight": 2,
+                "dashArray": "6 4",
+                "fillColor": "#fecaca",
+                "fillOpacity": 0.18,
+            },
+            tooltip=(
+                f"{excluded.object_id}: excluded, source={excluded.source}, "
+                f"reason={excluded.reason}"
+            ),
+        ).add_to(excluded_layer)
+
+    raw_osm_layer.add_to(fmap)
+    accepted_layer.add_to(fmap)
+    manual_layer.add_to(fmap)
+    microsoft_layer.add_to(fmap)
+    osm_layer.add_to(fmap)
+    vegetation_layer.add_to(fmap)
+    excluded_layer.add_to(fmap)
+    shielding_layer.add_to(fmap)
+    missing_height_layer.add_to(fmap)
+
+
+def _obstruction_source_layer(
+    obstruction,
+    manual_layer: folium.FeatureGroup,
+    microsoft_layer: folium.FeatureGroup,
+    osm_layer: folium.FeatureGroup,
+    vegetation_layer: folium.FeatureGroup,
+) -> folium.FeatureGroup:
+    if obstruction.classification == "vegetation":
+        return vegetation_layer
+    if obstruction.footprint_source == "manual_reviewed":
+        return manual_layer
+    if obstruction.footprint_source == "microsoft_building_footprints":
+        return microsoft_layer
+    return osm_layer
+
+
+def _add_obstruction_polygon(
+    layer: folium.FeatureGroup,
+    obstruction,
+    outline_color: str | None = None,
+    fill_color: str | None = None,
+    fill_opacity: float = 0.25,
+) -> None:
+    outline = outline_color or _obstruction_color(obstruction.confidence)
+    fill = fill_color or _obstruction_height_color(obstruction.height_m)
+    folium.GeoJson(
+        obstruction.footprint_geometry,
+        style_function=lambda _feature, outline=outline, fill=fill: {
+            "color": outline,
+            "weight": 2,
+            "fillColor": fill,
+            "fillOpacity": fill_opacity,
+        },
+        tooltip=_obstruction_tooltip(obstruction),
+    ).add_to(layer)
+
+
+def _add_obstruction_centroid(layer: folium.FeatureGroup, obstruction) -> None:
+    color = _obstruction_color(obstruction.confidence)
+    folium.CircleMarker(
+        location=[obstruction.centroid_latitude, obstruction.centroid_longitude],
+        radius=3,
+        color=color,
+        fill=True,
+        popup=(
+            f"{obstruction.obstruction_id}<br>"
+            f"Distance {obstruction.distance_m:.1f} m<br>"
+            f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
+            f"Classification {obstruction.classification}<br>"
+            f"Footprint source {obstruction.footprint_source}<br>"
+            f"Height source {obstruction.height_source}<br>"
+            f"Confidence {obstruction.confidence}"
+        ),
+    ).add_to(layer)
+
+
+def _obstruction_tooltip(obstruction) -> str:
+    height = f"{obstruction.height_m:.1f} m" if obstruction.height_m is not None else "missing"
+    return (
+        f"{obstruction.obstruction_id}: height={height}, "
+        f"source={obstruction.footprint_source}, "
+        f"height_source={obstruction.height_source}, confidence={obstruction.confidence}"
+    )
+
+
+def _is_shielding_candidate(obstruction, subject_height_m: float | None) -> bool:
+    if obstruction.classification == "vegetation" or obstruction.height_m is None:
+        return False
+    if subject_height_m is None:
+        return True
+    return obstruction.height_m >= subject_height_m
+
+
+def _is_missing_source_height(obstruction) -> bool:
+    source_height_labels = {"manual_verified", "IMPORTED", "OSM_HEIGHT", "OSM_LEVELS"}
+    return obstruction.height_source in {"missing", "ESTIMATED"} or (
+        obstruction.raw_source_height_m is None
+        and obstruction.raw_source_height_source not in source_height_labels
+    )
+
+
 def _obstruction_color(confidence: str) -> str:
     return {
-        "verified": "#047857",
         "high": "#0f766e",
         "medium": "#b45309",
+        "low": "#f97316",
         "unknown": "#b42318",
     }.get(confidence, "#57606a")
+
+
+def _obstruction_height_color(height_m: float | None) -> str:
+    if height_m is None:
+        return "#d0d7de"
+    if height_m < 5:
+        return "#bbf7d0"
+    if height_m < 10:
+        return "#86efac"
+    if height_m < 20:
+        return "#22c55e"
+    if height_m < 40:
+        return "#15803d"
+    return "#14532d"
+
+
+def _shielding_sector_color(indicative_ms: float) -> str:
+    if indicative_ms <= 0.75:
+        return "#047857"
+    if indicative_ms <= 0.9:
+        return "#b45309"
+    return "#57606a"
+
+
+def _terrain_category_color(suggested_range: str) -> str:
+    if suggested_range == "TC2-TC2.5":
+        return "#2563eb"
+    if suggested_range == "TC2.5-TC3":
+        return "#0f766e"
+    if suggested_range == "TC3-TC3.5":
+        return "#b45309"
+    return "#b42318"
 
 
 OBSTRUCTION_REPORT_TEMPLATE = Template(
@@ -652,21 +956,100 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
     </tr>
   </table>
 
+  <h2>Obstruction Data Quality</h2>
+  <table>
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr>
+      <td>Total Microsoft building footprints found</td>
+      <td>{{ result.data_quality.total_microsoft_building_footprints_found }}</td>
+    </tr>
+    <tr>
+      <td>Total OSM building footprints found</td>
+      <td>{{ result.data_quality.total_osm_building_footprints_found }}</td>
+    </tr>
+    <tr>
+      <td>Microsoft source status</td>
+      <td>{{ result.data_quality.microsoft_source_status }}</td>
+    </tr>
+    <tr>
+      <td>Microsoft cache status</td>
+      <td>{{ result.data_quality.microsoft_cache_status }}</td>
+    </tr>
+    <tr>
+      <td>OSM fallback used</td>
+      <td>{{ "yes" if result.data_quality.osm_fallback_used else "no" }}</td>
+    </tr>
+    <tr>
+      <td>Total vegetation polygons found</td>
+      <td>{{ result.data_quality.total_vegetation_polygons_found }}</td>
+    </tr>
+    <tr>
+      <td>Total usable obstruction polygons</td>
+      <td>{{ result.data_quality.total_usable_obstruction_polygons }}</td>
+    </tr>
+    <tr>
+      <td>Number excluded</td>
+      <td>{{ result.data_quality.number_excluded }}</td>
+    </tr>
+    <tr>
+      <td>Percentage with height data</td>
+      <td>{{ "%.1f"|format(result.data_quality.percentage_with_height_data) }}%</td>
+    </tr>
+    <tr>
+      <td>Percentage requiring manual review</td>
+      <td>{{ "%.1f"|format(result.data_quality.percentage_requiring_manual_review) }}%</td>
+    </tr>
+    <tr>
+      <td>Duplicate overlaps removed</td>
+      <td>{{ result.data_quality.duplicate_overlap_count }}</td>
+    </tr>
+  </table>
+
+  <h2>Footprint Source Summary</h2>
+  <table>
+    <tr><th>Source</th><th>Usable polygons</th></tr>
+    {% for source, count in result.data_quality.source_summary.items() %}
+    <tr><td>{{ source }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Excluded Object Reasons</h2>
+  <table>
+    <tr><th>Reason</th><th>Count</th></tr>
+    {% if result.data_quality.excluded_reasons %}
+    {% for reason, count in result.data_quality.excluded_reasons.items() %}
+    <tr><td>{{ reason }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+    {% else %}
+    <tr><td>No exclusions recorded.</td><td>0</td></tr>
+    {% endif %}
+  </table>
+
+  <h2>Height Source Summary</h2>
+  <table>
+    <tr><th>Source</th><th>Count</th></tr>
+    {% for source, count in result.height_source_summary.items() %}
+    <tr><td>{{ source }}</td><td>{{ count }}</td></tr>
+    {% endfor %}
+  </table>
+
   <h2>Obstruction Map</h2>
   <p>
     Use <code>POST /api/obstructions/map</code> for the interactive footprint map. Footprints are
-    coloured by height confidence.
+    filled by selected height band and outlined by confidence.
   </p>
 
   <h2>Obstruction Table</h2>
   <table>
     <tr>
-      <th>ID</th><th>Distance</th><th>Bearing</th><th>Height</th><th>Levels</th>
-      <th>Source</th><th>Confidence</th><th>Manual review</th>
+      <th>ID</th><th>Class</th><th>Distance</th><th>Bearing</th><th>Selected height</th>
+      <th>Raw source height</th><th>Estimated height</th><th>DSM-DTM estimate</th><th>Ground RL</th>
+      <th>Surface RL</th><th>Source</th><th>Confidence</th><th>Review required</th><th>Warnings</th>
     </tr>
     {% for obstruction in result.obstructions %}
     <tr>
       <td>{{ obstruction.obstruction_id }}</td>
+      <td>{{ obstruction.classification }}</td>
       <td>{{ "%.1f"|format(obstruction.distance_m) }} m</td>
       <td>{{ "%.0f"|format(obstruction.bearing_deg) }} deg</td>
       <td>
@@ -676,17 +1059,196 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
         missing
         {% endif %}
       </td>
-      <td>{{ obstruction.building_levels if obstruction.building_levels is not none else "" }}</td>
+      <td>
+        {% if obstruction.raw_source_height_m is not none %}
+        {{ "%.2f"|format(obstruction.raw_source_height_m) }} m
+        {% endif %}
+      </td>
+      <td>
+        {% if obstruction.estimated_height_m is not none %}
+        {{ "%.2f"|format(obstruction.estimated_height_m) }} m
+        {% endif %}
+      </td>
+      <td>
+        {% if obstruction.obstruction_height_m is not none %}
+        {{ "%.2f"|format(obstruction.obstruction_height_m) }} m
+        {% endif %}
+      </td>
+      <td>
+        {{ "%.2f"|format(obstruction.ground_rl_m) if obstruction.ground_rl_m is not none else "" }}
+      </td>
+      <td>
+        {% if obstruction.surface_rl_m is not none %}
+        {{ "%.2f"|format(obstruction.surface_rl_m) }}
+        {% endif %}
+      </td>
       <td>{{ obstruction.height_source }}</td>
       <td>{{ obstruction.confidence }}</td>
-      <td>{{ obstruction.manual_review_required }}</td>
+      <td>{{ obstruction.review_required }}</td>
+      <td>{{ obstruction.warnings|join(" ") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Preliminary Shielding Sector Analysis</h2>
+  <p>
+    Each wind direction uses a 45 degree upwind sector with radius 20 times the subject building
+    height. Obstructions are counted only where available hs is at least the subject building
+    height.
+    Indicative Ms values require engineering review.
+  </p>
+  <table>
+    <tr>
+      <th>Dir.</th><th>Sector</th><th>Radius</th><th>ns</th><th>Avg hs</th>
+      <th>Avg bs</th><th>ls</th><th>s</th><th>Indicative Ms</th>
+      <th>High confidence</th><th>Estimated</th><th>Unknown</th><th>Overall confidence</th>
+    </tr>
+    {% for sector in result.shielding_sectors %}
+    <tr>
+      <td>{{ sector.direction }}</td>
+      <td>
+        {{ "%.1f"|format(sector.sector_start_deg) }}-{{ "%.1f"|format(sector.sector_end_deg) }} deg
+      </td>
+      <td>{{ "%.1f"|format(sector.sector_radius_m) }} m</td>
+      <td>{{ sector.ns }}</td>
+      <td>{{ "%.2f"|format(sector.average_hs_m) if sector.average_hs_m is not none else "" }}</td>
+      <td>{{ "%.2f"|format(sector.average_bs_m) if sector.average_bs_m is not none else "" }}</td>
+      <td>{{ "%.2f"|format(sector.ls_m) if sector.ls_m is not none else "" }}</td>
+      <td>{{ "%.2f"|format(sector.s) if sector.s is not none else "" }}</td>
+      <td>{{ "%.3f"|format(sector.indicative_ms) }}</td>
+      <td>{{ sector.high_confidence_count }}</td>
+      <td>{{ sector.estimated_height_count }}</td>
+      <td>{{ sector.unknown_height_count }}</td>
+      <td>{{ sector.overall_confidence }}</td>
+    </tr>
+    {% if sector.warnings %}
+    <tr>
+      <td></td>
+      <td colspan="12">{{ sector.warnings|join(" ") }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+
+  <p>
+    Indicative Ms values are preliminary screening outputs only and are not certified design
+    values.
+  </p>
+</body>
+</html>
+"""
+)
+
+
+TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
+    """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenWind-AU Terrain Category Evidence Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
+    h1, h2 { color: #17324d; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
+    .warning { border-left: 4px solid #b45309; padding: 12px; background: #fff7ed; }
+  </style>
+</head>
+<body>
+  <h1>OpenWind-AU Terrain Category Evidence Report</h1>
+  <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if result.warnings %}
+  <div class="warning">
+    <strong>Workflow warnings</strong>
+    <ul>{% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <h2>Subject Site</h2>
+  <table>
+    <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
+    <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
+    <tr><th>Analysis radius</th><td>{{ result.input.radius_m }} m</td></tr>
+  </table>
+
+  <h2>Terrain Category Evidence Summary</h2>
+  <table>
+    <tr>
+      <th>Direction</th><th>Fetch</th><th>Built-up coverage</th><th>Vegetation coverage</th>
+      <th>Open terrain</th><th>Average obstruction height</th><th>Median height</th>
+      <th>Maximum height</th><th>Obstruction density</th><th>Average spacing</th>
+      <th>Vegetation density</th><th>Obstruction count</th><th>Shielding confidence</th>
+      <th>Suggested range</th><th>Confidence</th><th>Warnings</th>
+    </tr>
+    {% for direction in result.directions %}
+    <tr>
+      <td>{{ direction.direction }}</td>
+      <td>{{ "%.0f"|format(direction.directional_fetch_distance_m) }} m</td>
+      <td>{{ "%.1f"|format(direction.built_up_area_percentage) }}%</td>
+      <td>{{ "%.1f"|format(direction.vegetation_area_percentage) }}%</td>
+      <td>{{ "%.1f"|format(direction.open_terrain_percentage) }}%</td>
+      <td>
+        {% if direction.average_obstruction_height_m is not none %}
+        {{ "%.2f"|format(direction.average_obstruction_height_m) }}
+        {% else %}
+        unknown
+        {% endif %}
+      </td>
+      <td>
+        {% if direction.median_obstruction_height_m is not none %}
+        {{ "%.2f"|format(direction.median_obstruction_height_m) }}
+        {% else %}
+        unknown
+        {% endif %}
+      </td>
+      <td>
+        {% if direction.maximum_obstruction_height_m is not none %}
+        {{ "%.2f"|format(direction.maximum_obstruction_height_m) }}
+        {% else %}
+        unknown
+        {% endif %}
+      </td>
+      <td>{{ "%.1f"|format(direction.obstruction_density_per_km2) }}/km2</td>
+      <td>
+        {% if direction.average_obstruction_spacing_m is not none %}
+        {{ "%.1f"|format(direction.average_obstruction_spacing_m) }} m
+        {% else %}
+        unknown
+        {% endif %}
+      </td>
+      <td>{{ "%.1f"|format(direction.vegetation_density_per_km2) }}/km2</td>
+      <td>{{ direction.obstruction_count }}</td>
+      <td>{{ direction.shielding_confidence }}</td>
+      <td>{{ direction.suggested_category_range }}</td>
+      <td>{{ direction.confidence }}</td>
+      <td>{{ direction.warnings|join(" ") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Evidence Score Components</h2>
+  <table>
+    <tr>
+      <th>Direction</th><th>Open Exposure Score</th><th>Vegetation Score</th>
+      <th>Urban Density Score</th><th>Obstruction Height Score</th>
+    </tr>
+    {% for direction in result.directions %}
+    <tr>
+      <td>{{ direction.direction }}</td>
+      <td>{{ "%.1f"|format(direction.evidence_scores.open_exposure_score) }}</td>
+      <td>{{ "%.1f"|format(direction.evidence_scores.vegetation_score) }}</td>
+      <td>{{ "%.1f"|format(direction.evidence_scores.urban_density_score) }}</td>
+      <td>{{ "%.1f"|format(direction.evidence_scores.obstruction_height_score) }}</td>
     </tr>
     {% endfor %}
   </table>
 
   <p>
-    Ms cannot be assessed without reliable obstruction heights. This report is an inventory for
-    shielding input review only.
+    Suggested ranges are review prompts only. A competent engineer must confirm terrain category
+    using project-specific context, survey information, imagery, and the applicable standard.
   </p>
 </body>
 </html>
