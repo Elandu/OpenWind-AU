@@ -15,7 +15,9 @@ from openwind_au.reports import (
     profile_plot_html,
     render_html_report,
     result_to_json,
+    terrain_category_map_html,
 )
+from openwind_au.terrain_category import run_terrain_category_evidence
 
 
 class FlatDEM(DEMProvider):
@@ -110,6 +112,38 @@ def test_obstruction_map_generation_limits_1000_footprints() -> None:
     assert diagnostics["selected_obstructions"] == 500
     assert diagnostics["plotted_polygons"] == 500
     assert diagnostics["total_geojson_payload_size"] > 0
+    assert "Map display limited to 500 of 1000 obstructions" in html
+
+
+def test_terrain_category_map_uses_display_limited_obstruction_layers() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=8,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_max_display_obstructions=500,
+        ),
+        footprints=many_microsoft_footprints(1000),
+    )
+    evidence = run_terrain_category_evidence(site_result, obstruction_result)
+
+    html = terrain_category_map_html(site_result, obstruction_result, evidence)
+    diagnostics = map_diagnostics(html)
+
+    assert "Indicative Mz,cat ranges" in html
+    assert diagnostics["selected_obstructions"] == 500
+    assert diagnostics["plotted_polygons"] == 500
     assert "Map display limited to 500 of 1000 obstructions" in html
 
 

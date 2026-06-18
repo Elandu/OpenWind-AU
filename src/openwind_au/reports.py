@@ -641,8 +641,6 @@ def terrain_category_map_html(
         show=True,
     )
     mzcat_layer = folium.FeatureGroup(name="Indicative Mz,cat ranges", show=True)
-    built_layer = folium.FeatureGroup(name="Built-up areas", show=True)
-    vegetation_layer = folium.FeatureGroup(name="Vegetation areas", show=True)
     density_layer = folium.FeatureGroup(name="Dominant obstruction zones", show=True)
     mzcat_by_direction = {
         assessment.direction: assessment for assessment in evidence_result.mzcat_assessment
@@ -708,36 +706,12 @@ def terrain_category_map_html(
             ),
         ).add_to(density_layer)
 
-    for obstruction in obstruction_result.obstructions:
-        target_layer = (
-            vegetation_layer if obstruction.classification == "vegetation" else built_layer
-        )
-        fill_color = "#16a34a" if obstruction.classification == "vegetation" else "#475569"
-        height_label = (
-            f"{obstruction.height_m:.1f} m" if obstruction.height_m is not None else "unknown"
-        )
-        folium.GeoJson(
-            obstruction.footprint_geometry,
-            style_function=lambda _feature, fill_color=fill_color: {
-                "color": fill_color,
-                "weight": 1,
-                "fillColor": fill_color,
-                "fillOpacity": 0.25,
-            },
-            tooltip=(
-                f"{obstruction.obstruction_id}: {obstruction.classification}, "
-                f"height={height_label}, "
-                f"source={obstruction.height_source}, confidence={obstruction.confidence}"
-            ),
-        ).add_to(target_layer)
-
     sector_layer.add_to(fmap)
     mzcat_layer.add_to(fmap)
-    built_layer.add_to(fmap)
-    vegetation_layer.add_to(fmap)
     density_layer.add_to(fmap)
+    diagnostics = _add_obstruction_review_layers(fmap, obstruction_result)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
-    return fmap.get_root().render()
+    return _render_map_with_diagnostics(fmap, diagnostics)
 
 
 def terrain_category_sector_polygon(
@@ -1675,7 +1649,9 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
   <table>
     <tr>
       <th>Direction</th><th>Suggested TC Range</th><th>Indicative Mz,cat Range</th>
-      <th>Confidence</th><th>Reasoning</th><th>Warnings</th>
+      <th>Recommended TC</th><th>Recommended Mz,cat</th><th>Recommendation Confidence</th>
+      <th>Engineer-selected Final TC</th><th>Engineer-selected Final Mz,cat</th>
+      <th>Review Status</th><th>Review Notes</th><th>Warnings</th>
     </tr>
     {% for assessment in result.mzcat_assessment %}
     <tr>
@@ -1685,11 +1661,52 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
         {{ "%.3f"|format(assessment.lower_indicative_mzcat) }}-
         {{ "%.3f"|format(assessment.upper_indicative_mzcat) }}
       </td>
-      <td>{{ assessment.confidence }}</td>
+      <td>{{ assessment.recommended_terrain_category }}</td>
       <td>
-        <ul>{% for reason in assessment.reasoning %}<li>{{ reason }}</li>{% endfor %}</ul>
+        {% if assessment.recommended_mzcat is not none %}
+        {{ "%.3f"|format(assessment.recommended_mzcat) }}
+        {% else %}
+        review required
+        {% endif %}
       </td>
-      <td>{{ assessment.warnings|join(" ") }}</td>
+      <td>{{ assessment.recommendation_confidence }}</td>
+      <td>
+        {% if assessment.review_status in ["accepted", "overridden"] %}
+        {{ assessment.final_terrain_category }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>
+        {% if assessment.review_status in ["accepted", "overridden"]
+          and assessment.final_mzcat is not none %}
+        {{ "%.3f"|format(assessment.final_mzcat) }}
+        {% else %}
+        hidden until engineer review
+        {% endif %}
+      </td>
+      <td>{{ assessment.review_status }}</td>
+      <td>{{ assessment.review_notes or "" }}</td>
+      <td>
+        {% if assessment.review_status == "unreviewed" %}
+        Engineer review required before final Mz,cat may be used.
+        {% endif %}
+        {{ assessment.warnings|join(" ") }}
+      </td>
+    </tr>
+    <tr>
+      <td></td>
+      <td colspan="10">
+        Recommendation reasoning:
+        <ul>
+          {% for reason in assessment.recommendation_reasoning %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+          {% for reason in assessment.reasoning %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </td>
     </tr>
     {% endfor %}
   </table>

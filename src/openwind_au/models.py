@@ -23,6 +23,7 @@ class SiteAnalysisRequest(BaseModel):
     building_height_m: float = Field(gt=0, description="Building height in metres.")
     radius_m: int = Field(default=2000, description="Analysis radius in metres.")
     sample_interval_m: float = Field(default=50, ge=5, le=500)
+    mzcat_recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
 
     @model_validator(mode="after")
     def validate_location(self) -> SiteAnalysisRequest:
@@ -146,6 +147,7 @@ class MzCatDirectionAssessment(BaseModel):
 
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     azimuth_deg: float
+    recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
     suggested_terrain_category_range: str
     lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
     upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
@@ -153,6 +155,15 @@ class MzCatDirectionAssessment(BaseModel):
     lower_indicative_mzcat: float
     upper_indicative_mzcat: float
     confidence: Literal["high", "medium", "low"]
+    recommended_terrain_category: str = "review required"
+    recommended_mzcat: float | None = None
+    recommendation_confidence: Literal["high", "medium", "low"] = "low"
+    recommendation_reasoning: list[str] = Field(default_factory=list)
+    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_mzcat: float | None = None
+    reviewed_by: str | None = None
+    review_notes: str | None = None
+    review_status: Literal["unreviewed", "accepted", "overridden"] = "unreviewed"
     directional_fetch_distance_m: float
     built_up_area_percentage: float
     vegetation_area_percentage: float
@@ -169,6 +180,7 @@ class MzCatAssessmentResult(BaseModel):
     input: SiteAnalysisRequest
     site: SiteLocation
     directions: list[MzCatDirectionAssessment]
+    recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Indicative Mz,cat evidence is provided for engineering review only. OpenWind-AU does "

@@ -91,6 +91,29 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    @app.post("/api/full-analysis")
+    def full_analysis(request: TerrainCategoryEvidenceRequest) -> dict:
+        """Run the browser workflow in one pass to avoid duplicate obstruction queries."""
+
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "site_analysis": site_result,
+            "obstruction_inventory": obstruction_result,
+            "terrain_category_evidence": evidence,
+            "profile_plot_html": profile_plot_html(site_result),
+            "terrain_category_map_html": terrain_category_map_html(
+                site_result,
+                obstruction_result,
+                evidence,
+            ),
+            "combined_map_html": combined_map_html(site_result, obstruction_result),
+        }
+
     @app.post("/api/export/json")
     def export_json(request: SiteAnalysisRequest) -> Response:
         result = analyse(request)
@@ -188,22 +211,9 @@ def create_app() -> FastAPI:
     def map_combined(request: CombinedMapRequest) -> str:
         try:
             site_result = analyse(request)
-            obstruction_request = ObstructionInventoryRequest(
-                address=request.address,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                radius_m=request.obstruction_radius_m,
-                building_height_m=request.building_height_m,
-                default_storey_height_m=request.default_storey_height_m,
-                residential_storey_height_m=request.residential_storey_height_m,
-                residential_two_storey_height_m=request.residential_two_storey_height_m,
-                commercial_storey_height_m=request.commercial_storey_height_m,
-                manual_overrides=request.manual_overrides,
-                reviewed_footprints=request.reviewed_footprints,
-                map_display_mode=request.map_display_mode,
-                map_max_display_obstructions=request.map_max_display_obstructions,
+            obstruction_result = run_obstruction_inventory(
+                _obstruction_request_from_combined(request)
             )
-            obstruction_result = run_obstruction_inventory(obstruction_request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -239,6 +249,7 @@ def create_app() -> FastAPI:
             input=evidence.input,
             site=evidence.site,
             directions=evidence.mzcat_assessment,
+            recommendation_mode=request.mzcat_recommendation_mode,
             warnings=[
                 "Terrain category not confirmed.",
                 "Mz,cat values are indicative only.",
@@ -332,7 +343,15 @@ def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
     site_result = run_site_analysis(request, SRTMProvider())
-    obstruction_request = ObstructionInventoryRequest(
+    obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
+    evidence = run_terrain_category_evidence(site_result, obstruction_result)
+    return site_result, obstruction_result, evidence
+
+
+def _obstruction_request_from_combined(
+    request: CombinedMapRequest,
+) -> ObstructionInventoryRequest:
+    return ObstructionInventoryRequest(
         address=request.address,
         latitude=request.latitude,
         longitude=request.longitude,
@@ -347,9 +366,6 @@ def _run_terrain_category_workflow(
         map_display_mode=request.map_display_mode,
         map_max_display_obstructions=request.map_max_display_obstructions,
     )
-    obstruction_result = run_obstruction_inventory(obstruction_request)
-    evidence = run_terrain_category_evidence(site_result, obstruction_result)
-    return site_result, obstruction_result, evidence
 
 
 app = create_app()

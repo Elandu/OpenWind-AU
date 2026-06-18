@@ -33,6 +33,7 @@ function formPayload() {
     building_height_m: Number(data.get("building_height_m")),
     radius_m: Number(data.get("radius_m")),
     sample_interval_m: Number(data.get("sample_interval_m")),
+    mzcat_recommendation_mode: data.get("mzcat_recommendation_mode") || "conservative",
   };
   if (!payload.address) delete payload.address;
   if (payload.latitude === null) delete payload.latitude;
@@ -120,7 +121,6 @@ async function postJson(url, payload) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const payload = formPayload();
   const mapPayload = combinedMapPayload();
   summary.textContent = "Running analysis...";
   profileFrame.removeAttribute("srcdoc");
@@ -135,8 +135,11 @@ form.addEventListener("submit", async (event) => {
   obstructionWarning.textContent = "Querying obstruction footprints and height tags...";
 
   try {
-    const resultResponse = await postJson("/api/analyse", payload);
-    const result = await resultResponse.json();
+    const fullResponse = await postJson("/api/full-analysis", mapPayload);
+    const fullResult = await fullResponse.json();
+    const result = fullResult.site_analysis;
+    const inventory = fullResult.obstruction_inventory;
+    const evidence = fullResult.terrain_category_evidence;
     const significantFeatures = result.features.filter(
       (feature) => feature.feature_type !== "no significant feature",
     );
@@ -150,15 +153,14 @@ form.addEventListener("submit", async (event) => {
     }, null, 2);
     renderProfileSummary(result.profiles);
     renderTopographySummary(result.features);
-
-    const profileResponse = await postJson("/api/plots/profile", payload);
-    profileFrame.srcdoc = await profileResponse.text();
-
-    await runObstructionInventory();
-    await runTerrainCategoryEvidence(mapPayload);
-
-    const mapResponse = await postJson("/api/map/combined", mapPayload);
-    mapFrame.srcdoc = await mapResponse.text();
+    currentObstructionInventory = inventory;
+    reviewedObstructions = inventory.obstructions;
+    renderObstructionInventory(inventory);
+    currentTerrainCategoryEvidence = evidence;
+    renderTerrainCategoryEvidence(evidence);
+    profileFrame.srcdoc = fullResult.profile_plot_html;
+    terrainCategoryFrame.srcdoc = fullResult.terrain_category_map_html;
+    mapFrame.srcdoc = fullResult.combined_map_html;
   } catch (error) {
     summary.textContent = `Analysis failed: ${error.message}`;
     profileSummary.innerHTML = "<p>Analysis failed.</p>";
@@ -335,7 +337,7 @@ function renderTerrainCategoryEvidence(evidence) {
 function renderMzCatAssessment(assessments) {
   if (!mzCatTable) return;
   if (!assessments.length) {
-    mzCatTable.innerHTML = "<tr><td colspan=\"6\">Indicative Mz,cat evidence will appear after analysis.</td></tr>";
+    mzCatTable.innerHTML = "<tr><td colspan=\"9\">Indicative Mz,cat evidence will appear after analysis.</td></tr>";
     return;
   }
   mzCatTable.innerHTML = assessments.map((assessment) => `
@@ -343,11 +345,128 @@ function renderMzCatAssessment(assessments) {
       <td>${assessment.direction}</td>
       <td>${badge("neutral", assessment.controlling_category_range || assessment.suggested_terrain_category_range)}</td>
       <td>${assessment.lower_indicative_mzcat.toFixed(3)}-${assessment.upper_indicative_mzcat.toFixed(3)}</td>
+      <td>${recommendedMzCatCell(assessment)}</td>
+      <td>${engineerReviewCell(assessment)}</td>
+      <td>${finalMzCatCell(assessment)}</td>
       <td>${badge(assessment.confidence, assessment.confidence)}</td>
       <td><ul>${(assessment.reasoning || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></td>
       <td>${(assessment.warnings || []).map(escapeHtml).join(" ")}</td>
     </tr>
   `).join("");
+  mzCatTable.querySelectorAll("button[data-mzcat-action]").forEach((button) => {
+    button.addEventListener("click", () => updateMzCatReview(button));
+  });
+  mzCatTable.querySelectorAll("input[data-mzcat-field], select[data-mzcat-field], textarea[data-mzcat-field]").forEach((input) => {
+    input.addEventListener("change", () => updateMzCatReviewInput(input));
+  });
+}
+
+function recommendedMzCatCell(assessment) {
+  if (assessment.recommended_mzcat === null || assessment.recommended_mzcat === undefined) {
+    return `
+      <span>${escapeHtml(assessment.recommended_terrain_category || "review required")}</span>
+      <span class="muted">No auto-final value. Engineer review required.</span>
+    `;
+  }
+  return `
+    <strong>${escapeHtml(assessment.recommended_terrain_category)}</strong>
+    <span class="muted">Mz,cat ${assessment.recommended_mzcat.toFixed(3)}</span>
+    <span class="muted">${escapeHtml(assessment.recommendation_mode || "conservative")} recommendation, ${escapeHtml(assessment.recommendation_confidence || "unknown")} confidence</span>
+  `;
+}
+
+function engineerReviewCell(assessment) {
+  const canAccept = assessment.recommended_mzcat !== null && assessment.recommended_mzcat !== undefined;
+  return `
+    <div class="review-controls">
+      <button type="button" data-mzcat-action="accept" data-direction="${assessment.direction}" ${canAccept ? "" : "disabled"}>Accept Recommended</button>
+      <label>
+        Override TC
+        <select data-mzcat-field="final_terrain_category" data-direction="${assessment.direction}">
+          ${terrainCategoryOptions(assessment.final_terrain_category || assessment.recommended_terrain_category)}
+        </select>
+      </label>
+      <label>
+        Override Mz,cat
+        <input data-mzcat-field="final_mzcat" data-direction="${assessment.direction}" type="number" step="0.001" value="${assessment.final_mzcat ?? ""}" />
+      </label>
+      <label>
+        Reviewed by
+        <input data-mzcat-field="reviewed_by" data-direction="${assessment.direction}" value="${escapeHtml(assessment.reviewed_by || "")}" />
+      </label>
+      <label>
+        Notes
+        <textarea data-mzcat-field="review_notes" data-direction="${assessment.direction}">${escapeHtml(assessment.review_notes || "")}</textarea>
+      </label>
+      <button type="button" data-mzcat-action="override" data-direction="${assessment.direction}">Apply Override</button>
+    </div>
+  `;
+}
+
+function terrainCategoryOptions(selected) {
+  const categories = ["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"];
+  return categories.map((category) =>
+    `<option value="${category}" ${category === selected ? "selected" : ""}>${category}</option>`
+  ).join("");
+}
+
+function finalMzCatCell(assessment) {
+  if (!["accepted", "overridden"].includes(assessment.review_status)) {
+    return `
+      <span>${badge("review", "unreviewed")}</span>
+      <span class="muted">Final Mz,cat hidden until engineer review.</span>
+    `;
+  }
+  return `
+    <strong>${escapeHtml(assessment.final_terrain_category || "-")}</strong>
+    <span class="muted">Mz,cat ${Number(assessment.final_mzcat).toFixed(3)}</span>
+    <span class="muted">${escapeHtml(assessment.review_status)}${assessment.reviewed_by ? ` by ${escapeHtml(assessment.reviewed_by)}` : ""}</span>
+  `;
+}
+
+function mzcatAssessmentForDirection(direction) {
+  return (currentTerrainCategoryEvidence?.mzcat_assessment || [])
+    .find((assessment) => assessment.direction === direction);
+}
+
+function updateMzCatReviewInput(input) {
+  const assessment = mzcatAssessmentForDirection(input.dataset.direction);
+  if (!assessment) return;
+  const field = input.dataset.mzcatField;
+  if (field === "final_mzcat") {
+    assessment.final_mzcat = input.value === "" ? null : Number(input.value);
+  } else {
+    assessment[field] = input.value || null;
+  }
+}
+
+function updateMzCatReview(button) {
+  const assessment = mzcatAssessmentForDirection(button.dataset.direction);
+  if (!assessment) return;
+  if (button.dataset.mzcatAction === "accept") {
+    if (assessment.recommended_mzcat === null || assessment.recommended_mzcat === undefined) return;
+    assessment.final_terrain_category = assessment.recommended_terrain_category;
+    assessment.final_mzcat = assessment.recommended_mzcat;
+    assessment.review_status = "accepted";
+    if (!assessment.review_notes) {
+      assessment.review_notes = "Engineer accepted the software recommendation for project review.";
+    }
+  }
+  if (button.dataset.mzcatAction === "override") {
+    const row = button.closest("td");
+    const categoryInput = row.querySelector("[data-mzcat-field='final_terrain_category']");
+    const mzcatInput = row.querySelector("[data-mzcat-field='final_mzcat']");
+    const reviewerInput = row.querySelector("[data-mzcat-field='reviewed_by']");
+    const notesInput = row.querySelector("[data-mzcat-field='review_notes']");
+    assessment.final_terrain_category = categoryInput.value || null;
+    assessment.final_mzcat = mzcatInput.value === "" ? null : Number(mzcatInput.value);
+    assessment.reviewed_by = reviewerInput.value || null;
+    assessment.review_notes = notesInput.value || null;
+    assessment.review_status = assessment.final_terrain_category && assessment.final_mzcat !== null
+      ? "overridden"
+      : "unreviewed";
+  }
+  renderMzCatAssessment(currentTerrainCategoryEvidence?.mzcat_assessment || []);
 }
 
 function renderShieldingSectors(sectors) {

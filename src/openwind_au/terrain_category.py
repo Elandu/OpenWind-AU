@@ -54,6 +54,7 @@ def run_terrain_category_evidence(
         request=site_result.input,
         site=site_result.site,
         directions=directions,
+        recommendation_mode=getattr(site_result.input, "mzcat_recommendation_mode", "conservative"),
     )
     return TerrainCategoryEvidenceResult(
         input=site_result.input,

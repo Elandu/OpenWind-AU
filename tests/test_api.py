@@ -258,3 +258,42 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert all(item["status"] == "pass" for item in validation.json())
     assert page.status_code == 200
     assert "Terrain Category Evidence" in page.text
+
+
+def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    calls = {"inventory": 0}
+
+    def fake_inventory(request):
+        calls["inventory"] += 1
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "default_storey_height_m": 3.0,
+        "mzcat_recommendation_mode": "best_estimate",
+    }
+
+    response = client.post("/api/full-analysis", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert calls["inventory"] == 1
+    assert body["site_analysis"]["site"]["ground_elevation_m"] == 75
+    assert len(body["obstruction_inventory"]["obstructions"]) == 1
+    assert len(body["terrain_category_evidence"]["directions"]) == 8
+    assert len(body["terrain_category_evidence"]["mzcat_assessment"]) == 8
+    assert (
+        body["terrain_category_evidence"]["mzcat_assessment"][0]["recommendation_mode"]
+        == "best_estimate"
+    )
+    assert "plotly" in body["profile_plot_html"].lower()
+    assert "openWindMapDiagnostics" in body["terrain_category_map_html"]
+    assert "openWindMapDiagnostics" in body["combined_map_html"]

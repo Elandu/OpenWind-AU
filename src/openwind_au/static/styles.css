@@ -261,6 +261,22 @@ th {
   margin-top: 8px;
 }
 
+.review-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr);
+  gap: 8px;
+  min-width: 220px;
+}
+
+.review-controls button {
+  margin-top: 0;
+}
+
+.review-controls textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
 iframe {
   width: 100%;
   height: 460px;

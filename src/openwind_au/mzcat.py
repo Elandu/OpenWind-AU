@@ -28,11 +28,17 @@ def run_mzcat_assessment(
     request: SiteAnalysisRequest,
     site: SiteLocation,
     directions: list[TerrainCategoryDirectionEvidence],
+    recommendation_mode: str = "conservative",
 ) -> MzCatAssessmentResult:
     """Return indicative Mz,cat evidence for all directional evidence sectors."""
 
     assessments = [
-        direction_mzcat_assessment(direction, request.building_height_m) for direction in directions
+        direction_mzcat_assessment(
+            direction,
+            request.building_height_m,
+            recommendation_mode=recommendation_mode,
+        )
+        for direction in directions
     ]
     warnings = [
         "Terrain category not confirmed.",
@@ -45,6 +51,7 @@ def run_mzcat_assessment(
         input=request,
         site=site,
         directions=assessments,
+        recommendation_mode=recommendation_mode,  # type: ignore[arg-type]
         warnings=warnings,
     )
 
@@ -52,6 +59,8 @@ def run_mzcat_assessment(
 def direction_mzcat_assessment(
     evidence: TerrainCategoryDirectionEvidence,
     assessment_height_m: float,
+    *,
+    recommendation_mode: str = "conservative",
 ) -> MzCatDirectionAssessment:
     """Convert one terrain-category evidence sector into an indicative Mz,cat range."""
 
@@ -60,9 +69,19 @@ def direction_mzcat_assessment(
     upper_value = indicative_mzcat(upper_category, assessment_height_m)
     confidence = mzcat_confidence(evidence, lower_category, upper_category)
     warnings = mzcat_warnings(evidence, confidence)
+    recommendation = mzcat_recommendation(
+        evidence=evidence,
+        lower_category=lower_category,
+        upper_category=upper_category,
+        lower_value=lower_value,
+        upper_value=upper_value,
+        confidence=confidence,
+        mode=recommendation_mode,
+    )
     return MzCatDirectionAssessment(
         direction=evidence.direction,
         azimuth_deg=evidence.azimuth_deg,
+        recommendation_mode=recommendation_mode,  # type: ignore[arg-type]
         suggested_terrain_category_range=evidence.suggested_category_range,
         lower_category_bound=lower_category,  # type: ignore[arg-type]
         upper_category_bound=upper_category,  # type: ignore[arg-type]
@@ -70,6 +89,10 @@ def direction_mzcat_assessment(
         lower_indicative_mzcat=round(min(lower_value, upper_value), 3),
         upper_indicative_mzcat=round(max(lower_value, upper_value), 3),
         confidence=confidence,  # type: ignore[arg-type]
+        recommended_terrain_category=recommendation["category"],
+        recommended_mzcat=recommendation["mzcat"],
+        recommendation_confidence=recommendation["confidence"],  # type: ignore[arg-type]
+        recommendation_reasoning=recommendation["reasoning"],
         directional_fetch_distance_m=evidence.directional_fetch_distance_m,
         built_up_area_percentage=evidence.built_up_area_percentage,
         vegetation_area_percentage=evidence.vegetation_area_percentage,
@@ -79,6 +102,56 @@ def direction_mzcat_assessment(
         reasoning=mzcat_reasoning(evidence),
         warnings=warnings,
     )
+
+
+def mzcat_recommendation(
+    *,
+    evidence: TerrainCategoryDirectionEvidence,
+    lower_category: str,
+    upper_category: str,
+    lower_value: float,
+    upper_value: float,
+    confidence: str,
+    mode: str,
+) -> dict[str, object]:
+    """Return a reviewable recommendation without selecting a final value."""
+
+    category_width = abs(
+        SUPPORTED_TERRAIN_CATEGORIES.index(upper_category)
+        - SUPPORTED_TERRAIN_CATEGORIES.index(lower_category)
+    )
+    if confidence != "high" or category_width > 1:
+        return {
+            "category": "review required",
+            "mzcat": None,
+            "confidence": confidence,
+            "reasoning": [
+                "Recommendation requires engineer review because evidence is not high-confidence "
+                "or the terrain category range is broad.",
+                f"Suggested range remains {evidence.suggested_category_range}.",
+            ],
+        }
+
+    if mode == "best_estimate":
+        category = upper_category
+        value = upper_value
+        mode_reason = "Best-estimate mode selects the upper category bound within the narrow range."
+    else:
+        candidates = [(lower_category, lower_value), (upper_category, upper_value)]
+        category, value = max(candidates, key=lambda item: item[1])
+        mode_reason = (
+            "Conservative mode selects the category bound with the larger indicative Mz,cat."
+        )
+    return {
+        "category": category,
+        "mzcat": round(value, 3),
+        "confidence": "high",
+        "reasoning": [
+            mode_reason,
+            "Evidence confidence is high and the suggested terrain category range is narrow.",
+            "Engineer acceptance is still required before this becomes a final selected value.",
+        ],
+    }
 
 
 def category_bounds(category_range: str) -> tuple[str, str]:

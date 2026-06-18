@@ -81,6 +81,13 @@
                 <option value="centroids_only">Show centroids only</option>
               </select>
             </label>
+            <label>
+              Mz,cat recommendation mode
+              <select id="mzcat_recommendation_mode" name="mzcat_recommendation_mode">
+                <option value="conservative" selected>Conservative</option>
+                <option value="best_estimate">Best estimate</option>
+              </select>
+            </label>
           </div>
           <button type="submit">Run Analysis</button>
         </form>
@@ -277,13 +284,16 @@
                 <th>Direction</th>
                 <th>Suggested TC Range</th>
                 <th>Indicative Mz,cat Range</th>
+                <th>Recommended</th>
+                <th>Engineer Review</th>
+                <th>Final Selected Mz,cat</th>
                 <th>Confidence</th>
                 <th>Reasoning</th>
                 <th>Warnings</th>
               </tr>
             </thead>
             <tbody id="mzcat-table">
-              <tr><td colspan="6">Indicative Mz,cat evidence will appear after analysis.</td></tr>
+              <tr><td colspan="9">Indicative Mz,cat evidence will appear after analysis.</td></tr>
             </tbody>
           </table>
         </div>
