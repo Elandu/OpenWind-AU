@@ -22,6 +22,8 @@ from openwind_au.models import (
     TerrainCategoryEvidenceRequest,
     TerrainCategoryEvidenceResult,
     TerrainCategoryReportRequest,
+    WindWorkflowRequest,
+    WindWorkflowResult,
 )
 from openwind_au.obstructions import (
     manual_overrides_from_json,
@@ -36,6 +38,7 @@ from openwind_au.reports import (
     render_html_report,
     render_obstruction_report_html,
     render_terrain_category_report_html,
+    render_wind_workflow_report_html,
     result_to_json,
     terrain_category_map_html,
     write_pdf_report,
@@ -51,6 +54,7 @@ from openwind_au.validation import (
     run_validation_cases,
     validation_report_to_json,
 )
+from openwind_au.wind_workflow import run_wind_workflow
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -70,6 +74,14 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
+        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
+
+    @app.get("/wind-workflow", response_class=HTMLResponse)
+    def wind_workflow_page() -> str:
+        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
+
+    @app.get("/site-analysis", response_class=HTMLResponse)
+    def site_analysis_page() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/terrain-category", response_class=HTMLResponse)
@@ -115,6 +127,26 @@ def create_app() -> FastAPI:
             ),
             "combined_map_html": combined_map_html(site_result, obstruction_result),
         }
+
+    @app.post("/api/wind-workflow", response_model=WindWorkflowResult)
+    def wind_workflow(request: WindWorkflowRequest) -> WindWorkflowResult:
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return run_wind_workflow(
+            request=request,
+            site_result=site_result,
+            obstruction_result=obstruction_result,
+            terrain_result=evidence,
+        )
+
+    @app.post("/api/wind-workflow/report/html", response_class=HTMLResponse)
+    def wind_workflow_report_html(request: WindWorkflowRequest) -> str:
+        result = wind_workflow(request)
+        return render_wind_workflow_report_html(result)
 
     @app.post("/api/export/json")
     def export_json(request: SiteAnalysisRequest) -> Response:

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenWind-AU Wind Workflow</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>OpenWind-AU</h1>
+        <p>AS/NZS 1170.2 site wind workflow through reviewed Vsit,b.</p>
+      </div>
+      <nav>
+        <a href="/site-analysis">Evidence tools</a>
+        <a href="/validation">Validation</a>
+      </nav>
+    </header>
+
+    <main>
+      <section id="project-site-inputs" class="panel">
+        <h2>1. Project and Site Inputs</h2>
+        <form id="workflow-form">
+          <div class="grid">
+            <label>
+              Street address
+              <input id="address" name="address" placeholder="1 Macquarie Street, Sydney NSW" />
+            </label>
+            <label>
+              Latitude
+              <input id="latitude" name="latitude" type="number" step="0.000001" />
+            </label>
+            <label>
+              Longitude
+              <input id="longitude" name="longitude" type="number" step="0.000001" />
+            </label>
+            <label>
+              Building height (m)
+              <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
+            </label>
+            <label>
+              Terrain radius (m)
+              <select id="radius_m" name="radius_m">
+                <option value="500">500</option>
+                <option value="1000">1000</option>
+                <option value="2000" selected>2000</option>
+                <option value="4000">4000</option>
+              </select>
+            </label>
+            <label>
+              Sample interval (m)
+              <input id="sample_interval_m" name="sample_interval_m" type="number" value="50" />
+            </label>
+            <label>
+              Obstruction radius (m)
+              <select id="obstruction_radius_m" name="obstruction_radius_m">
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500" selected>500</option>
+                <option value="1000">1000</option>
+              </select>
+            </label>
+            <label>
+              Storey height assumption (m)
+              <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
+            </label>
+            <label>
+              Wind region
+              <input id="wind_region" name="wind_region" value="A2" />
+            </label>
+            <label>
+              AEP / ARI
+              <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
+            </label>
+            <label>
+              Engineer-supplied VR (m/s)
+              <input id="regional_wind_speed_mps" name="regional_wind_speed_mps" type="number" step="0.1" placeholder="required for Vsit,b" />
+            </label>
+            <label>
+              Mz,cat recommendation mode
+              <select id="mzcat_recommendation_mode" name="mzcat_recommendation_mode">
+                <option value="conservative" selected>Conservative</option>
+                <option value="best_estimate">Best estimate</option>
+              </select>
+            </label>
+          </div>
+          <button type="submit">Run Wind Workflow</button>
+        </form>
+        <p class="disclaimer">
+          Preliminary workflow only. The app does not calculate final design pressures and does
+          not certify AS/NZS 1170.2 compliance.
+        </p>
+      </section>
+
+      <section id="wind-region-vr" class="panel workflow-anchor">
+        <h2>2. Wind Region / Regional Wind Speed, VR</h2>
+      </section>
+
+      <section id="wind-direction-md" class="panel workflow-anchor">
+        <h2>3. Wind Direction Multiplier, Md</h2>
+      </section>
+
+      <section id="terrain-category-mzcat" class="panel workflow-anchor">
+        <h2>4. Terrain Category / Mz,cat</h2>
+      </section>
+
+      <section id="shielding-ms" class="panel workflow-anchor">
+        <h2>5. Shielding Multiplier, Ms</h2>
+      </section>
+
+      <section id="topographic-mt" class="panel workflow-anchor">
+        <h2>6. Topographic Multiplier, Mt</h2>
+      </section>
+
+      <section id="vsitb-summary" class="panel">
+        <h2>7. Site Wind Speed, Vsit,b</h2>
+        <p class="note">Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Direction</th>
+                <th>VR</th>
+                <th>Md</th>
+                <th>Mz,cat</th>
+                <th>Ms</th>
+                <th>Mt</th>
+                <th>Vsit,b</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="vsitb-table">
+              <tr><td colspan="8">Run the workflow to see the directional Vsit,b summary.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="evidence-reports" class="panel">
+        <h2>8. Evidence Maps and Reports</h2>
+        <div class="toolbar">
+          <a class="button-link" href="/site-analysis">Open evidence tools</a>
+          <button id="workflow-report" type="button">Open Workflow Report</button>
+        </div>
+        <ul id="evidence-links" class="note">
+          <li>Run the workflow to see supporting evidence references.</li>
+        </ul>
+      </section>
+
+      <section class="panel">
+        <h2>Workflow Status</h2>
+        <pre id="workflow-summary">Run the workflow to review variables.</pre>
+      </section>
+    </main>
+
+    <script src="/static/wind_workflow.js"></script>
+  </body>
+</html>

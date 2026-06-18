@@ -475,6 +475,94 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
     mzcat_reviews: list[MzCatReviewSelection] = Field(default_factory=list)
 
 
+WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
+ReviewStatus = Literal["unreviewed", "accepted", "overridden"]
+
+
+class WindVariableReview(BaseModel):
+    """Engineer review state for one wind workflow variable."""
+
+    variable: WindWorkflowVariable
+    direction: WindDirection | None = None
+    final_value: float | None = Field(default=None, gt=0)
+    reviewed_by: str | None = None
+    review_notes: str | None = None
+    review_status: ReviewStatus = "unreviewed"
+
+    @model_validator(mode="after")
+    def validate_final_value(self) -> WindVariableReview:
+        if self.review_status in {"accepted", "overridden"} and self.final_value is None:
+            raise ValueError("final_value is required when a workflow variable is reviewed.")
+        return self
+
+
+class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
+    """AS/NZS 1170.2 site wind workflow request.
+
+    The workflow does not embed AS/NZS table values. Engineers must supply VR
+    and confirm or override all final variables before Vsit,b is marked available.
+    """
+
+    wind_region: str = "A2"
+    annual_exceedance_probability: str = "1/500"
+    regional_wind_speed_mps: float | None = Field(default=None, gt=0)
+    wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)
+    workflow_reviews: list[WindVariableReview] = Field(default_factory=list)
+
+
+class WindVariableAssessment(BaseModel):
+    """Reviewable value for one AS/NZS site wind workflow variable."""
+
+    variable: WindWorkflowVariable
+    label: str
+    direction: WindDirection | None = None
+    unit: str = ""
+    recommended_value: float | None = None
+    confidence: Literal["high", "medium", "low"] = "low"
+    final_value: float | None = None
+    review_status: ReviewStatus = "unreviewed"
+    reviewed_by: str | None = None
+    review_notes: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    evidence_link: str
+    formula_basis: str
+    calculation_inputs: list[str] = Field(default_factory=list)
+    calculation_result: str
+
+
+class SiteWindSpeedRow(BaseModel):
+    """Directional Vsit,b row assembled from reviewed workflow variables."""
+
+    direction: WindDirection
+    vr: float | None = None
+    md: float | None = None
+    mzcat: float | None = None
+    ms: float | None = None
+    mt: float | None = None
+    recommended_vsitb: float | None = None
+    final_vsitb: float | None = None
+    review_status: ReviewStatus = "unreviewed"
+    status: Literal["blocked", "calculated"] = "blocked"
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WindWorkflowResult(BaseModel):
+    """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
+
+    input: WindWorkflowRequest
+    site: SiteLocation
+    variables: list[WindVariableAssessment]
+    directional_vsitb: list[SiteWindSpeedRow]
+    evidence_references: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str = (
+        "OpenWind-AU organises preliminary site wind evidence through Vsit,b for "
+        "engineering review. It does not calculate final pressures and does not certify "
+        "AS/NZS 1170.2 compliance."
+    )
+
+
 @dataclass(frozen=True)
 class ElevationSample:
     """Simple elevation sample for internal calculations."""

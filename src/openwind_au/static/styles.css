@@ -60,7 +60,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid #b8c2cc;
   border-radius: 6px;
   padding: 10px;
@@ -275,6 +276,29 @@ th {
 .review-controls textarea {
   min-height: 64px;
   resize: vertical;
+}
+
+.workflow-card {
+  margin-top: 12px;
+}
+
+.workflow-review {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.workflow-review button {
+  margin-top: 0;
+}
+
+.workflow-review textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.calc-panel {
+  padding: 10px 0;
 }
 
 iframe {

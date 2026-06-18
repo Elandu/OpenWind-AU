@@ -26,6 +26,7 @@ from openwind_au.models import (
     SiteLocation,
     TerrainCategoryDirectionEvidence,
     TerrainCategoryEvidenceResult,
+    WindWorkflowResult,
 )
 from openwind_au.shielding import shielding_sector_polygon
 
@@ -622,6 +623,12 @@ def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -
     """Render an HTML terrain category evidence report."""
 
     return TERRAIN_CATEGORY_REPORT_TEMPLATE.render(result=result)
+
+
+def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
+    """Render an HTML AS/NZS 1170.2 site wind workflow report."""
+
+    return WIND_WORKFLOW_REPORT_TEMPLATE.render(result=result)
 
 
 def terrain_category_map_html(
@@ -1732,6 +1739,140 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
   <p>
     Suggested ranges are review prompts only. A competent engineer must confirm terrain category
     using project-specific context, survey information, imagery, and the applicable standard.
+  </p>
+</body>
+</html>
+"""
+)
+
+
+WIND_WORKFLOW_REPORT_TEMPLATE = Template(
+    """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenWind-AU Site Wind Workflow Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
+    h1, h2, h3 { color: #17324d; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
+    .warning { border-left: 4px solid #b45309; padding: 12px; background: #fff7ed; }
+    .calc { background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <h1>OpenWind-AU Site Wind Workflow Report</h1>
+  <p class="disclaimer">{{ result.disclaimer }}</p>
+  <p>
+    Workflow order: Project and Site Inputs; Wind Region / Regional Wind Speed, VR;
+    Wind Direction Multiplier, Md; Terrain Category / Mz,cat; Shielding Multiplier, Ms;
+    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Evidence Maps and Reports.
+  </p>
+
+  {% if result.warnings %}
+  <div class="warning">
+    <strong>Workflow warnings</strong>
+    <ul>{% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <h2>Project and Site Inputs</h2>
+  <table>
+    <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
+    <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
+    <tr><th>Wind region</th><td>{{ result.input.wind_region }}</td></tr>
+    <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability }}</td></tr>
+    <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
+  </table>
+
+  <h2>Variable Summary</h2>
+  <table>
+    <tr>
+      <th>Variable</th><th>Direction</th><th>Recommended</th><th>Confidence</th>
+      <th>Engineer-selected Final</th><th>Review Status</th><th>Warnings</th>
+      <th>Evidence Reference</th>
+    </tr>
+    {% for variable in result.variables %}
+    <tr>
+      <td>{{ variable.label }}</td>
+      <td>{{ variable.direction or "all" }}</td>
+      <td>
+        {% if variable.recommended_value is not none %}
+        {{ "%.3f"|format(variable.recommended_value) }} {{ variable.unit }}
+        {% else %}
+        review required
+        {% endif %}
+      </td>
+      <td>{{ variable.confidence }}</td>
+      <td>
+        {% if variable.review_status in ["accepted", "overridden"]
+          and variable.final_value is not none %}
+        {{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>{{ variable.review_status }}</td>
+      <td>{{ variable.warnings|join(" ") }}</td>
+      <td>{{ variable.evidence_link }}</td>
+    </tr>
+    <tr class="calc">
+      <td></td>
+      <td colspan="7">
+        <strong>Formula / basis:</strong> {{ variable.formula_basis }}<br>
+        <strong>Inputs:</strong>
+        <ul>{% for item in variable.calculation_inputs %}<li>{{ item }}</li>{% endfor %}</ul>
+        <strong>Result:</strong> {{ variable.calculation_result }}
+        {% if variable.review_notes %}
+        <br><strong>Review notes:</strong> {{ variable.review_notes }}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Vsit,b Directional Summary</h2>
+  <p>Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
+  <table>
+    <tr>
+      <th>Direction</th><th>VR</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th>
+      <th>Vsit,b</th><th>Status</th>
+    </tr>
+    {% for row in result.directional_vsitb %}
+    <tr>
+      <td>{{ row.direction }}</td>
+      <td>{% if row.vr is not none %}{{ "%.3f"|format(row.vr) }}{% else %}unreviewed{% endif %}</td>
+      <td>{% if row.md is not none %}{{ "%.3f"|format(row.md) }}{% else %}unreviewed{% endif %}</td>
+      <td>
+        {% if row.mzcat is not none %}
+        {{ "%.3f"|format(row.mzcat) }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>{% if row.ms is not none %}{{ "%.3f"|format(row.ms) }}{% else %}unreviewed{% endif %}</td>
+      <td>{% if row.mt is not none %}{{ "%.3f"|format(row.mt) }}{% else %}unreviewed{% endif %}</td>
+      <td>
+        {% if row.final_vsitb is not none %}
+        {{ "%.3f"|format(row.final_vsitb) }} m/s
+        {% else %}
+        blocked
+        {% endif %}
+      </td>
+      <td>{{ row.status }} {{ row.warnings|join(" ") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Supporting Evidence References</h2>
+  <ul>{% for reference in result.evidence_references %}<li>{{ reference }}</li>{% endfor %}</ul>
+
+  <p class="disclaimer">
+    No final design pressure calculations are included in this report.
   </p>
 </body>
 </html>
