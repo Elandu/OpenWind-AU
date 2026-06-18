@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ COORDINATE_PREFIX_RE = re.compile(
     r'"coordinates"\s*:\s*\[\s*\[\s*\[\s*'
     r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)"
 )
-COORDINATE_PAIR_RE = re.compile(r"\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]")
+MICROSOFT_QUERY_CACHE: dict[tuple[Any, ...], MicrosoftFootprintResult] = {}
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,16 @@ def query_microsoft_building_footprints(
                 "OSM/Overpass will be used as a fallback if available."
             ],
         )
+    cache_key = microsoft_query_cache_key(
+        latitude,
+        longitude,
+        radius_m,
+        cache_root,
+        explicit_file,
+        candidate_files,
+    )
+    if cache_key in MICROSOFT_QUERY_CACHE:
+        return deepcopy(MICROSOFT_QUERY_CACHE[cache_key])
 
     footprints: list[dict[str, Any]] = []
     used_files: list[str] = []
@@ -87,7 +98,7 @@ def query_microsoft_building_footprints(
             used_files.append(str(path))
             footprints.extend(path_footprints)
     if not used_files:
-        return MicrosoftFootprintResult(
+        result = MicrosoftFootprintResult(
             footprints=[],
             source_status="available",
             cache_status="hit_empty",
@@ -95,7 +106,9 @@ def query_microsoft_building_footprints(
             cache_files=[str(path) for path in candidate_files],
             warnings=warnings,
         )
-    return MicrosoftFootprintResult(
+        MICROSOFT_QUERY_CACHE[cache_key] = deepcopy(result)
+        return result
+    result = MicrosoftFootprintResult(
         footprints=deduplicate_by_source_id(footprints),
         source_status="available",
         cache_status="hit",
@@ -103,6 +116,8 @@ def query_microsoft_building_footprints(
         cache_files=used_files,
         warnings=warnings,
     )
+    MICROSOFT_QUERY_CACHE[cache_key] = deepcopy(result)
+    return result
 
 
 def default_microsoft_cache_dir() -> Path:
@@ -115,6 +130,30 @@ def default_microsoft_cache_dir() -> Path:
     if local_app_data:
         return Path(local_app_data) / "OpenWind-AU" / "microsoft_building_footprints"
     return Path.home() / ".cache" / "openwind-au" / "microsoft_building_footprints"
+
+
+def microsoft_query_cache_key(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+    cache_root: Path,
+    explicit_file: Path | None,
+    candidate_files: list[Path],
+) -> tuple[Any, ...]:
+    """Return a cache key that changes when the source cache files change."""
+
+    file_signatures = []
+    for path in candidate_files:
+        stat = path.stat()
+        file_signatures.append((str(path), stat.st_size, stat.st_mtime_ns))
+    return (
+        round(latitude, 7),
+        round(longitude, 7),
+        radius_m,
+        str(cache_root),
+        str(explicit_file) if explicit_file else None,
+        tuple(file_signatures),
+    )
 
 
 def configured_footprint_file() -> Path | None:
@@ -314,7 +353,7 @@ def query_bbox(
 ) -> tuple[float, float, float, float]:
     """Return a padded WGS84 bbox for fast line-level cache filtering."""
 
-    margin_m = max(radius_m + 100, radius_m * 1.1)
+    margin_m = max(radius_m + 500, radius_m * 1.5)
     lat_delta = margin_m / 111_320
     lon_delta = margin_m / max(111_320 * math.cos(math.radians(latitude)), 1)
     return (
@@ -332,25 +371,9 @@ def line_may_intersect_bbox(line: str, bbox: tuple[float, float, float, float]) 
     if not first_match:
         return True
     min_lon, min_lat, max_lon, max_lat = bbox
-    line_min_lon = line_max_lon = float(first_match.group(1))
-    line_min_lat = line_max_lat = float(first_match.group(2))
-    if min_lon <= line_min_lon <= max_lon and min_lat <= line_min_lat <= max_lat:
-        return True
-    for match in COORDINATE_PAIR_RE.finditer(line, first_match.end()):
-        longitude = float(match.group(1))
-        latitude = float(match.group(2))
-        if min_lon <= longitude <= max_lon and min_lat <= latitude <= max_lat:
-            return True
-        line_min_lon = min(line_min_lon, longitude)
-        line_max_lon = max(line_max_lon, longitude)
-        line_min_lat = min(line_min_lat, latitude)
-        line_max_lat = max(line_max_lat, latitude)
-    return (
-        line_min_lon <= max_lon
-        and line_max_lon >= min_lon
-        and line_min_lat <= max_lat
-        and line_max_lat >= min_lat
-    )
+    longitude = float(first_match.group(1))
+    latitude = float(first_match.group(2))
+    return min_lon <= longitude <= max_lon and min_lat <= latitude <= max_lat
 
 
 def polygon_geometries(geometry: Any) -> list[dict[str, Any]]:
