@@ -1651,7 +1651,7 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
       <th>Direction</th><th>Suggested TC Range</th><th>Indicative Mz,cat Range</th>
       <th>Recommended TC</th><th>Recommended Mz,cat</th><th>Recommendation Confidence</th>
       <th>Engineer-selected Final TC</th><th>Engineer-selected Final Mz,cat</th>
-      <th>Review Status</th><th>Review Notes</th><th>Warnings</th>
+      <th>Review Status</th><th>Reviewed By</th><th>Review Notes</th><th>Warnings</th>
     </tr>
     {% for assessment in result.mzcat_assessment %}
     <tr>
@@ -1686,6 +1686,7 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
         {% endif %}
       </td>
       <td>{{ assessment.review_status }}</td>
+      <td>{{ assessment.reviewed_by or "" }}</td>
       <td>{{ assessment.review_notes or "" }}</td>
       <td>
         {% if assessment.review_status == "unreviewed" %}
@@ -1696,7 +1697,7 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
     </tr>
     <tr>
       <td></td>
-      <td colspan="10">
+      <td colspan="11">
         Recommendation reasoning:
         <ul>
           {% for reason in assessment.recommendation_reasoning %}

@@ -297,3 +297,47 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert "plotly" in body["profile_plot_html"].lower()
     assert "openWindMapDiagnostics" in body["terrain_category_map_html"]
     assert "openWindMapDiagnostics" in body["combined_map_html"]
+
+
+def test_terrain_category_report_accepts_engineer_mzcat_reviews(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "default_storey_height_m": 3.0,
+        "mzcat_reviews": [
+            {
+                "direction": "N",
+                "final_terrain_category": "TC2.5",
+                "final_mzcat": 0.96,
+                "reviewed_by": "Engineer A",
+                "review_notes": "Accepted after project review.",
+                "review_status": "accepted",
+            },
+            {
+                "direction": "NE",
+                "review_notes": "Awaiting site photos.",
+                "review_status": "unreviewed",
+            },
+        ],
+    }
+
+    response = client.post("/api/terrain-category/report/html", json=payload)
+
+    assert response.status_code == 200
+    assert "Engineer-selected Final Mz,cat" in response.text
+    assert "0.960" in response.text
+    assert "Engineer A" in response.text
+    assert "Accepted after project review." in response.text
+    assert "Awaiting site photos." in response.text
+    assert "Engineer review required before final Mz,cat may be used." in response.text

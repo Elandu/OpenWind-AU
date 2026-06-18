@@ -18,6 +18,7 @@ const obstructionJson = document.getElementById("obstruction-json");
 const obstructionExport = document.getElementById("obstruction-export");
 const obstructionFilter = document.getElementById("obstruction-filter");
 const mapDisplayMode = document.getElementById("map_display_mode");
+const terrainReportButton = document.getElementById("terrain-report");
 const obstructionQualityTable = document.getElementById("obstruction-quality-table");
 
 let reviewedObstructions = [];
@@ -103,6 +104,24 @@ function combinedMapPayload() {
     reviewed_footprints: reviewedFootprints(),
     map_display_mode: data.get("map_display_mode") || "nearest_500",
     map_max_display_obstructions: 500,
+  };
+}
+
+function mzcatReviewsPayload() {
+  return (currentTerrainCategoryEvidence?.mzcat_assessment || []).map((assessment) => ({
+    direction: assessment.direction,
+    final_terrain_category: assessment.final_terrain_category || null,
+    final_mzcat: assessment.final_mzcat ?? null,
+    reviewed_by: assessment.reviewed_by || null,
+    review_notes: assessment.review_notes || null,
+    review_status: assessment.review_status || "unreviewed",
+  }));
+}
+
+function terrainCategoryReportPayload() {
+  return {
+    ...combinedMapPayload(),
+    mzcat_reviews: mzcatReviewsPayload(),
   };
 }
 
@@ -988,4 +1007,27 @@ mapDisplayMode?.addEventListener("change", async () => {
   mapFrame.removeAttribute("srcdoc");
   const mapResponse = await postJson("/api/map/combined", combinedMapPayload());
   mapFrame.srcdoc = await mapResponse.text();
+});
+
+terrainReportButton?.addEventListener("click", async () => {
+  if (!currentTerrainCategoryEvidence) {
+    summary.textContent = "Run an analysis before opening a reviewed Mz,cat report.";
+    return;
+  }
+  try {
+    const reportResponse = await postJson(
+      "/api/terrain-category/report/html",
+      terrainCategoryReportPayload(),
+    );
+    const html = await reportResponse.text();
+    const reportUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    const reportWindow = window.open(reportUrl, "_blank", "noopener,noreferrer");
+    setTimeout(() => URL.revokeObjectURL(reportUrl), 30000);
+    if (!reportWindow) {
+      summary.textContent = "Reviewed Mz,cat report generated, but the browser blocked the report window.";
+      return;
+    }
+  } catch (error) {
+    summary.textContent = `Reviewed Mz,cat report failed: ${error.message}`;
+  }
 });

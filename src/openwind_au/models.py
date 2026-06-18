@@ -174,6 +174,27 @@ class MzCatDirectionAssessment(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class MzCatReviewSelection(BaseModel):
+    """Engineer-selected final Mz,cat fields supplied for reviewed reports."""
+
+    direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_mzcat: float | None = Field(default=None, gt=0)
+    reviewed_by: str | None = None
+    review_notes: str | None = None
+    review_status: Literal["unreviewed", "accepted", "overridden"] = "unreviewed"
+
+    @model_validator(mode="after")
+    def validate_review_selection(self) -> MzCatReviewSelection:
+        if self.review_status in {"accepted", "overridden"} and (
+            self.final_terrain_category is None or self.final_mzcat is None
+        ):
+            raise ValueError(
+                "final_terrain_category and final_mzcat are required for reviewed Mz,cat values."
+            )
+        return self
+
+
 class MzCatAssessmentResult(BaseModel):
     """Indicative Mz,cat assessment result for all review directions."""
 
@@ -446,6 +467,12 @@ class CombinedMapRequest(SiteAnalysisRequest):
 
 class TerrainCategoryEvidenceRequest(CombinedMapRequest):
     """Request for terrain category evidence using terrain and obstruction data."""
+
+
+class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
+    """Request for terrain category reports with optional engineer Mz,cat reviews."""
+
+    mzcat_reviews: list[MzCatReviewSelection] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)

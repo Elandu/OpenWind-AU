@@ -14,12 +14,14 @@ from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
     CombinedMapRequest,
     MzCatAssessmentResult,
+    MzCatReviewSelection,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
     SiteAnalysisRequest,
     SiteAnalysisResult,
     TerrainCategoryEvidenceRequest,
     TerrainCategoryEvidenceResult,
+    TerrainCategoryReportRequest,
 )
 from openwind_au.obstructions import (
     manual_overrides_from_json,
@@ -268,14 +270,16 @@ def create_app() -> FastAPI:
         return terrain_category_map_html(site_result, obstruction_result, evidence)
 
     @app.post("/api/terrain-category/report/html", response_class=HTMLResponse)
-    def terrain_category_report_html(request: TerrainCategoryEvidenceRequest) -> str:
+    def terrain_category_report_html(request: TerrainCategoryReportRequest) -> str:
         try:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return render_terrain_category_report_html(evidence)
+        return render_terrain_category_report_html(
+            _apply_mzcat_reviews(evidence, request.mzcat_reviews)
+        )
 
     @app.get("/api/terrain-category/validation/cases")
     def terrain_category_validation_cases() -> Response:
@@ -366,6 +370,33 @@ def _obstruction_request_from_combined(
         map_display_mode=request.map_display_mode,
         map_max_display_obstructions=request.map_max_display_obstructions,
     )
+
+
+def _apply_mzcat_reviews(
+    evidence: TerrainCategoryEvidenceResult,
+    reviews: list[MzCatReviewSelection],
+) -> TerrainCategoryEvidenceResult:
+    if not reviews:
+        return evidence
+    reviews_by_direction = {review.direction: review for review in reviews}
+    reviewed_assessments = []
+    for assessment in evidence.mzcat_assessment:
+        review = reviews_by_direction.get(assessment.direction)
+        if review is None:
+            reviewed_assessments.append(assessment)
+            continue
+        reviewed_assessments.append(
+            assessment.model_copy(
+                update={
+                    "final_terrain_category": review.final_terrain_category,
+                    "final_mzcat": review.final_mzcat,
+                    "reviewed_by": review.reviewed_by,
+                    "review_notes": review.review_notes,
+                    "review_status": review.review_status,
+                },
+            )
+        )
+    return evidence.model_copy(update={"mzcat_assessment": reviewed_assessments})
 
 
 app = create_app()
