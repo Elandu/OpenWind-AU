@@ -166,13 +166,14 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
     assert fmap.status_code == 200
     assert "leaflet" in fmap.text.lower()
     assert "Raw OSM building polygons before filtering" in fmap.text
-    assert "Accepted obstruction polygons" in fmap.text
     assert "OSM fallback and matched attributes" in fmap.text
     assert "Microsoft building footprints" in fmap.text
     assert "Vegetation polygons" in fmap.text
-    assert "Excluded objects" in fmap.text
+    assert "Excluded and skipped objects" in fmap.text
     assert "Shielding candidates" in fmap.text
     assert "Missing height objects" in fmap.text
+    assert "Obstruction centroids" in fmap.text
+    assert "openWindMapDiagnostics" in fmap.text
     assert report.status_code == 200
     assert "Missing Height Summary" in report.text
     assert "Obstruction Data Quality" in report.text
@@ -242,9 +243,12 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert "final AS/NZS 1170.2 terrain category" in body["disclaimer"]
     assert "Mz,cat" in body["disclaimer"]
     assert "suggested_category_range" in body["directions"][0]
+    assert len(body["mzcat_assessment"]) == 8
+    assert "lower_indicative_mzcat" in body["mzcat_assessment"][0]
     assert "final_terrain_category" not in body["directions"][0]
     assert fmap.status_code == 200
-    assert "Obstruction density overlays" in fmap.text
+    assert "Dominant obstruction zones" in fmap.text
+    assert "Indicative Mz,cat ranges" in fmap.text
     assert report.status_code == 200
     assert "Terrain Category Evidence Summary" in report.text
     assert "Mz,cat" in report.text

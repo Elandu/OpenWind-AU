@@ -6,7 +6,7 @@ It does not:
 
 - calculate AS/NZS 1170.2 topographic multipliers;
 - assign a final terrain category;
-- calculate `Mz,cat`;
+- calculate final `Mz,cat` design values;
 - calculate certified shielding multipliers;
 - calculate design wind pressures;
 - produce AS 4055 wind classifications;

@@ -209,6 +209,12 @@ def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(
     def fail_query(*_args, **_kwargs):
         raise FootprintQueryError("Overpass unavailable")
 
+    def missing_microsoft(*_args, **_kwargs):
+        return microsoft_result([])
+
+    monkeypatch.setattr(
+        obstructions_module, "query_microsoft_building_footprints", missing_microsoft
+    )
     monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", fail_query)
 
     result = run_obstruction_inventory(

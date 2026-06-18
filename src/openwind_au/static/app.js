@@ -7,12 +7,17 @@ const topographySummary = document.getElementById("topography-summary");
 const obstructionTable = document.getElementById("obstruction-table");
 const obstructionWarning = document.getElementById("obstruction-warning");
 const shieldingSectorTable = document.getElementById("shielding-sector-table");
+const shieldingThresholdNote = document.getElementById("shielding-threshold-note");
+const msExplanationSector = document.getElementById("ms-explanation-sector");
+const msExplanation = document.getElementById("ms-explanation");
 const terrainCategoryTable = document.getElementById("terrain-category-table");
+const mzCatTable = document.getElementById("mzcat-table");
 const terrainCategoryFrame = document.getElementById("terrain-category-frame");
 const obstructionCsv = document.getElementById("obstruction-csv");
 const obstructionJson = document.getElementById("obstruction-json");
 const obstructionExport = document.getElementById("obstruction-export");
 const obstructionFilter = document.getElementById("obstruction-filter");
+const mapDisplayMode = document.getElementById("map_display_mode");
 const obstructionQualityTable = document.getElementById("obstruction-quality-table");
 
 let reviewedObstructions = [];
@@ -75,6 +80,8 @@ function obstructionPayload() {
     commercial_storey_height_m: Number(data.get("commercial_storey_height_m") || 4),
     manual_overrides: manualOverrides(),
     reviewed_footprints: reviewedFootprints(),
+    map_display_mode: data.get("map_display_mode") || "nearest_500",
+    map_max_display_obstructions: 500,
   };
   if (!payload.address) delete payload.address;
   if (payload.latitude === null) delete payload.latitude;
@@ -93,6 +100,8 @@ function combinedMapPayload() {
     commercial_storey_height_m: Number(data.get("commercial_storey_height_m") || 4),
     manual_overrides: manualOverrides(),
     reviewed_footprints: reviewedFootprints(),
+    map_display_mode: data.get("map_display_mode") || "nearest_500",
+    map_max_display_obstructions: 500,
   };
 }
 
@@ -301,6 +310,7 @@ function renderTerrainCategoryEvidence(evidence) {
   const directions = evidence.directions || [];
   if (!directions.length) {
     terrainCategoryTable.innerHTML = "<tr><td colspan=\"12\">No terrain category evidence generated.</td></tr>";
+    renderMzCatAssessment([]);
     return;
   }
   terrainCategoryTable.innerHTML = directions.map((direction) => `
@@ -319,13 +329,36 @@ function renderTerrainCategoryEvidence(evidence) {
       <td>${(direction.warnings || []).join(" ")}</td>
     </tr>
   `).join("");
+  renderMzCatAssessment(evidence.mzcat_assessment || []);
+}
+
+function renderMzCatAssessment(assessments) {
+  if (!mzCatTable) return;
+  if (!assessments.length) {
+    mzCatTable.innerHTML = "<tr><td colspan=\"6\">Indicative Mz,cat evidence will appear after analysis.</td></tr>";
+    return;
+  }
+  mzCatTable.innerHTML = assessments.map((assessment) => `
+    <tr>
+      <td>${assessment.direction}</td>
+      <td>${badge("neutral", assessment.controlling_category_range || assessment.suggested_terrain_category_range)}</td>
+      <td>${assessment.lower_indicative_mzcat.toFixed(3)}-${assessment.upper_indicative_mzcat.toFixed(3)}</td>
+      <td>${badge(assessment.confidence, assessment.confidence)}</td>
+      <td><ul>${(assessment.reasoning || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></td>
+      <td>${(assessment.warnings || []).map(escapeHtml).join(" ")}</td>
+    </tr>
+  `).join("");
 }
 
 function renderShieldingSectors(sectors) {
   if (!sectors.length) {
-    shieldingSectorTable.innerHTML = "<tr><td colspan=\"10\">No shielding sectors calculated.</td></tr>";
+    shieldingThresholdNote.textContent = "Current subject building height threshold z will appear after analysis.";
+    shieldingSectorTable.innerHTML = "<tr><td colspan=\"11\">No shielding sectors calculated.</td></tr>";
+    renderMsExplanation([]);
     return;
   }
+  const subjectHeight = sectors[0].subject_height_m;
+  shieldingThresholdNote.textContent = `Current subject building height threshold z = ${subjectHeight.toFixed(2)} m. Obstructions with selected hs >= z are included in preliminary shielding.`;
   shieldingSectorTable.innerHTML = sectors.map((sector) => `
     <tr>
       <td>${sector.direction}</td>
@@ -337,13 +370,72 @@ function renderShieldingSectors(sectors) {
       <td>${formatMaybeNumber(sector.ls_m, " m")}</td>
       <td>${formatMaybeNumber(sector.s, "")}</td>
       <td>${sector.indicative_ms.toFixed(3)}</td>
+      <td>${rejectionSummary(sector)}</td>
       <td>
         ${badge(sector.overall_confidence || "unknown", `confidence ${sector.overall_confidence || "unknown"}`)}
         <span class="muted">high ${sector.high_confidence_count || 0}, est ${sector.estimated_height_count || 0}, unknown ${sector.unknown_height_count || 0}</span>
       </td>
     </tr>
-    ${(sector.warnings || []).length ? `<tr><td></td><td colspan="9">${sector.warnings.join(" ")}</td></tr>` : ""}
+    ${(sector.warnings || []).length ? `<tr><td></td><td colspan="10">${sector.warnings.join(" ")}</td></tr>` : ""}
   `).join("");
+  renderMsExplanation(sectors);
+}
+
+function rejectionSummary(sector) {
+  const counts = sector.rejection_reason_counts || {};
+  const entries = Object.entries(counts).filter(([, count]) => count);
+  if (!entries.length) return "-";
+  return entries.map(([reason, count]) => `${reasonLabel(reason)} ${count}`).join(", ");
+}
+
+function renderMsExplanation(sectors) {
+  if (!msExplanationSector || !msExplanation) return;
+  if (!sectors.length) {
+    msExplanationSector.innerHTML = "";
+    msExplanation.textContent = "Run an analysis to inspect shielding rejection reasons.";
+    return;
+  }
+  const previous = msExplanationSector.value;
+  msExplanationSector.innerHTML = sectors.map((sector) =>
+    `<option value="${sector.direction}">${sector.direction} - Ms ${sector.indicative_ms.toFixed(3)}</option>`
+  ).join("");
+  const selectedDirection = sectors.some((sector) => sector.direction === previous) ? previous : sectors[0].direction;
+  msExplanationSector.value = selectedDirection;
+  const sector = sectors.find((item) => item.direction === selectedDirection) || sectors[0];
+  const rejected = sector.rejected_obstructions || [];
+  const reasonRows = Object.entries(sector.rejection_reason_counts || {})
+    .filter(([, count]) => count)
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, count]) => `<li>${reasonLabel(reason)}: ${count}</li>`)
+    .join("");
+  const rejectedRows = rejected.length
+    ? `<table class="debug-table"><thead><tr><th>ID</th><th>Reason</th><th>Distance</th><th>Bearing</th><th>Height</th><th>Source</th></tr></thead><tbody>${rejected.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.obstruction_id)}</td>
+          <td>${reasonLabel(item.reason)}</td>
+          <td>${formatMaybeNumber(item.distance_m, " m")}</td>
+          <td>${formatMaybeNumber(item.bearing_deg, " deg")}</td>
+          <td>${formatMaybeNumber(item.height_m, " m")}</td>
+          <td>${sourceLabel(item.height_source)}</td>
+        </tr>
+      `).join("")}</tbody></table>`
+    : "<p>No rejected in-sector obstructions were recorded.</p>";
+  msExplanation.innerHTML = `
+    <p>${sector.direction} uses azimuth ${sector.wind_direction_deg.toFixed(1)} deg, upwind sector ${sector.sector_start_deg.toFixed(1)}-${sector.sector_end_deg.toFixed(1)} deg, radius ${sector.sector_radius_m.toFixed(1)} m, z ${sector.subject_height_m.toFixed(2)} m.</p>
+    <p>${sector.total_obstructions_in_sector || 0} obstructions are in sector; ${sector.usable_height_count || 0} have usable height; ${sector.included_as_shielding_count || sector.ns || 0} are included as shielding.</p>
+    <h4>Top rejection reasons</h4>
+    ${reasonRows ? `<ul>${reasonRows}</ul>` : "<p>No rejection reasons were recorded.</p>"}
+    <h4>First rejected obstructions</h4>
+    ${rejectedRows}
+  `;
+}
+
+function reasonLabel(reason) {
+  return {
+    height_missing: "height missing",
+    height_below_subject: "height below z",
+    excluded_or_manual_review: "excluded/manual review",
+  }[reason] || reason;
 }
 
 function obstructionRow(item) {
@@ -547,22 +639,34 @@ function shieldingSector(site, obstructions, subjectHeight, direction, azimuth) 
     item.distance_m <= radius &&
     angleDelta(item.bearing_deg, azimuth) <= 22.5
   );
-  const included = sectorCandidates.filter((item) =>
-    item.height_m !== null &&
-    item.height_m >= subjectHeight
-  );
+  const rejected = [];
+  const rejectionReasonCounts = {};
+  const included = [];
+  let usableHeightCount = 0;
+  sectorCandidates.forEach((item) => {
+    const height = shieldingHeight(item);
+    if (height === null) {
+      recordRejection(rejected, rejectionReasonCounts, item, "height_missing");
+      return;
+    }
+    usableHeightCount += 1;
+    if (height < subjectHeight) {
+      recordRejection(rejected, rejectionReasonCounts, item, "height_below_subject", height);
+      return;
+    }
+    included.push(item);
+  });
   const ns = included.length;
-  const unknownHeightCount = sectorCandidates.filter((item) =>
-    item.height_m === null || item.height_source === "missing"
-  ).length;
+  const unknownHeightCount = rejectionReasonCounts.height_missing || 0;
   if (!ns) {
     const emptySector = baseShieldingSector(direction, azimuth, radius, subjectHeight, 0, 1);
+    addShieldingDebug(emptySector, sectorCandidates, usableHeightCount, rejectionReasonCounts, rejected);
     emptySector.unknown_height_count = unknownHeightCount;
     emptySector.overall_confidence = unknownHeightCount ? "unknown" : "low";
     emptySector.warnings = sectorConfidenceWarnings([], unknownHeightCount);
     return emptySector;
   }
-  const averageHs = mean(included.map((item) => item.height_m));
+  const averageHs = mean(included.map((item) => shieldingHeight(item)));
   const averageBs = mean(included.map((item) => footprintBreadthNormalToWind(item.footprint_geometry, site, azimuth)));
   const ls = subjectHeight * ((10 / ns) + 5);
   const s = averageHs > 0 && averageBs > 0 ? ls / Math.sqrt(averageHs * averageBs) : null;
@@ -572,7 +676,9 @@ function shieldingSector(site, obstructions, subjectHeight, direction, azimuth) 
     .filter((item) => ["low", "unknown"].includes(item.confidence) || (item.warnings || []).length)
     .map((item) => item.obstruction_id);
   const reviewRequired = included.filter((item) => item.review_required ?? item.manual_review_required);
+  const vegetation = included.filter((item) => item.classification === "vegetation");
   const estimatedCount = included.filter((item) => item.height_source === "ESTIMATED").length;
+  addShieldingDebug(sector, sectorCandidates, usableHeightCount, rejectionReasonCounts, rejected);
   sector.average_hs_m = averageHs;
   sector.average_bs_m = averageBs;
   sector.ls_m = ls;
@@ -585,11 +691,45 @@ function shieldingSector(site, obstructions, subjectHeight, direction, azimuth) 
   sector.warnings = [
     ...(dsmIds.length ? [`Sector uses DSM-DTM estimated obstruction heights for: ${dsmIds.join(", ")}`] : []),
     ...(estimatedCount ? ["Shielding assessment contains estimated obstruction heights."] : []),
+    ...(dsmIds.length || estimatedCount ? ["Estimated or DSM-DTM heights are included for preliminary shielding only."] : []),
     ...(warningIds.length ? [`Sector includes low-confidence or warning-flagged obstructions: ${warningIds.join(", ")}`] : []),
     ...(reviewRequired.length > 1 ? ["Multiple shielding structures require manual review."] : []),
+    ...(vegetation.length ? [`Vegetation appears as potential shielding and requires engineer review: ${vegetation.map((item) => item.obstruction_id).join(", ")}`] : []),
     ...sectorConfidenceWarnings(included, unknownHeightCount),
   ];
   return sector;
+}
+
+function shieldingHeight(item) {
+  const height = item.selected_height_m ?? item.height_m;
+  return height === null || height === undefined ? null : height;
+}
+
+function addShieldingDebug(sector, sectorCandidates, usableHeightCount, rejectionReasonCounts, rejected) {
+  sector.total_obstructions_in_sector = sectorCandidates.length;
+  sector.usable_height_count = usableHeightCount;
+  sector.rejected_height_below_z_count = rejectionReasonCounts.height_below_subject || 0;
+  sector.rejected_height_missing_count = rejectionReasonCounts.height_missing || 0;
+  sector.rejected_excluded_manual_review_count = rejectionReasonCounts.excluded_or_manual_review || 0;
+  sector.included_as_shielding_count = sector.ns;
+  sector.rejection_reason_counts = rejectionReasonCounts;
+  sector.rejected_obstructions = rejected.slice(0, 10);
+}
+
+function recordRejection(rejected, reasonCounts, item, reason, height = null) {
+  reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+  if (rejected.length >= 10) return;
+  rejected.push({
+    obstruction_id: item.obstruction_id,
+    reason,
+    distance_m: item.distance_m,
+    bearing_deg: item.bearing_deg,
+    height_m: height,
+    height_source: item.height_source,
+    classification: item.classification,
+    confidence: item.confidence,
+    review_required: item.review_required ?? item.manual_review_required,
+  });
 }
 
 function baseShieldingSector(direction, azimuth, radius, subjectHeight, ns, indicativeMs) {
@@ -600,6 +740,12 @@ function baseShieldingSector(direction, azimuth, radius, subjectHeight, ns, indi
     sector_end_deg: normaliseBearing(azimuth + 22.5),
     sector_radius_m: radius,
     subject_height_m: subjectHeight,
+    total_obstructions_in_sector: 0,
+    usable_height_count: 0,
+    rejected_height_below_z_count: 0,
+    rejected_height_missing_count: 0,
+    rejected_excluded_manual_review_count: 0,
+    included_as_shielding_count: 0,
     ns,
     average_hs_m: null,
     average_bs_m: null,
@@ -611,6 +757,8 @@ function baseShieldingSector(direction, azimuth, radius, subjectHeight, ns, indi
     unknown_height_count: 0,
     overall_confidence: "unknown",
     included_obstruction_ids: [],
+    rejection_reason_counts: {},
+    rejected_obstructions: [],
     notes: [],
     warnings: [],
   };
@@ -621,7 +769,7 @@ function overallShieldingConfidence(included, unknownHeightCount) {
   if (unknownHeightCount || included.some((item) => ["low", "unknown"].includes(item.confidence))) {
     return "low";
   }
-  if (included.some((item) => item.height_source === "ESTIMATED" || (item.review_required ?? item.manual_review_required))) {
+  if (included.some((item) => ["ESTIMATED", "DSM_DTM"].includes(item.height_source) || (item.review_required ?? item.manual_review_required))) {
     return "low";
   }
   if (included.every((item) => item.confidence === "high")) return "high";
@@ -638,16 +786,24 @@ function sectorConfidenceWarnings(included, unknownHeightCount) {
 }
 
 function footprintBreadthNormalToWind(geometry, site, azimuth) {
-  const ring = geometry?.coordinates?.[0] || [];
-  if (ring.length < 2) return 0;
+  const coordinates = footprintProjectionCoordinates(geometry);
+  if (coordinates.length < 2) return 0;
   const theta = azimuth * Math.PI / 180;
   const normalEast = Math.cos(theta);
   const normalNorth = -Math.sin(theta);
-  const projections = ring.map(([lon, lat]) => {
+  const projections = coordinates.map(([lon, lat]) => {
     const [east, north] = localOffsetsMeters(lat, lon, site.latitude, site.longitude);
     return east * normalEast + north * normalNorth;
   });
   return Math.max(...projections) - Math.min(...projections);
+}
+
+function footprintProjectionCoordinates(geometry) {
+  if (geometry?.type === "Polygon") return geometry.coordinates?.[0] || [];
+  if (geometry?.type === "MultiPolygon") {
+    return (geometry.coordinates || []).flatMap((polygon) => polygon?.[0] || []);
+  }
+  return [];
 }
 
 function localOffsetsMeters(lat, lon, originLat, originLon) {
@@ -702,4 +858,15 @@ function escapeHtml(value) {
 
 obstructionFilter?.addEventListener("change", () => {
   if (currentObstructionInventory) renderObstructionInventory(currentObstructionInventory);
+});
+
+msExplanationSector?.addEventListener("change", () => {
+  renderMsExplanation(currentObstructionInventory?.shielding_sectors || []);
+});
+
+mapDisplayMode?.addEventListener("change", async () => {
+  if (!currentObstructionInventory?.site) return;
+  mapFrame.removeAttribute("srcdoc");
+  const mapResponse = await postJson("/api/map/combined", combinedMapPayload());
+  mapFrame.srcdoc = await mapResponse.text();
 });

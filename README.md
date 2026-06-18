@@ -52,7 +52,7 @@ OpenWind-AU does not calculate:
 
 - AS/NZS 1170.2 topographic multipliers;
 - final terrain category assignments;
-- `Mz,cat` values;
+- final `Mz,cat` design values;
 - design wind pressures;
 - AS 4055 wind classifications;
 - certified shielding multiplier `Ms`;

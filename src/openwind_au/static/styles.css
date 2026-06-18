@@ -247,6 +247,20 @@ th {
   text-align: right;
 }
 
+.debug-panel {
+  margin-top: 16px;
+  border-top: 1px solid #d0d7de;
+  padding-top: 14px;
+}
+
+.debug-panel label {
+  max-width: 260px;
+}
+
+.debug-table {
+  margin-top: 8px;
+}
+
 iframe {
   width: 100%;
   height: 460px;

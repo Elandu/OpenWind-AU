@@ -141,17 +141,54 @@ class TerrainCategoryDirectionEvidence(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class MzCatDirectionAssessment(BaseModel):
+    """Indicative directional Mz,cat evidence for engineering review."""
+
+    direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    azimuth_deg: float
+    suggested_terrain_category_range: str
+    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+    assessment_height_m: float
+    lower_indicative_mzcat: float
+    upper_indicative_mzcat: float
+    confidence: Literal["high", "medium", "low"]
+    directional_fetch_distance_m: float
+    built_up_area_percentage: float
+    vegetation_area_percentage: float
+    obstruction_density_per_km2: float
+    average_obstruction_height_m: float | None = None
+    controlling_category_range: str
+    reasoning: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class MzCatAssessmentResult(BaseModel):
+    """Indicative Mz,cat assessment result for all review directions."""
+
+    input: SiteAnalysisRequest
+    site: SiteLocation
+    directions: list[MzCatDirectionAssessment]
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str = (
+        "Indicative Mz,cat evidence is provided for engineering review only. OpenWind-AU does "
+        "not assign a final AS/NZS 1170.2 terrain category, does not claim compliance, and does "
+        "not calculate final design wind speeds."
+    )
+
+
 class TerrainCategoryEvidenceResult(BaseModel):
     """Directional terrain category evidence for engineering review."""
 
     input: SiteAnalysisRequest
     site: SiteLocation
     directions: list[TerrainCategoryDirectionEvidence]
+    mzcat_assessment: list[MzCatDirectionAssessment] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Terrain category evidence is provided for engineering review only. OpenWind-AU does "
         "not assign a final AS/NZS 1170.2 terrain category, does not claim compliance, and does "
-        "not calculate Mz,cat values."
+        "not calculate final Mz,cat design values."
     )
 
 
@@ -243,6 +280,13 @@ class ObstructionInventoryRequest(BaseModel):
     commercial_storey_height_m: float = Field(default=4.0, gt=0, le=8)
     manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
     reviewed_footprints: list[ReviewedFootprint] = Field(default_factory=list)
+    map_display_mode: Literal[
+        "nearest_500",
+        "shielding_candidates",
+        "all_footprints",
+        "centroids_only",
+    ] = "nearest_500"
+    map_max_display_obstructions: int = Field(default=500, ge=1, le=5000)
 
     @model_validator(mode="after")
     def validate_location(self) -> ObstructionInventoryRequest:
@@ -320,6 +364,12 @@ class ShieldingSectorResult(BaseModel):
     sector_end_deg: float
     sector_radius_m: float
     subject_height_m: float
+    total_obstructions_in_sector: int = 0
+    usable_height_count: int = 0
+    rejected_height_below_z_count: int = 0
+    rejected_height_missing_count: int = 0
+    rejected_excluded_manual_review_count: int = 0
+    included_as_shielding_count: int = 0
     ns: int
     average_hs_m: float | None = None
     average_bs_m: float | None = None
@@ -331,6 +381,8 @@ class ShieldingSectorResult(BaseModel):
     unknown_height_count: int = 0
     overall_confidence: Literal["high", "medium", "low", "unknown"] = "unknown"
     included_obstruction_ids: list[str] = Field(default_factory=list)
+    rejection_reason_counts: dict[str, int] = Field(default_factory=dict)
+    rejected_obstructions: list[dict[str, Any]] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
@@ -371,6 +423,13 @@ class CombinedMapRequest(SiteAnalysisRequest):
     commercial_storey_height_m: float = Field(default=4.0, gt=0, le=8)
     manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
     reviewed_footprints: list[ReviewedFootprint] = Field(default_factory=list)
+    map_display_mode: Literal[
+        "nearest_500",
+        "shielding_candidates",
+        "all_footprints",
+        "centroids_only",
+    ] = "nearest_500"
+    map_max_display_obstructions: int = Field(default=500, ge=1, le=5000)
 
 
 class TerrainCategoryEvidenceRequest(CombinedMapRequest):

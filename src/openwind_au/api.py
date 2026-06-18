@@ -13,6 +13,7 @@ from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
     CombinedMapRequest,
+    MzCatAssessmentResult,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
     SiteAnalysisRequest,
@@ -199,6 +200,8 @@ def create_app() -> FastAPI:
                 commercial_storey_height_m=request.commercial_storey_height_m,
                 manual_overrides=request.manual_overrides,
                 reviewed_footprints=request.reviewed_footprints,
+                map_display_mode=request.map_display_mode,
+                map_max_display_obstructions=request.map_max_display_obstructions,
             )
             obstruction_result = run_obstruction_inventory(obstruction_request)
         except ValueError as exc:
@@ -223,6 +226,25 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return evidence
+
+    @app.post("/api/mzcat/assessment", response_model=MzCatAssessmentResult)
+    def mzcat_assessment(request: TerrainCategoryEvidenceRequest) -> MzCatAssessmentResult:
+        try:
+            _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return MzCatAssessmentResult(
+            input=evidence.input,
+            site=evidence.site,
+            directions=evidence.mzcat_assessment,
+            warnings=[
+                "Terrain category not confirmed.",
+                "Mz,cat values are indicative only.",
+                "Engineer review required.",
+            ],
+        )
 
     @app.post("/api/terrain-category/map", response_class=HTMLResponse)
     def terrain_category_map(request: TerrainCategoryEvidenceRequest) -> str:
@@ -322,6 +344,8 @@ def _run_terrain_category_workflow(
         commercial_storey_height_m=request.commercial_storey_height_m,
         manual_overrides=request.manual_overrides,
         reviewed_footprints=request.reviewed_footprints,
+        map_display_mode=request.map_display_mode,
+        map_max_display_obstructions=request.map_max_display_obstructions,
     )
     obstruction_result = run_obstruction_inventory(obstruction_request)
     evidence = run_terrain_category_evidence(site_result, obstruction_result)

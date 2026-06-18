@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ MICROSOFT_AUSTRALIA_DOWNLOAD_URL = (
 )
 MICROSOFT_FOOTPRINT_SOURCE = "microsoft_building_footprints"
 MICROSOFT_DATA_LICENSE = "ODbL"
+COORDINATE_PREFIX_RE = re.compile(
+    r'"coordinates"\s*:\s*\[\s*\[\s*\[\s*'
+    r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)"
+)
+COORDINATE_PAIR_RE = re.compile(r"\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\]")
 
 
 @dataclass(frozen=True)
@@ -229,10 +235,12 @@ def read_footprint_file(
     """Read a GeoJSON/GeoJSONL Microsoft footprint cache file and clip it to a radius."""
 
     suffix = path.suffix.lower()
-    if suffix in {".geojsonl", ".ndjson"}:
-        features = read_geojson_lines(path)
-    else:
-        features = read_geojson_features(path)
+    bbox = query_bbox(latitude, longitude, radius_m)
+    features = (
+        iter_geojson_lines(path, bbox=bbox)
+        if suffix in {".geojsonl", ".ndjson"}
+        else iter(read_geojson_features(path))
+    )
     footprints: list[dict[str, Any]] = []
     for index, feature in enumerate(features):
         geometry = feature.get("geometry") if isinstance(feature, dict) else None
@@ -276,16 +284,73 @@ def read_geojson_features(path: Path) -> list[dict[str, Any]]:
 def read_geojson_lines(path: Path) -> list[dict[str, Any]]:
     """Read newline-delimited GeoJSON features."""
 
-    features: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        data = json.loads(line)
-        if isinstance(data, dict) and data.get("type") == "Feature":
-            features.append(data)
-        elif isinstance(data, dict) and data.get("type") in {"Polygon", "MultiPolygon"}:
-            features.append({"type": "Feature", "properties": {}, "geometry": data})
-    return features
+    return list(iter_geojson_lines(path))
+
+
+def iter_geojson_lines(
+    path: Path,
+    *,
+    bbox: tuple[float, float, float, float] | None = None,
+):
+    """Yield newline-delimited GeoJSON features without loading the whole tile."""
+
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            if bbox and not line_may_intersect_bbox(line, bbox):
+                continue
+            data = json.loads(line)
+            if isinstance(data, dict) and data.get("type") == "Feature":
+                yield data
+            elif isinstance(data, dict) and data.get("type") in {"Polygon", "MultiPolygon"}:
+                yield {"type": "Feature", "properties": {}, "geometry": data}
+
+
+def query_bbox(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+) -> tuple[float, float, float, float]:
+    """Return a padded WGS84 bbox for fast line-level cache filtering."""
+
+    margin_m = max(radius_m + 100, radius_m * 1.1)
+    lat_delta = margin_m / 111_320
+    lon_delta = margin_m / max(111_320 * math.cos(math.radians(latitude)), 1)
+    return (
+        longitude - lon_delta,
+        latitude - lat_delta,
+        longitude + lon_delta,
+        latitude + lat_delta,
+    )
+
+
+def line_may_intersect_bbox(line: str, bbox: tuple[float, float, float, float]) -> bool:
+    """Return whether a GeoJSONL feature is worth parsing for this small query bbox."""
+
+    first_match = COORDINATE_PREFIX_RE.search(line)
+    if not first_match:
+        return True
+    min_lon, min_lat, max_lon, max_lat = bbox
+    line_min_lon = line_max_lon = float(first_match.group(1))
+    line_min_lat = line_max_lat = float(first_match.group(2))
+    if min_lon <= line_min_lon <= max_lon and min_lat <= line_min_lat <= max_lat:
+        return True
+    for match in COORDINATE_PAIR_RE.finditer(line, first_match.end()):
+        longitude = float(match.group(1))
+        latitude = float(match.group(2))
+        if min_lon <= longitude <= max_lon and min_lat <= latitude <= max_lat:
+            return True
+        line_min_lon = min(line_min_lon, longitude)
+        line_max_lon = max(line_max_lon, longitude)
+        line_min_lat = min(line_min_lat, latitude)
+        line_max_lat = max(line_max_lat, latitude)
+    return (
+        line_min_lon <= max_lon
+        and line_max_lon >= min_lon
+        and line_min_lat <= max_lat
+        and line_max_lat >= min_lat
+    )
 
 
 def polygon_geometries(geometry: Any) -> list[dict[str, Any]]:
