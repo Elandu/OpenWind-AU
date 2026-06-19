@@ -83,5 +83,5 @@ GET /api/terrain-category/validation/cases
 GET /api/terrain-category/validation
 ```
 
-These examples validate that suggested ranges are broadly reasonable prompts for review. They do
-not assign final terrain categories and do not calculate `Mz,cat`.
+These examples validate that suggested ranges and indicative Mz,cat ranges are broadly reasonable
+prompts for review. They do not assign final terrain categories or final `Mz,cat` design values.

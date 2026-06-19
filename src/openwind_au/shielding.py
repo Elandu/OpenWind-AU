@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from openwind_au.geo import EARTH_RADIUS_M, destination_point
 from openwind_au.models import ObstructionRecord, ShieldingSectorResult, SiteLocation
@@ -57,16 +58,33 @@ def shielding_sector_result(
         for obstruction in obstructions
         if _is_in_sector(obstruction, wind_direction_deg, sector_radius_m, half_width)
     ]
-    included = [
-        obstruction
-        for obstruction in sector_candidates
-        if obstruction.height_m is not None and obstruction.height_m >= subject_height_m
-    ]
+    included: list[ObstructionRecord] = []
+    rejected: list[dict[str, Any]] = []
+    rejection_reason_counts: dict[str, int] = {}
+    usable_height_count = 0
+    for obstruction in sector_candidates:
+        height = shielding_height_m(obstruction)
+        if height is None:
+            _record_rejection(
+                rejected,
+                rejection_reason_counts,
+                obstruction,
+                "height_missing",
+            )
+            continue
+        usable_height_count += 1
+        if height < subject_height_m:
+            _record_rejection(
+                rejected,
+                rejection_reason_counts,
+                obstruction,
+                "height_below_subject",
+                height,
+            )
+            continue
+        included.append(obstruction)
     ns = len(included)
-    unknown_height_count = sum(
-        obstruction.height_m is None or obstruction.height_source == "missing"
-        for obstruction in sector_candidates
-    )
+    unknown_height_count = rejection_reason_counts.get("height_missing", 0)
     estimated_height_count = sum(
         obstruction.height_source == "ESTIMATED" for obstruction in included
     )
@@ -86,6 +104,15 @@ def shielding_sector_result(
             sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
             sector_radius_m=sector_radius_m,
             subject_height_m=subject_height_m,
+            total_obstructions_in_sector=len(sector_candidates),
+            usable_height_count=usable_height_count,
+            rejected_height_below_z_count=rejection_reason_counts.get("height_below_subject", 0),
+            rejected_height_missing_count=unknown_height_count,
+            rejected_excluded_manual_review_count=rejection_reason_counts.get(
+                "excluded_or_manual_review",
+                0,
+            ),
+            included_as_shielding_count=0,
             ns=0,
             indicative_ms=1.0,
             high_confidence_count=0,
@@ -93,10 +120,13 @@ def shielding_sector_result(
             unknown_height_count=unknown_height_count,
             overall_confidence="unknown" if unknown_height_count else "low",
             notes=notes,
+            rejection_reason_counts=rejection_reason_counts,
+            rejected_obstructions=rejected[:10],
             warnings=_sector_confidence_warnings([], unknown_height_count),
         )
 
-    heights = [obstruction.height_m for obstruction in included if obstruction.height_m is not None]
+    heights = [shielding_height_m(obstruction) for obstruction in included]
+    heights = [height for height in heights if height is not None]
     breadths = [
         footprint_breadth_normal_to_wind(
             obstruction.footprint_geometry,
@@ -126,6 +156,11 @@ def shielding_sector_result(
     review_required = [
         obstruction.obstruction_id for obstruction in included if obstruction.review_required
     ]
+    vegetation = [
+        obstruction.obstruction_id
+        for obstruction in included
+        if obstruction.classification == "vegetation"
+    ]
 
     if s is None:
         notes.append("Indicative Ms defaults to 1.0 because average shielding breadth is zero.")
@@ -140,6 +175,8 @@ def shielding_sector_result(
         )
     if estimated_height_count:
         warnings.append("Shielding assessment contains estimated obstruction heights.")
+    if any(obstruction.height_source == "ESTIMATED" for obstruction in included) or estimated:
+        warnings.append("Estimated or DSM-DTM heights are included for preliminary shielding only.")
     if low_confidence:
         warnings.append(
             "Sector includes low-confidence or warning-flagged obstructions: "
@@ -147,6 +184,11 @@ def shielding_sector_result(
         )
     if len(review_required) > 1:
         warnings.append("Multiple shielding structures require manual review.")
+    if vegetation:
+        warnings.append(
+            "Vegetation appears as potential shielding and requires engineer review: "
+            + ", ".join(vegetation)
+        )
     warnings.extend(_sector_confidence_warnings(included, unknown_height_count))
     overall_confidence = _overall_shielding_confidence(included, unknown_height_count)
 
@@ -157,6 +199,15 @@ def shielding_sector_result(
         sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
         sector_radius_m=sector_radius_m,
         subject_height_m=subject_height_m,
+        total_obstructions_in_sector=len(sector_candidates),
+        usable_height_count=usable_height_count,
+        rejected_height_below_z_count=rejection_reason_counts.get("height_below_subject", 0),
+        rejected_height_missing_count=unknown_height_count,
+        rejected_excluded_manual_review_count=rejection_reason_counts.get(
+            "excluded_or_manual_review",
+            0,
+        ),
+        included_as_shielding_count=ns,
         ns=ns,
         average_hs_m=average_hs,
         average_bs_m=average_bs,
@@ -168,6 +219,8 @@ def shielding_sector_result(
         unknown_height_count=unknown_height_count,
         overall_confidence=overall_confidence,
         included_obstruction_ids=[obstruction.obstruction_id for obstruction in included],
+        rejection_reason_counts=rejection_reason_counts,
+        rejected_obstructions=rejected[:10],
         notes=notes,
         warnings=warnings,
     )
@@ -196,7 +249,7 @@ def footprint_breadth_normal_to_wind(
 ) -> float:
     """Return building breadth normal to wind from footprint projection width."""
 
-    coordinates = geometry.get("coordinates", [[]])[0]
+    coordinates = footprint_projection_coordinates(geometry)
     if len(coordinates) < 2:
         return 0.0
     theta = math.radians(wind_direction_deg)
@@ -207,6 +260,31 @@ def footprint_breadth_normal_to_wind(
         east, north = _local_offsets_m(latitude, longitude, site_latitude, site_longitude)
         projections.append(east * normal_east + north * normal_north)
     return max(projections) - min(projections)
+
+
+def footprint_projection_coordinates(geometry: dict) -> list[list[float]]:
+    """Return exterior footprint coordinates used for breadth projection."""
+
+    geometry_type = geometry.get("type")
+    if geometry_type == "Polygon":
+        return list(geometry.get("coordinates", [[]])[0])
+    if geometry_type == "MultiPolygon":
+        coordinates: list[list[float]] = []
+        for polygon in geometry.get("coordinates", []):
+            if polygon:
+                coordinates.extend(polygon[0])
+        return coordinates
+    return []
+
+
+def shielding_height_m(obstruction: ObstructionRecord) -> float | None:
+    """Return the operational obstruction height used for preliminary shielding."""
+
+    return (
+        obstruction.selected_height_m
+        if obstruction.selected_height_m is not None
+        else obstruction.height_m
+    )
 
 
 def shielding_sector_polygon(
@@ -261,11 +339,38 @@ def _overall_shielding_confidence(
         return "unknown" if unknown_height_count else "low"
     if unknown_height_count or any(item.confidence in {"low", "unknown"} for item in included):
         return "low"
-    if any(item.height_source == "ESTIMATED" or item.review_required for item in included):
+    if any(
+        item.height_source in {"ESTIMATED", "DSM_DTM"} or item.review_required for item in included
+    ):
         return "low"
     if all(item.confidence == "high" for item in included):
         return "high"
     return "medium"
+
+
+def _record_rejection(
+    rejected: list[dict[str, Any]],
+    reason_counts: dict[str, int],
+    obstruction: ObstructionRecord,
+    reason: str,
+    height_m: float | None = None,
+) -> None:
+    reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    if len(rejected) >= 10:
+        return
+    rejected.append(
+        {
+            "obstruction_id": obstruction.obstruction_id,
+            "reason": reason,
+            "distance_m": obstruction.distance_m,
+            "bearing_deg": obstruction.bearing_deg,
+            "height_m": height_m,
+            "height_source": obstruction.height_source,
+            "classification": obstruction.classification,
+            "confidence": obstruction.confidence,
+            "review_required": obstruction.review_required,
+        }
+    )
 
 
 def _sector_confidence_warnings(

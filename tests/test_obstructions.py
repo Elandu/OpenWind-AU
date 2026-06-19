@@ -209,6 +209,12 @@ def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(
     def fail_query(*_args, **_kwargs):
         raise FootprintQueryError("Overpass unavailable")
 
+    def missing_microsoft(*_args, **_kwargs):
+        return microsoft_result([])
+
+    monkeypatch.setattr(
+        obstructions_module, "query_microsoft_building_footprints", missing_microsoft
+    )
     monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", fail_query)
 
     result = run_obstruction_inventory(
@@ -394,7 +400,7 @@ def test_microsoft_footprints_are_used_when_overpass_fails(monkeypatch) -> None:
     assert result.obstructions[0].footprint_source == MICROSOFT_FOOTPRINT_SOURCE
     assert result.data_quality.total_microsoft_building_footprints_found == 1
     assert result.data_quality.microsoft_cache_status == "hit"
-    assert "Overpass unavailable" in " ".join(result.warnings)
+    assert "live Overpass enrichment was skipped" in " ".join(result.warnings)
 
 
 def test_reviewed_geometry_has_priority_over_microsoft(monkeypatch) -> None:
@@ -414,6 +420,7 @@ def test_reviewed_geometry_has_priority_over_microsoft(monkeypatch) -> None:
 
     monkeypatch.setattr(obstructions_module, "query_microsoft_building_footprints", fake_microsoft)
     monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", fake_osm)
+    monkeypatch.setenv("OPENWIND_OVERPASS_ENRICH_MICROSOFT", "1")
 
     result = run_obstruction_inventory(
         ObstructionInventoryRequest(
@@ -449,6 +456,7 @@ def test_osm_is_fallback_when_microsoft_cache_misses(monkeypatch) -> None:
 
     monkeypatch.setattr(obstructions_module, "query_microsoft_building_footprints", fake_microsoft)
     monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", fake_osm)
+    monkeypatch.setenv("OPENWIND_OVERPASS_ENRICH_MICROSOFT", "1")
 
     result = run_obstruction_inventory(
         ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500)
@@ -482,6 +490,7 @@ def test_duplicate_overlap_prefers_microsoft_geometry_and_merges_osm_height(
 
     monkeypatch.setattr(obstructions_module, "query_microsoft_building_footprints", fake_microsoft)
     monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", fake_osm)
+    monkeypatch.setenv("OPENWIND_OVERPASS_ENRICH_MICROSOFT", "1")
 
     result = run_obstruction_inventory(
         ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500)

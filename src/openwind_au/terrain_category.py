@@ -16,6 +16,7 @@ from openwind_au.models import (
     TerrainCategoryScoreComponents,
     TerrainProfile,
 )
+from openwind_au.mzcat import run_mzcat_assessment
 from openwind_au.shielding import DIRECTION_AZIMUTHS, SECTOR_WIDTH_DEG
 
 HIGH_COVERAGE_THRESHOLD = 0.8
@@ -49,10 +50,17 @@ def run_terrain_category_evidence(
     ]
     if obstruction_result.data_source_status == "unavailable":
         warnings.append("Insufficient obstruction data: public footprint source was unavailable.")
+    mzcat_assessment = run_mzcat_assessment(
+        request=site_result.input,
+        site=site_result.site,
+        directions=directions,
+        recommendation_mode=getattr(site_result.input, "mzcat_recommendation_mode", "conservative"),
+    )
     return TerrainCategoryEvidenceResult(
         input=site_result.input,
         site=site_result.site,
         directions=directions,
+        mzcat_assessment=mzcat_assessment.directions,
         warnings=warnings,
     )
 
@@ -183,6 +191,8 @@ def suggested_category_range(
         + scores.vegetation_score * 0.18
         - scores.open_exposure_score * 0.12
     )
+    if built_up_area_percentage < 3 and scores.open_exposure_score >= 90:
+        return "TC1.5-TC2"
     if built_up_area_percentage < 8 and scores.open_exposure_score >= 70:
         return "TC2-TC2.5"
     if roughness_score < 25:
@@ -190,8 +200,8 @@ def suggested_category_range(
     if roughness_score < 45:
         return "TC2.5-TC3"
     if roughness_score < 65 or obstruction_density_per_km2 < 1200:
-        return "TC3-TC3.5"
-    return "TC3.5-TC4"
+        return "TC3-TC4"
+    return "TC3-TC4"
 
 
 def confidence_from_evidence(

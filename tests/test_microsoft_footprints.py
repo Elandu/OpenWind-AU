@@ -91,6 +91,41 @@ def test_microsoft_provider_reads_geojsonl_cache(tmp_path) -> None:
     assert result.footprints[0]["source_id"] == "ms-au-line"
 
 
+def test_microsoft_provider_geojsonl_prefilter_keeps_polygon_crossing_query_bbox(tmp_path) -> None:
+    cache = tmp_path / "microsoft"
+    tiles = cache / "tiles"
+    tiles.mkdir(parents=True)
+    tile = tiles / "-34_151.geojsonl"
+    crossing = {
+        "type": "Feature",
+        "properties": {"id": "crossing"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [151.202, -33.864],
+                    [151.212, -33.864],
+                    [151.212, -33.856],
+                    [151.202, -33.856],
+                    [151.202, -33.864],
+                ]
+            ],
+        },
+    }
+    tile.write_text(json.dumps(crossing) + "\n", encoding="utf-8")
+
+    result = query_microsoft_building_footprints(
+        -33.86,
+        151.21,
+        500,
+        cache_dir=cache,
+        allow_download=False,
+    )
+
+    assert len(result.footprints) == 1
+    assert result.footprints[0]["source_id"] == "ms-au-crossing"
+
+
 def test_microsoft_provider_downloads_required_index_tile(tmp_path, monkeypatch) -> None:
     cache = tmp_path / "microsoft"
     index = tmp_path / "index.json"

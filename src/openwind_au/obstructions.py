@@ -125,22 +125,36 @@ def run_obstruction_inventory(
             default_source=MICROSOFT_FOOTPRINT_SOURCE,
         )
         warnings.extend(microsoft_result.warnings)
-        try:
-            raw_footprints, overpass_debug = query_building_footprints_with_debug(
-                site.latitude,
-                site.longitude,
-                inventory_radius_m,
-            )
-        except FootprintQueryError as exc:
+        enrich_microsoft_with_overpass = os.environ.get(
+            "OPENWIND_OVERPASS_ENRICH_MICROSOFT", ""
+        ).lower() in {"1", "true", "yes"}
+        if microsoft_footprints and not enrich_microsoft_with_overpass:
             raw_footprints = []
-            if not microsoft_footprints:
-                data_source_status = "unavailable"
-                warnings.append(
-                    "Building footprint query failed. The obstruction inventory is empty "
-                    "until Microsoft Building Footprints cache data or OSM data is available; "
-                    "indicative Ms cannot be calculated."
+            overpass_debug["pipeline_log"].append(
+                "Skipped live Overpass query because Microsoft Building Footprints cache "
+                "supplied usable building geometry."
+            )
+            warnings.append(
+                "Microsoft Building Footprints cache supplied obstruction geometry; "
+                "live Overpass enrichment was skipped to keep the inventory responsive."
+            )
+        else:
+            try:
+                raw_footprints, overpass_debug = query_building_footprints_with_debug(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
                 )
-            warnings.append(str(exc))
+            except FootprintQueryError as exc:
+                raw_footprints = []
+                if not microsoft_footprints:
+                    data_source_status = "unavailable"
+                    warnings.append(
+                        "Building footprint query failed. The obstruction inventory is empty "
+                        "until Microsoft Building Footprints cache data or OSM data is available; "
+                        "indicative Ms cannot be calculated."
+                    )
+                warnings.append(str(exc))
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
     else:
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")

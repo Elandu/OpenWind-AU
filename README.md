@@ -1,7 +1,7 @@
 # OpenWind-AU
 
 [![CI](https://github.com/Elandu/OpenWind-AU/actions/workflows/ci.yml/badge.svg)](https://github.com/Elandu/OpenWind-AU/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
 OpenWind-AU is an open-source Python/FastAPI application for preliminary terrain-profile and
 topographic screening of Australian building sites. It helps engineers and reviewers inspect public
@@ -52,7 +52,7 @@ OpenWind-AU does not calculate:
 
 - AS/NZS 1170.2 topographic multipliers;
 - final terrain category assignments;
-- `Mz,cat` values;
+- final `Mz,cat` design values;
 - design wind pressures;
 - AS 4055 wind classifications;
 - certified shielding multiplier `Ms`;
@@ -241,4 +241,4 @@ See [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Licence
 
-MIT. See [`LICENSE`](LICENSE).
+GNU Affero General Public License v3. See [`LICENSE`](LICENSE).

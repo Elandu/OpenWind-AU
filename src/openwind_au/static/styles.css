@@ -60,7 +60,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid #b8c2cc;
   border-radius: 6px;
   padding: 10px;
@@ -245,6 +246,59 @@ th {
   margin: 0;
   font-weight: 700;
   text-align: right;
+}
+
+.debug-panel {
+  margin-top: 16px;
+  border-top: 1px solid #d0d7de;
+  padding-top: 14px;
+}
+
+.debug-panel label {
+  max-width: 260px;
+}
+
+.debug-table {
+  margin-top: 8px;
+}
+
+.review-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr);
+  gap: 8px;
+  min-width: 220px;
+}
+
+.review-controls button {
+  margin-top: 0;
+}
+
+.review-controls textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.workflow-card {
+  margin-top: 12px;
+}
+
+.workflow-review {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.workflow-review button {
+  margin-top: 0;
+}
+
+.workflow-review textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.calc-panel {
+  padding: 10px 0;
 }
 
 iframe {

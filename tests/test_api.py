@@ -166,13 +166,14 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
     assert fmap.status_code == 200
     assert "leaflet" in fmap.text.lower()
     assert "Raw OSM building polygons before filtering" in fmap.text
-    assert "Accepted obstruction polygons" in fmap.text
     assert "OSM fallback and matched attributes" in fmap.text
     assert "Microsoft building footprints" in fmap.text
     assert "Vegetation polygons" in fmap.text
-    assert "Excluded objects" in fmap.text
+    assert "Excluded and skipped objects" in fmap.text
     assert "Shielding candidates" in fmap.text
     assert "Missing height objects" in fmap.text
+    assert "Obstruction centroids" in fmap.text
+    assert "openWindMapDiagnostics" in fmap.text
     assert report.status_code == 200
     assert "Missing Height Summary" in report.text
     assert "Obstruction Data Quality" in report.text
@@ -242,9 +243,12 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert "final AS/NZS 1170.2 terrain category" in body["disclaimer"]
     assert "Mz,cat" in body["disclaimer"]
     assert "suggested_category_range" in body["directions"][0]
+    assert len(body["mzcat_assessment"]) == 8
+    assert "lower_indicative_mzcat" in body["mzcat_assessment"][0]
     assert "final_terrain_category" not in body["directions"][0]
     assert fmap.status_code == 200
-    assert "Obstruction density overlays" in fmap.text
+    assert "Dominant obstruction zones" in fmap.text
+    assert "Indicative Mz,cat ranges" in fmap.text
     assert report.status_code == 200
     assert "Terrain Category Evidence Summary" in report.text
     assert "Mz,cat" in report.text
@@ -254,3 +258,86 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert all(item["status"] == "pass" for item in validation.json())
     assert page.status_code == 200
     assert "Terrain Category Evidence" in page.text
+
+
+def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    calls = {"inventory": 0}
+
+    def fake_inventory(request):
+        calls["inventory"] += 1
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "default_storey_height_m": 3.0,
+        "mzcat_recommendation_mode": "best_estimate",
+    }
+
+    response = client.post("/api/full-analysis", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert calls["inventory"] == 1
+    assert body["site_analysis"]["site"]["ground_elevation_m"] == 75
+    assert len(body["obstruction_inventory"]["obstructions"]) == 1
+    assert len(body["terrain_category_evidence"]["directions"]) == 8
+    assert len(body["terrain_category_evidence"]["mzcat_assessment"]) == 8
+    assert (
+        body["terrain_category_evidence"]["mzcat_assessment"][0]["recommendation_mode"]
+        == "best_estimate"
+    )
+    assert "plotly" in body["profile_plot_html"].lower()
+    assert "openWindMapDiagnostics" in body["terrain_category_map_html"]
+    assert "openWindMapDiagnostics" in body["combined_map_html"]
+
+
+def test_terrain_category_report_accepts_engineer_mzcat_reviews(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "default_storey_height_m": 3.0,
+        "mzcat_reviews": [
+            {
+                "direction": "N",
+                "final_terrain_category": "TC2.5",
+                "final_mzcat": 0.96,
+                "reviewed_by": "Engineer A",
+                "review_notes": "Accepted after project review.",
+                "review_status": "accepted",
+            },
+            {
+                "direction": "NE",
+                "review_notes": "Awaiting site photos.",
+                "review_status": "unreviewed",
+            },
+        ],
+    }
+
+    response = client.post("/api/terrain-category/report/html", json=payload)
+
+    assert response.status_code == 200
+    assert "Engineer-selected Final Mz,cat" in response.text
+    assert "0.960" in response.text
+    assert "Engineer A" in response.text
+    assert "Accepted after project review." in response.text
+    assert "Awaiting site photos." in response.text
+    assert "Engineer review required before final Mz,cat may be used." in response.text

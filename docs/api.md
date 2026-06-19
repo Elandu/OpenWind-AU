@@ -104,6 +104,7 @@ with manual/OSM height sources.
 ```text
 GET  /terrain-category
 POST /api/terrain-category/evidence
+POST /api/mzcat/assessment
 POST /api/terrain-category/map
 POST /api/terrain-category/report/html
 GET  /api/terrain-category/validation/cases
@@ -116,8 +117,10 @@ coverage, open-terrain percentage, obstruction heights, obstruction density, spa
 density, directional fetch, shielding confidence, separate evidence scores, warnings, and a
 qualified suggested terrain category range.
 
-The API does not assign a final AS/NZS 1170.2 terrain category and does not calculate `Mz,cat`.
-Suggested ranges such as `TC2-TC2.5` or `TC2.5-TC3` are prompts for competent engineering review.
+The API does not assign a final AS/NZS 1170.2 terrain category and does not calculate final
+design wind speeds. It reports indicative `Mz,cat` ranges from the suggested terrain category
+range for competent engineering review. Suggested ranges such as `TC2-TC2.5` or `TC2.5-TC3`
+are prompts for review, not confirmed categories.
 
 For the human review workflow, see [`workflow.md`](workflow.md) and
 [`reviewer-checklist.md`](reviewer-checklist.md).

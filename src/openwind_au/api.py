@@ -13,12 +13,17 @@ from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
     CombinedMapRequest,
+    MzCatAssessmentResult,
+    MzCatReviewSelection,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
     SiteAnalysisRequest,
     SiteAnalysisResult,
     TerrainCategoryEvidenceRequest,
     TerrainCategoryEvidenceResult,
+    TerrainCategoryReportRequest,
+    WindWorkflowRequest,
+    WindWorkflowResult,
 )
 from openwind_au.obstructions import (
     manual_overrides_from_json,
@@ -33,6 +38,7 @@ from openwind_au.reports import (
     render_html_report,
     render_obstruction_report_html,
     render_terrain_category_report_html,
+    render_wind_workflow_report_html,
     result_to_json,
     terrain_category_map_html,
     write_pdf_report,
@@ -48,6 +54,7 @@ from openwind_au.validation import (
     run_validation_cases,
     validation_report_to_json,
 )
+from openwind_au.wind_workflow import run_wind_workflow
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -67,6 +74,14 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
+        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
+
+    @app.get("/wind-workflow", response_class=HTMLResponse)
+    def wind_workflow_page() -> str:
+        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
+
+    @app.get("/site-analysis", response_class=HTMLResponse)
+    def site_analysis_page() -> str:
         return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
 
     @app.get("/terrain-category", response_class=HTMLResponse)
@@ -89,6 +104,49 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/full-analysis")
+    def full_analysis(request: TerrainCategoryEvidenceRequest) -> dict:
+        """Run the browser workflow in one pass to avoid duplicate obstruction queries."""
+
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "site_analysis": site_result,
+            "obstruction_inventory": obstruction_result,
+            "terrain_category_evidence": evidence,
+            "profile_plot_html": profile_plot_html(site_result),
+            "terrain_category_map_html": terrain_category_map_html(
+                site_result,
+                obstruction_result,
+                evidence,
+            ),
+            "combined_map_html": combined_map_html(site_result, obstruction_result),
+        }
+
+    @app.post("/api/wind-workflow", response_model=WindWorkflowResult)
+    def wind_workflow(request: WindWorkflowRequest) -> WindWorkflowResult:
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return run_wind_workflow(
+            request=request,
+            site_result=site_result,
+            obstruction_result=obstruction_result,
+            terrain_result=evidence,
+        )
+
+    @app.post("/api/wind-workflow/report/html", response_class=HTMLResponse)
+    def wind_workflow_report_html(request: WindWorkflowRequest) -> str:
+        result = wind_workflow(request)
+        return render_wind_workflow_report_html(result)
 
     @app.post("/api/export/json")
     def export_json(request: SiteAnalysisRequest) -> Response:
@@ -187,20 +245,9 @@ def create_app() -> FastAPI:
     def map_combined(request: CombinedMapRequest) -> str:
         try:
             site_result = analyse(request)
-            obstruction_request = ObstructionInventoryRequest(
-                address=request.address,
-                latitude=request.latitude,
-                longitude=request.longitude,
-                radius_m=request.obstruction_radius_m,
-                building_height_m=request.building_height_m,
-                default_storey_height_m=request.default_storey_height_m,
-                residential_storey_height_m=request.residential_storey_height_m,
-                residential_two_storey_height_m=request.residential_two_storey_height_m,
-                commercial_storey_height_m=request.commercial_storey_height_m,
-                manual_overrides=request.manual_overrides,
-                reviewed_footprints=request.reviewed_footprints,
+            obstruction_result = run_obstruction_inventory(
+                _obstruction_request_from_combined(request)
             )
-            obstruction_result = run_obstruction_inventory(obstruction_request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -224,6 +271,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return evidence
 
+    @app.post("/api/mzcat/assessment", response_model=MzCatAssessmentResult)
+    def mzcat_assessment(request: TerrainCategoryEvidenceRequest) -> MzCatAssessmentResult:
+        try:
+            _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return MzCatAssessmentResult(
+            input=evidence.input,
+            site=evidence.site,
+            directions=evidence.mzcat_assessment,
+            recommendation_mode=request.mzcat_recommendation_mode,
+            warnings=[
+                "Terrain category not confirmed.",
+                "Mz,cat values are indicative only.",
+                "Engineer review required.",
+            ],
+        )
+
     @app.post("/api/terrain-category/map", response_class=HTMLResponse)
     def terrain_category_map(request: TerrainCategoryEvidenceRequest) -> str:
         try:
@@ -235,14 +302,16 @@ def create_app() -> FastAPI:
         return terrain_category_map_html(site_result, obstruction_result, evidence)
 
     @app.post("/api/terrain-category/report/html", response_class=HTMLResponse)
-    def terrain_category_report_html(request: TerrainCategoryEvidenceRequest) -> str:
+    def terrain_category_report_html(request: TerrainCategoryReportRequest) -> str:
         try:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return render_terrain_category_report_html(evidence)
+        return render_terrain_category_report_html(
+            _apply_mzcat_reviews(evidence, request.mzcat_reviews)
+        )
 
     @app.get("/api/terrain-category/validation/cases")
     def terrain_category_validation_cases() -> Response:
@@ -310,7 +379,15 @@ def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
     site_result = run_site_analysis(request, SRTMProvider())
-    obstruction_request = ObstructionInventoryRequest(
+    obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
+    evidence = run_terrain_category_evidence(site_result, obstruction_result)
+    return site_result, obstruction_result, evidence
+
+
+def _obstruction_request_from_combined(
+    request: CombinedMapRequest,
+) -> ObstructionInventoryRequest:
+    return ObstructionInventoryRequest(
         address=request.address,
         latitude=request.latitude,
         longitude=request.longitude,
@@ -322,10 +399,36 @@ def _run_terrain_category_workflow(
         commercial_storey_height_m=request.commercial_storey_height_m,
         manual_overrides=request.manual_overrides,
         reviewed_footprints=request.reviewed_footprints,
+        map_display_mode=request.map_display_mode,
+        map_max_display_obstructions=request.map_max_display_obstructions,
     )
-    obstruction_result = run_obstruction_inventory(obstruction_request)
-    evidence = run_terrain_category_evidence(site_result, obstruction_result)
-    return site_result, obstruction_result, evidence
+
+
+def _apply_mzcat_reviews(
+    evidence: TerrainCategoryEvidenceResult,
+    reviews: list[MzCatReviewSelection],
+) -> TerrainCategoryEvidenceResult:
+    if not reviews:
+        return evidence
+    reviews_by_direction = {review.direction: review for review in reviews}
+    reviewed_assessments = []
+    for assessment in evidence.mzcat_assessment:
+        review = reviews_by_direction.get(assessment.direction)
+        if review is None:
+            reviewed_assessments.append(assessment)
+            continue
+        reviewed_assessments.append(
+            assessment.model_copy(
+                update={
+                    "final_terrain_category": review.final_terrain_category,
+                    "final_mzcat": review.final_mzcat,
+                    "reviewed_by": review.reviewed_by,
+                    "review_notes": review.review_notes,
+                    "review_status": review.review_status,
+                },
+            )
+        )
+    return evidence.model_copy(update={"mzcat_assessment": reviewed_assessments})
 
 
 app = create_app()

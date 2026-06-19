@@ -150,8 +150,8 @@ def test_scoring_confidence_and_validation_examples() -> None:
         average_obstruction_height_m=25,
     )
 
-    assert suggested_category_range(open_scores, 2, 10) == "TC2-TC2.5"
-    assert suggested_category_range(urban_scores, 70, 2000) == "TC3.5-TC4"
+    assert suggested_category_range(open_scores, 2, 10) == "TC1.5-TC2"
+    assert suggested_category_range(urban_scores, 70, 2000) == "TC3-TC4"
     assert (
         confidence_from_evidence(
             obstruction_count=6,

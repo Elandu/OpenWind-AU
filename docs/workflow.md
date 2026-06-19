@@ -70,7 +70,8 @@ coverage, open terrain, obstruction height statistics, density, spacing, fetch, 
 confidence, evidence scores, and suggested category ranges.
 
 Suggested ranges are prompts for review only. OpenWind-AU does not assign a final terrain category
-and does not calculate `Mz,cat`.
+and does not calculate final `Mz,cat` design values. It provides indicative Mz,cat ranges as
+supporting evidence for engineer review.
 
 ## 8. Engineer Review
 

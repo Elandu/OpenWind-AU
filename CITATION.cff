@@ -6,7 +6,7 @@ date-released: "2026-06-17"
 authors:
   - name: "Elandu"
 repository-code: "https://github.com/Elandu/OpenWind-AU"
-license: "MIT"
+license: "AGPL-3.0-only"
 keywords:
   - wind engineering
   - terrain analysis

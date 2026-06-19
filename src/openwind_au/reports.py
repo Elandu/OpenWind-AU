@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import folium
 import plotly.graph_objects as go
@@ -12,16 +15,68 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from shapely.errors import ShapelyError
+from shapely.geometry import GeometryCollection, mapping, shape
 
 from openwind_au.geo import destination_point
 from openwind_au.models import (
     ObstructionInventoryResult,
+    ObstructionRecord,
     SiteAnalysisResult,
     SiteLocation,
     TerrainCategoryDirectionEvidence,
     TerrainCategoryEvidenceResult,
+    WindWorkflowResult,
 )
 from openwind_au.shielding import shielding_sector_polygon
+
+DEFAULT_MAP_DISPLAY_LIMIT = 500
+MAX_POLYGON_GEOJSON_PAYLOAD_BYTES = 2_500_000
+
+
+@dataclass
+class MapRenderDiagnostics:
+    """Display-only diagnostics for obstruction map rendering."""
+
+    display_mode: str = "nearest_500"
+    max_displayed_obstructions: int = DEFAULT_MAP_DISPLAY_LIMIT
+    total_obstructions: int = 0
+    selected_obstructions: int = 0
+    plotted_polygons: int = 0
+    plotted_centroids: int = 0
+    total_geojson_payload_size: int = 0
+    largest_polygon_vertex_count: int = 0
+    invalid_geometry_count: int = 0
+    skipped_geometry_count: int = 0
+    skipped_geometry_reasons: dict[str, int] = field(default_factory=dict)
+    map_html_size: int = 0
+    fallback_mode: bool = False
+    warnings: list[str] = field(default_factory=list)
+    console_safe_errors: list[str] = field(default_factory=list)
+
+    def skip(self, reason: str) -> None:
+        self.skipped_geometry_count += 1
+        self.skipped_geometry_reasons[reason] = self.skipped_geometry_reasons.get(reason, 0) + 1
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "display_mode": self.display_mode,
+            "max_displayed_obstructions": self.max_displayed_obstructions,
+            "total_obstructions": self.total_obstructions,
+            "selected_obstructions": self.selected_obstructions,
+            "plotted_polygons": self.plotted_polygons,
+            "plotted_centroids": self.plotted_centroids,
+            "total_geojson_payload_size": self.total_geojson_payload_size,
+            "largest_polygon_vertex_count": self.largest_polygon_vertex_count,
+            "invalid_geometry_count": self.invalid_geometry_count,
+            "skipped_geometry_count": self.skipped_geometry_count,
+            "skipped_geometry_reasons": self.skipped_geometry_reasons,
+            "map_html_size": self.map_html_size,
+            "fallback_mode": self.fallback_mode,
+            "warnings": self.warnings,
+            "console_safe_errors": self.console_safe_errors,
+        }
+
 
 REPORT_TEMPLATE = Template(
     """
@@ -434,9 +489,9 @@ def obstruction_map_html(result: ObstructionInventoryResult) -> str:
         fill=False,
         tooltip=f"Obstruction inventory radius: {result.input.radius_m} m",
     ).add_to(fmap)
-    _add_obstruction_review_layers(fmap, result)
+    diagnostics = _add_obstruction_review_layers(fmap, result)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
-    return fmap.get_root().render()
+    return _render_map_with_diagnostics(fmap, diagnostics)
 
 
 def combined_map_html(
@@ -530,7 +585,7 @@ def combined_map_html(
             ),
         ).add_to(feature_layer)
 
-    _add_obstruction_review_layers(fmap, obstruction_result)
+    diagnostics = _add_obstruction_review_layers(fmap, obstruction_result)
 
     for sector in obstruction_result.shielding_sectors:
         color = _shielding_sector_color(sector.indicative_ms)
@@ -555,7 +610,7 @@ def combined_map_html(
     shielding_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
-    return fmap.get_root().render()
+    return _render_map_with_diagnostics(fmap, diagnostics)
 
 
 def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
@@ -570,6 +625,12 @@ def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -
     return TERRAIN_CATEGORY_REPORT_TEMPLATE.render(result=result)
 
 
+def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
+    """Render an HTML AS/NZS 1170.2 site wind workflow report."""
+
+    return WIND_WORKFLOW_REPORT_TEMPLATE.render(result=result)
+
+
 def terrain_category_map_html(
     site_result: SiteAnalysisResult,
     obstruction_result: ObstructionInventoryResult,
@@ -582,10 +643,15 @@ def terrain_category_map_html(
         zoom_start=14,
         control_scale=True,
     )
-    sector_layer = folium.FeatureGroup(name="Open terrain evidence sectors", show=True)
-    built_layer = folium.FeatureGroup(name="Built-up areas", show=True)
-    vegetation_layer = folium.FeatureGroup(name="Vegetation areas", show=True)
-    density_layer = folium.FeatureGroup(name="Obstruction density overlays", show=True)
+    sector_layer = folium.FeatureGroup(
+        name="Directional terrain category evidence and controlling fetch areas",
+        show=True,
+    )
+    mzcat_layer = folium.FeatureGroup(name="Indicative Mz,cat ranges", show=True)
+    density_layer = folium.FeatureGroup(name="Dominant obstruction zones", show=True)
+    mzcat_by_direction = {
+        assessment.direction: assessment for assessment in evidence_result.mzcat_assessment
+    }
 
     folium.Marker(
         [site_result.site.latitude, site_result.site.longitude],
@@ -611,6 +677,25 @@ def terrain_category_map_html(
                 f"range={direction.suggested_category_range}"
             ),
         ).add_to(sector_layer)
+        mzcat = mzcat_by_direction.get(direction.direction)
+        if mzcat is not None:
+            folium.GeoJson(
+                terrain_category_sector_polygon(evidence_result.site, direction),
+                style_function=lambda _feature, color=color: {
+                    "color": color,
+                    "weight": 2,
+                    "dashArray": "5 4",
+                    "fillColor": color,
+                    "fillOpacity": 0.05,
+                },
+                tooltip=(
+                    f"{direction.direction}: indicative Mz,cat "
+                    f"{mzcat.lower_indicative_mzcat:.3f}-"
+                    f"{mzcat.upper_indicative_mzcat:.3f}, "
+                    f"TC range={mzcat.controlling_category_range}, "
+                    f"confidence={mzcat.confidence}"
+                ),
+            ).add_to(mzcat_layer)
         folium.CircleMarker(
             location=destination_point(
                 evidence_result.site.latitude,
@@ -628,35 +713,12 @@ def terrain_category_map_html(
             ),
         ).add_to(density_layer)
 
-    for obstruction in obstruction_result.obstructions:
-        target_layer = (
-            vegetation_layer if obstruction.classification == "vegetation" else built_layer
-        )
-        fill_color = "#16a34a" if obstruction.classification == "vegetation" else "#475569"
-        height_label = (
-            f"{obstruction.height_m:.1f} m" if obstruction.height_m is not None else "unknown"
-        )
-        folium.GeoJson(
-            obstruction.footprint_geometry,
-            style_function=lambda _feature, fill_color=fill_color: {
-                "color": fill_color,
-                "weight": 1,
-                "fillColor": fill_color,
-                "fillOpacity": 0.25,
-            },
-            tooltip=(
-                f"{obstruction.obstruction_id}: {obstruction.classification}, "
-                f"height={height_label}, "
-                f"source={obstruction.height_source}, confidence={obstruction.confidence}"
-            ),
-        ).add_to(target_layer)
-
     sector_layer.add_to(fmap)
-    built_layer.add_to(fmap)
-    vegetation_layer.add_to(fmap)
+    mzcat_layer.add_to(fmap)
     density_layer.add_to(fmap)
+    diagnostics = _add_obstruction_review_layers(fmap, obstruction_result)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
-    return fmap.get_root().render()
+    return _render_map_with_diagnostics(fmap, diagnostics)
 
 
 def terrain_category_sector_polygon(
@@ -692,98 +754,430 @@ def terrain_category_sector_polygon(
 def _add_obstruction_review_layers(
     fmap: folium.Map,
     result: ObstructionInventoryResult,
-) -> None:
+) -> MapRenderDiagnostics:
     """Add source-quality obstruction review layers to a Folium map."""
 
+    diagnostics = MapRenderDiagnostics(
+        display_mode=getattr(result.input, "map_display_mode", "nearest_500"),
+        max_displayed_obstructions=getattr(
+            result.input,
+            "map_max_display_obstructions",
+            DEFAULT_MAP_DISPLAY_LIMIT,
+        ),
+        total_obstructions=len(result.obstructions),
+    )
     raw_osm_layer = folium.FeatureGroup(
         name="Raw OSM building polygons before filtering",
         show=False,
     )
-    accepted_layer = folium.FeatureGroup(name="Accepted obstruction polygons", show=True)
-    manual_layer = folium.FeatureGroup(name="Manual reviewed obstruction geometry", show=True)
-    microsoft_layer = folium.FeatureGroup(name="Microsoft building footprints", show=True)
-    osm_layer = folium.FeatureGroup(name="OSM fallback and matched attributes", show=True)
-    vegetation_layer = folium.FeatureGroup(name="Vegetation polygons", show=True)
-    excluded_layer = folium.FeatureGroup(name="Excluded objects", show=False)
-    shielding_layer = folium.FeatureGroup(name="Shielding candidates", show=True)
-    missing_height_layer = folium.FeatureGroup(name="Missing height objects", show=False)
-
-    for footprint in result.data_quality.raw_osm_building_footprints:
-        geometry = footprint.get("footprint_geometry")
-        if not geometry:
-            continue
-        folium.GeoJson(
-            geometry,
-            style_function=lambda _feature: {
-                "color": "#2563eb",
-                "weight": 1,
-                "fillColor": "#93c5fd",
-                "fillOpacity": 0.10,
-            },
-            tooltip=f"{footprint.get('source_id', 'raw-osm-building')}: raw OSM building",
-        ).add_to(raw_osm_layer)
-
-    for obstruction in result.obstructions:
-        target_layer = _obstruction_source_layer(
-            obstruction,
-            manual_layer,
-            microsoft_layer,
-            osm_layer,
-            vegetation_layer,
+    excluded_layer = folium.FeatureGroup(name="Excluded and skipped objects", show=False)
+    centroid_layer = folium.FeatureGroup(name="Obstruction centroids", show=True)
+    polygon_layers = {
+        "manual_reviewed": folium.FeatureGroup(
+            name="Manual reviewed obstruction geometry",
+            show=True,
+        ),
+        "microsoft_building_footprints": folium.FeatureGroup(
+            name="Microsoft building footprints",
+            show=True,
+        ),
+        "OSM": folium.FeatureGroup(name="OSM fallback and matched attributes", show=True),
+        "vegetation": folium.FeatureGroup(name="Vegetation polygons", show=True),
+        "shielding": folium.FeatureGroup(name="Shielding candidates", show=True),
+        "missing_height": folium.FeatureGroup(name="Missing height objects", show=False),
+    }
+    selected = select_obstructions_for_map(result, diagnostics)
+    diagnostics.selected_obstructions = len(selected)
+    for warning in map_display_warnings(result, diagnostics):
+        diagnostics.warnings.append(warning)
+    feature_groups = obstruction_display_feature_groups(result, selected, diagnostics)
+    if diagnostics.total_geojson_payload_size > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES:
+        diagnostics.fallback_mode = True
+        diagnostics.console_safe_errors.append(
+            "Polygon payload exceeded map display budget; rendered centroid fallback."
         )
-        _add_obstruction_polygon(
-            accepted_layer,
-            obstruction,
-            outline_color="#334155",
-            fill_color="#cbd5e1",
-            fill_opacity=0.18,
-        )
-        _add_obstruction_polygon(target_layer, obstruction)
-        _add_obstruction_centroid(target_layer, obstruction)
-        if _is_shielding_candidate(obstruction, result.input.building_height_m):
-            _add_obstruction_polygon(
-                shielding_layer,
-                obstruction,
-                outline_color="#047857",
-                fill_color="#047857",
-                fill_opacity=0.12,
-            )
-        if _is_missing_source_height(obstruction):
-            _add_obstruction_polygon(
-                missing_height_layer,
-                obstruction,
-                outline_color="#b42318",
-                fill_color="#fee2e2",
-                fill_opacity=0.30,
-            )
+    if diagnostics.display_mode == "centroids_only":
+        diagnostics.fallback_mode = True
+        diagnostics.console_safe_errors.append("Centroids-only map display mode selected.")
+
+    if not diagnostics.fallback_mode:
+        for key, features in feature_groups.items():
+            if not features:
+                continue
+            feature_collection = {"type": "FeatureCollection", "features": features}
+            folium.GeoJson(
+                feature_collection,
+                style_function=lambda feature: obstruction_feature_style(
+                    str(feature.get("properties", {}).get("map_layer", "OSM"))
+                ),
+                tooltip=folium.GeoJsonTooltip(
+                    fields=["id", "source", "height", "confidence"],
+                    aliases=["ID", "Source", "Height", "Confidence"],
+                    sticky=False,
+                ),
+            ).add_to(polygon_layers.get(key, polygon_layers["OSM"]))
+        diagnostics.plotted_polygons = sum(len(features) for features in feature_groups.values())
+
+    _add_obstruction_centroid_collection(centroid_layer, selected, diagnostics)
 
     for excluded in result.data_quality.excluded_objects:
         if not excluded.footprint_geometry:
             continue
-        folium.GeoJson(
+        display_geometry = display_geometry_for_map(
             excluded.footprint_geometry,
-            style_function=lambda _feature: {
-                "color": "#7f1d1d",
-                "weight": 2,
-                "dashArray": "6 4",
-                "fillColor": "#fecaca",
-                "fillOpacity": 0.18,
-            },
-            tooltip=(
-                f"{excluded.object_id}: excluded, source={excluded.source}, "
-                f"reason={excluded.reason}"
-            ),
-        ).add_to(excluded_layer)
+            result.site,
+            result.input.radius_m,
+            diagnostics,
+        )
+        if display_geometry:
+            folium.GeoJson(
+                display_geometry,
+                style_function=lambda _feature: {
+                    "color": "#7f1d1d",
+                    "weight": 2,
+                    "dashArray": "6 4",
+                    "fillColor": "#fecaca",
+                    "fillOpacity": 0.18,
+                },
+                tooltip=(
+                    f"{excluded.object_id}: excluded, source={excluded.source}, "
+                    f"reason={excluded.reason}"
+                ),
+            ).add_to(excluded_layer)
 
     raw_osm_layer.add_to(fmap)
-    accepted_layer.add_to(fmap)
-    manual_layer.add_to(fmap)
-    microsoft_layer.add_to(fmap)
-    osm_layer.add_to(fmap)
-    vegetation_layer.add_to(fmap)
+    for layer in polygon_layers.values():
+        layer.add_to(fmap)
+    centroid_layer.add_to(fmap)
     excluded_layer.add_to(fmap)
-    shielding_layer.add_to(fmap)
-    missing_height_layer.add_to(fmap)
+    _add_map_diagnostics_banner(fmap, diagnostics)
+    return diagnostics
+
+
+def select_obstructions_for_map(
+    result: ObstructionInventoryResult,
+    diagnostics: MapRenderDiagnostics,
+) -> list[ObstructionRecord]:
+    """Return obstructions selected for display without changing calculation data."""
+
+    records = list(result.obstructions)
+    mode = diagnostics.display_mode
+    max_display = diagnostics.max_displayed_obstructions
+    if mode == "shielding_candidates":
+        records = [
+            record
+            for record in records
+            if _is_shielding_candidate(record, result.input.building_height_m)
+        ]
+    if mode == "centroids_only":
+        return sorted(records, key=lambda record: record.distance_m)[: max(max_display, 1)]
+    if mode == "all_footprints":
+        return sorted(
+            records,
+            key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
+        )
+    return sorted(
+        records,
+        key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
+    )[:max_display]
+
+
+def map_relevance_sort_key(
+    record: ObstructionRecord,
+    subject_height_m: float | None,
+) -> tuple[bool, float, float, bool]:
+    """Sort higher relevance records first for map display limits."""
+
+    height = record.selected_height_m or record.height_m or 0.0
+    missing_or_review = _is_missing_source_height(record) or record.review_required
+    return (
+        not _is_shielding_candidate(record, subject_height_m),
+        record.distance_m,
+        -height,
+        not missing_or_review,
+    )
+
+
+def map_display_warnings(
+    result: ObstructionInventoryResult,
+    diagnostics: MapRenderDiagnostics,
+) -> list[str]:
+    """Return human-facing warnings for the map display."""
+
+    warnings: list[str] = []
+    if diagnostics.selected_obstructions < diagnostics.total_obstructions:
+        warnings.append(
+            "Map display limited to "
+            f"{diagnostics.selected_obstructions} of {diagnostics.total_obstructions} "
+            "obstructions. Calculations used full dataset."
+        )
+    if diagnostics.display_mode == "centroids_only":
+        warnings.append(
+            "Map is rendering centroids only; calculations used full footprint geometry."
+        )
+    return warnings
+
+
+def obstruction_display_feature_groups(
+    result: ObstructionInventoryResult,
+    selected: list[ObstructionRecord],
+    diagnostics: MapRenderDiagnostics,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build grouped display-only GeoJSON features for obstruction polygons."""
+
+    groups: dict[str, list[dict[str, Any]]] = {
+        "manual_reviewed": [],
+        "microsoft_building_footprints": [],
+        "OSM": [],
+        "vegetation": [],
+        "shielding": [],
+        "missing_height": [],
+    }
+    for obstruction in selected:
+        display_geometry = display_geometry_for_map(
+            obstruction.footprint_geometry,
+            result.site,
+            result.input.radius_m,
+            diagnostics,
+        )
+        if display_geometry is None:
+            continue
+        diagnostics.largest_polygon_vertex_count = max(
+            diagnostics.largest_polygon_vertex_count,
+            geometry_vertex_count(display_geometry),
+        )
+        if _is_shielding_candidate(obstruction, result.input.building_height_m):
+            layer_key = "shielding"
+        elif _is_missing_source_height(obstruction):
+            layer_key = "missing_height"
+        else:
+            layer_key = obstruction_feature_group_key(obstruction)
+        groups[layer_key].append(
+            obstruction_display_feature(obstruction, display_geometry, layer_key)
+        )
+    diagnostics.total_geojson_payload_size = sum(
+        len(json.dumps({"type": "FeatureCollection", "features": features}, separators=(",", ":")))
+        for features in groups.values()
+    )
+    return groups
+
+
+def obstruction_display_feature(
+    obstruction: ObstructionRecord,
+    geometry: dict[str, Any],
+    layer_key: str | None = None,
+) -> dict[str, Any]:
+    """Return a display-only GeoJSON feature for an obstruction."""
+
+    height = obstruction.selected_height_m or obstruction.height_m
+    return {
+        "type": "Feature",
+        "geometry": geometry,
+        "properties": {
+            "id": obstruction.obstruction_id,
+            "source": obstruction.footprint_source,
+            "height": f"{height:.1f} m" if height is not None else "missing",
+            "confidence": obstruction.confidence,
+            "classification": obstruction.classification,
+            "map_layer": layer_key or obstruction_feature_group_key(obstruction),
+        },
+    }
+
+
+def obstruction_feature_group_key(obstruction: ObstructionRecord) -> str:
+    """Return the display group key for an obstruction."""
+
+    if obstruction.classification == "vegetation":
+        return "vegetation"
+    if obstruction.footprint_source == "manual_reviewed":
+        return "manual_reviewed"
+    if obstruction.footprint_source == "microsoft_building_footprints":
+        return "microsoft_building_footprints"
+    return "OSM"
+
+
+def display_geometry_for_map(
+    geometry: dict[str, Any],
+    site: SiteLocation,
+    radius_m: int,
+    diagnostics: MapRenderDiagnostics,
+) -> dict[str, Any] | None:
+    """Return repaired/simplified display geometry, leaving source geometry untouched."""
+
+    if not geometry:
+        diagnostics.skip("empty_geometry")
+        return None
+    try:
+        polygon = shape(geometry)
+    except (ShapelyError, AttributeError, TypeError, ValueError) as exc:
+        diagnostics.console_safe_errors.append(f"Geometry parse failed: {safe_error_message(exc)}")
+        diagnostics.skip("invalid_geometry_parse")
+        return None
+    if polygon.is_empty:
+        diagnostics.skip("empty_geometry")
+        return None
+    if not polygon.is_valid:
+        diagnostics.invalid_geometry_count += 1
+        try:
+            polygon = polygon.buffer(0)
+        except (ShapelyError, ValueError) as exc:
+            diagnostics.console_safe_errors.append(
+                f"Geometry repair failed: {safe_error_message(exc)}"
+            )
+            diagnostics.skip("invalid_geometry_unrepairable")
+            return None
+    polygon = polygon_collection_to_polygons(polygon)
+    if polygon is None or polygon.is_empty:
+        diagnostics.skip("no_polygon_after_repair")
+        return None
+    tolerance = map_simplification_tolerance_degrees(site, radius_m)
+    if tolerance > 0:
+        polygon = polygon.simplify(tolerance, preserve_topology=True)
+    if polygon.is_empty:
+        diagnostics.skip("empty_after_simplification")
+        return None
+    return mapping(polygon)
+
+
+def polygon_collection_to_polygons(geometry):
+    """Return polygonal geometry from a repaired Shapely geometry."""
+
+    if geometry.geom_type in {"Polygon", "MultiPolygon"}:
+        return geometry
+    if isinstance(geometry, GeometryCollection):
+        polygons = [
+            item for item in geometry.geoms if item.geom_type in {"Polygon", "MultiPolygon"}
+        ]
+        if not polygons:
+            return None
+        return max(polygons, key=lambda item: item.area)
+    return None
+
+
+def map_simplification_tolerance_degrees(site: SiteLocation, radius_m: int) -> float:
+    """Return a display-only simplification tolerance in degrees."""
+
+    tolerance_m = min(max(radius_m / 1000, 0.5), 2.0)
+    latitude_scale = max(abs(math.cos(math.radians(site.latitude))), 0.2)
+    return tolerance_m / (111_320 * latitude_scale)
+
+
+def geometry_vertex_count(geometry: dict[str, Any]) -> int:
+    """Return the number of coordinate vertices in a GeoJSON geometry."""
+
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates", [])
+    if geometry_type == "Polygon":
+        return sum(len(ring) for ring in coordinates)
+    if geometry_type == "MultiPolygon":
+        return sum(len(ring) for polygon in coordinates for ring in polygon)
+    return 0
+
+
+def obstruction_feature_style(layer: str) -> dict[str, Any]:
+    """Return style for a grouped obstruction display feature."""
+
+    styles = {
+        "manual_reviewed": {"color": "#0f766e", "fillColor": "#99f6e4", "fillOpacity": 0.30},
+        "microsoft_building_footprints": {
+            "color": "#334155",
+            "fillColor": "#cbd5e1",
+            "fillOpacity": 0.22,
+        },
+        "OSM": {"color": "#2563eb", "fillColor": "#bfdbfe", "fillOpacity": 0.20},
+        "vegetation": {"color": "#16a34a", "fillColor": "#bbf7d0", "fillOpacity": 0.22},
+        "shielding": {"color": "#047857", "fillColor": "#047857", "fillOpacity": 0.12},
+        "missing_height": {"color": "#b42318", "fillColor": "#fee2e2", "fillOpacity": 0.28},
+    }
+    return {"weight": 1, **styles.get(layer, styles["OSM"])}
+
+
+def _add_obstruction_centroid_collection(
+    layer: folium.FeatureGroup,
+    selected: list[ObstructionRecord],
+    diagnostics: MapRenderDiagnostics,
+) -> None:
+    """Add obstruction centroids as one lightweight GeoJSON point layer."""
+
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [record.centroid_longitude, record.centroid_latitude],
+            },
+            "properties": {
+                "id": record.obstruction_id,
+                "source": record.footprint_source,
+                "height": f"{(record.selected_height_m or record.height_m):.1f} m"
+                if (record.selected_height_m or record.height_m) is not None
+                else "missing",
+                "confidence": record.confidence,
+            },
+        }
+        for record in selected
+    ]
+    diagnostics.plotted_centroids = len(features)
+    if not features:
+        return
+    folium.GeoJson(
+        {"type": "FeatureCollection", "features": features},
+        marker=folium.CircleMarker(
+            radius=3,
+            color="#334155",
+            fill=True,
+            fill_opacity=0.85,
+        ),
+        tooltip=folium.GeoJsonTooltip(
+            fields=["id", "source", "height", "confidence"],
+            aliases=["ID", "Source", "Height", "Confidence"],
+            sticky=False,
+        ),
+    ).add_to(layer)
+
+
+def _add_map_diagnostics_banner(
+    fmap: folium.Map,
+    diagnostics: MapRenderDiagnostics,
+) -> None:
+    """Add a visible map diagnostic/warning banner."""
+
+    if not diagnostics.warnings and not diagnostics.fallback_mode:
+        return
+    warning_text = "<br>".join(diagnostics.warnings or diagnostics.console_safe_errors)
+    html = f"""
+    <div style="position: fixed; bottom: 18px; left: 18px; z-index: 9999;
+      max-width: 440px; padding: 10px 12px; background: #fff7ed; color: #7c2d12;
+      border: 1px solid #fdba74; border-radius: 6px; font: 13px/1.35 Arial, sans-serif;">
+      <strong>Map display notice</strong><br>{warning_text}
+    </div>
+    """
+    fmap.get_root().html.add_child(folium.Element(html))
+
+
+def _render_map_with_diagnostics(
+    fmap: folium.Map,
+    diagnostics: MapRenderDiagnostics,
+) -> str:
+    """Render Folium HTML and inject final diagnostics."""
+
+    html = fmap.get_root().render()
+    diagnostics.map_html_size = len(html.encode("utf-8"))
+    diagnostics_json = json.dumps(diagnostics.as_dict(), ensure_ascii=True)
+    diagnostics_panel = f"""
+    <script>
+      window.openWindMapDiagnostics = {diagnostics_json};
+      console.info("OpenWind-AU map diagnostics", window.openWindMapDiagnostics);
+    </script>
+    <!-- OpenWind-AU map diagnostics: {diagnostics_json} -->
+    """
+    return html.replace("</body>", f"{diagnostics_panel}</body>")
+
+
+def safe_error_message(error: Exception) -> str:
+    """Return a console-safe single-line error message."""
+
+    return str(error).replace("\n", " ")[:240]
 
 
 def _obstruction_source_layer(
@@ -852,11 +1246,16 @@ def _obstruction_tooltip(obstruction) -> str:
 
 
 def _is_shielding_candidate(obstruction, subject_height_m: float | None) -> bool:
-    if obstruction.classification == "vegetation" or obstruction.height_m is None:
+    height = (
+        obstruction.selected_height_m
+        if obstruction.selected_height_m is not None
+        else obstruction.height_m
+    )
+    if height is None:
         return False
     if subject_height_m is None:
         return True
-    return obstruction.height_m >= subject_height_m
+    return height >= subject_height_m
 
 
 def _is_missing_source_height(obstruction) -> bool:
@@ -899,11 +1298,13 @@ def _shielding_sector_color(indicative_ms: float) -> str:
 
 
 def _terrain_category_color(suggested_range: str) -> str:
+    if suggested_range == "TC1.5-TC2":
+        return "#38bdf8"
     if suggested_range == "TC2-TC2.5":
         return "#2563eb"
     if suggested_range == "TC2.5-TC3":
         return "#0f766e"
-    if suggested_range == "TC3-TC3.5":
+    if suggested_range == "TC3-TC4":
         return "#b45309"
     return "#b42318"
 
@@ -1093,15 +1494,21 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
   <h2>Preliminary Shielding Sector Analysis</h2>
   <p>
     Each wind direction uses a 45 degree upwind sector with radius 20 times the subject building
-    height. Obstructions are counted only where available hs is at least the subject building
-    height.
+    height. Obstructions are counted only where selected hs is at least the subject building
+    height z=
+    {% if result.input.building_height_m is not none %}
+    {{ "%.2f"|format(result.input.building_height_m) }} m
+    {% else %}
+    not set
+    {% endif %}.
     Indicative Ms values require engineering review.
   </p>
   <table>
     <tr>
       <th>Dir.</th><th>Sector</th><th>Radius</th><th>ns</th><th>Avg hs</th>
       <th>Avg bs</th><th>ls</th><th>s</th><th>Indicative Ms</th>
-      <th>High confidence</th><th>Estimated</th><th>Unknown</th><th>Overall confidence</th>
+      <th>In sector</th><th>Usable height</th><th>Rejected below z</th>
+      <th>Rejected missing</th><th>Overall confidence</th>
     </tr>
     {% for sector in result.shielding_sectors %}
     <tr>
@@ -1116,15 +1523,27 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
       <td>{{ "%.2f"|format(sector.ls_m) if sector.ls_m is not none else "" }}</td>
       <td>{{ "%.2f"|format(sector.s) if sector.s is not none else "" }}</td>
       <td>{{ "%.3f"|format(sector.indicative_ms) }}</td>
-      <td>{{ sector.high_confidence_count }}</td>
-      <td>{{ sector.estimated_height_count }}</td>
-      <td>{{ sector.unknown_height_count }}</td>
+      <td>{{ sector.total_obstructions_in_sector }}</td>
+      <td>{{ sector.usable_height_count }}</td>
+      <td>{{ sector.rejected_height_below_z_count }}</td>
+      <td>{{ sector.rejected_height_missing_count }}</td>
       <td>{{ sector.overall_confidence }}</td>
     </tr>
     {% if sector.warnings %}
     <tr>
       <td></td>
-      <td colspan="12">{{ sector.warnings|join(" ") }}</td>
+      <td colspan="13">{{ sector.warnings|join(" ") }}</td>
+    </tr>
+    {% endif %}
+    {% if sector.rejection_reason_counts %}
+    <tr>
+      <td></td>
+      <td colspan="13">
+        Rejection reasons:
+        {% for reason, count in sector.rejection_reason_counts.items() %}
+        {{ reason }}={{ count }}
+        {% endfor %}
+      </td>
     </tr>
     {% endif %}
     {% endfor %}
@@ -1229,6 +1648,77 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
     {% endfor %}
   </table>
 
+  <h2>Directional Mz,cat Summary</h2>
+  <p class="disclaimer">
+    Indicative evidence only. Terrain category is not confirmed, Mz,cat values are not final
+    design values, and engineer review is required.
+  </p>
+  <table>
+    <tr>
+      <th>Direction</th><th>Suggested TC Range</th><th>Indicative Mz,cat Range</th>
+      <th>Recommended TC</th><th>Recommended Mz,cat</th><th>Recommendation Confidence</th>
+      <th>Engineer-selected Final TC</th><th>Engineer-selected Final Mz,cat</th>
+      <th>Review Status</th><th>Reviewed By</th><th>Review Notes</th><th>Warnings</th>
+    </tr>
+    {% for assessment in result.mzcat_assessment %}
+    <tr>
+      <td>{{ assessment.direction }}</td>
+      <td>{{ assessment.controlling_category_range }}</td>
+      <td>
+        {{ "%.3f"|format(assessment.lower_indicative_mzcat) }}-
+        {{ "%.3f"|format(assessment.upper_indicative_mzcat) }}
+      </td>
+      <td>{{ assessment.recommended_terrain_category }}</td>
+      <td>
+        {% if assessment.recommended_mzcat is not none %}
+        {{ "%.3f"|format(assessment.recommended_mzcat) }}
+        {% else %}
+        review required
+        {% endif %}
+      </td>
+      <td>{{ assessment.recommendation_confidence }}</td>
+      <td>
+        {% if assessment.review_status in ["accepted", "overridden"] %}
+        {{ assessment.final_terrain_category }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>
+        {% if assessment.review_status in ["accepted", "overridden"]
+          and assessment.final_mzcat is not none %}
+        {{ "%.3f"|format(assessment.final_mzcat) }}
+        {% else %}
+        hidden until engineer review
+        {% endif %}
+      </td>
+      <td>{{ assessment.review_status }}</td>
+      <td>{{ assessment.reviewed_by or "" }}</td>
+      <td>{{ assessment.review_notes or "" }}</td>
+      <td>
+        {% if assessment.review_status == "unreviewed" %}
+        Engineer review required before final Mz,cat may be used.
+        {% endif %}
+        {{ assessment.warnings|join(" ") }}
+      </td>
+    </tr>
+    <tr>
+      <td></td>
+      <td colspan="11">
+        Recommendation reasoning:
+        <ul>
+          {% for reason in assessment.recommendation_reasoning %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+          {% for reason in assessment.reasoning %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
   <h2>Evidence Score Components</h2>
   <table>
     <tr>
@@ -1249,6 +1739,223 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
   <p>
     Suggested ranges are review prompts only. A competent engineer must confirm terrain category
     using project-specific context, survey information, imagery, and the applicable standard.
+  </p>
+</body>
+</html>
+"""
+)
+
+
+WIND_WORKFLOW_REPORT_TEMPLATE = Template(
+    """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>OpenWind-AU Site Wind Assessment Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
+    h1, h2, h3 { color: #17324d; }
+    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+    th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
+    th { background: #f6f8fa; }
+    .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
+    .warning { border-left: 4px solid #b45309; padding: 12px; background: #fff7ed; }
+    .calc { background: #f8fafc; }
+  </style>
+</head>
+<body>
+  <h1>OpenWind-AU Site Wind Assessment Report</h1>
+  <p class="disclaimer">{{ result.disclaimer }}</p>
+
+  <h2>Executive Summary</h2>
+  <p>
+    This report summarises the reviewed AS/NZS 1170.2 site wind assessment workflow
+    through Vsit,b. Pressure, cladding, Cpe, and Cpi calculations are outside this scope.
+  </p>
+  <table>
+    <tr>
+      <th>Directions calculated</th>
+      <td>
+        {{
+          result.directional_vsitb
+          |selectattr("status", "equalto", "calculated")
+          |list|length
+        }}
+      </td>
+    </tr>
+    <tr>
+      <th>Directions blocked</th>
+      <td>
+        {{
+          result.directional_vsitb
+          |selectattr("status", "equalto", "blocked")
+          |list|length
+        }}
+      </td>
+    </tr>
+    <tr><th>Primary warning</th><td>{{ result.warnings[0] if result.warnings else "" }}</td></tr>
+  </table>
+
+  <h2>Site Wind Assessment</h2>
+  <p>
+    Workflow order: Site Inputs; Wind Region and Regional Wind Speed, VR;
+    Direction Multiplier, Md; Terrain Category and Mz,cat; Shielding Multiplier, Ms;
+    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Supporting Evidence and Maps.
+  </p>
+
+  {% if result.warnings %}
+  <div class="warning">
+    <strong>Workflow warnings</strong>
+    <ul>{% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <h3>Site Inputs</h3>
+  <table>
+    <tr>
+      <th>Address</th>
+      <td>{{ result.input.address or result.site.display_name or "not supplied" }}</td>
+    </tr>
+    <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
+    <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
+    <tr>
+      <th>Coordinates</th>
+      <td>
+        {{ "%.6f"|format(result.site.latitude) }},
+        {{ "%.6f"|format(result.site.longitude) }}
+      </td>
+    </tr>
+    <tr><th>Wind region</th><td>{{ result.input.wind_region }}</td></tr>
+    <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability }}</td></tr>
+    <tr>
+      <th>Return period / importance level</th>
+      <td>{{ result.input.importance_level or "user input" }}</td>
+    </tr>
+    <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
+    <tr>
+      <th>User assumptions</th>
+      <td>{{ result.input.user_assumptions or "No additional assumptions supplied." }}</td>
+    </tr>
+  </table>
+
+  <h2>Variable Summary</h2>
+  <table>
+    <tr>
+      <th>Variable</th><th>Direction</th><th>Recommended</th><th>Confidence</th>
+      <th>Engineer-selected Final</th><th>Review Status</th><th>Source Reference</th>
+      <th>Warnings</th><th>Evidence Reference</th>
+    </tr>
+    {% for variable in result.variables %}
+    <tr>
+      <td>{{ variable.label }}</td>
+      <td>{{ variable.direction or "all" }}</td>
+      <td>
+        {% if variable.recommended_value is not none %}
+        {{ variable.recommended_label or "" }}
+        <br>{{ "%.3f"|format(variable.recommended_value) }} {{ variable.unit }}
+        {% else %}
+        review required
+        {% endif %}
+      </td>
+      <td>{{ variable.confidence }}</td>
+      <td>
+        {% if variable.review_status in ["accepted", "overridden"]
+          and variable.final_value is not none %}
+        {{ variable.final_label or "" }}
+        <br>{{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>{{ variable.review_status }}</td>
+      <td>{{ variable.source_reference }}</td>
+      <td>{{ variable.warnings|join(" ") }}</td>
+      <td>{{ variable.evidence_link }}</td>
+    </tr>
+    <tr class="calc">
+      <td></td>
+      <td colspan="8">
+        <strong>{{ variable.detail_label }}:</strong><br>
+        <strong>Formula / basis:</strong> {{ variable.formula_basis }}<br>
+        <strong>Inputs:</strong>
+        <ul>{% for item in variable.calculation_inputs %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% if variable.detail_items %}
+        <strong>Evidence / source details:</strong>
+        <ul>{% for item in variable.detail_items %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% endif %}
+        <strong>Result:</strong> {{ variable.calculation_result }}
+        {% if variable.review_notes %}
+        <br><strong>Review notes:</strong> {{ variable.review_notes }}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Vsit,b Directional Summary</h2>
+  <p>Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
+  <table>
+    <tr>
+      <th>Direction</th><th>VR</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th>
+      <th>Vsit,b</th><th>Status</th>
+    </tr>
+    {% for row in result.directional_vsitb %}
+    <tr>
+      <td>{{ row.direction }}</td>
+      <td>{% if row.vr is not none %}{{ "%.3f"|format(row.vr) }}{% else %}unreviewed{% endif %}</td>
+      <td>{% if row.md is not none %}{{ "%.3f"|format(row.md) }}{% else %}unreviewed{% endif %}</td>
+      <td>
+        {% if row.mzcat is not none %}
+        {{ "%.3f"|format(row.mzcat) }}
+        {% else %}
+        unreviewed
+        {% endif %}
+      </td>
+      <td>{% if row.ms is not none %}{{ "%.3f"|format(row.ms) }}{% else %}unreviewed{% endif %}</td>
+      <td>{% if row.mt is not none %}{{ "%.3f"|format(row.mt) }}{% else %}unreviewed{% endif %}</td>
+      <td>
+        {% if row.final_vsitb is not none %}
+        {{ "%.3f"|format(row.final_vsitb) }} m/s
+        {% else %}
+        blocked
+        {% endif %}
+      </td>
+      <td>{{ row.status }} {{ row.warnings|join(" ") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Supporting Evidence References</h2>
+  <ul>{% for reference in result.evidence_references %}<li>{{ reference }}</li>{% endfor %}</ul>
+
+  <h2>Supporting Evidence</h2>
+  <ul>
+    <li>Terrain profiles</li>
+    <li>Topographic screening</li>
+    <li>Obstruction inventory</li>
+    <li>Shielding diagnostics</li>
+    <li>Terrain category evidence</li>
+  </ul>
+
+  <h2>Engineer Review Notes</h2>
+  <table>
+    <tr><th>Variable</th><th>Direction</th><th>Status</th><th>Reviewed By</th><th>Notes</th></tr>
+    {% for variable in result.variables %}
+    {% if variable.review_status in ["accepted", "overridden"] or variable.review_notes %}
+    <tr>
+      <td>{{ variable.label }}</td>
+      <td>{{ variable.direction or "all" }}</td>
+      <td>{{ variable.review_status }}</td>
+      <td>{{ variable.reviewed_by or "" }}</td>
+      <td>{{ variable.review_notes or "" }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
+
+  <p class="disclaimer">
+    No final design pressure calculations are included in this report.
   </p>
 </body>
 </html>

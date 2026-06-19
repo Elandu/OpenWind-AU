@@ -72,6 +72,22 @@
                 <option value="1000">1000</option>
               </select>
             </label>
+            <label>
+              Map footprint display
+              <select id="map_display_mode" name="map_display_mode">
+                <option value="nearest_500" selected>Show nearest 500</option>
+                <option value="shielding_candidates">Show shielding candidates only</option>
+                <option value="all_footprints">Show all footprints</option>
+                <option value="centroids_only">Show centroids only</option>
+              </select>
+            </label>
+            <label>
+              Mz,cat recommendation mode
+              <select id="mzcat_recommendation_mode" name="mzcat_recommendation_mode">
+                <option value="conservative" selected>Conservative</option>
+                <option value="best_estimate">Best estimate</option>
+              </select>
+            </label>
           </div>
           <button type="submit">Run Analysis</button>
         </form>
@@ -190,6 +206,7 @@
           building height. Obstructions are counted only where available hs is at least the subject
           building height.
         </p>
+        <p id="shielding-threshold-note" class="note">Current subject building height threshold z will appear after analysis.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -203,13 +220,22 @@
                 <th>ls</th>
                 <th>s</th>
                 <th>Indicative Ms</th>
+                <th>Rejected</th>
                 <th>Height confidence</th>
               </tr>
             </thead>
             <tbody id="shielding-sector-table">
-              <tr><td colspan="10">Shielding sectors will appear after analysis.</td></tr>
+              <tr><td colspan="11">Shielding sectors will appear after analysis.</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="debug-panel">
+          <h3>Why is Ms = 1.0?</h3>
+          <label>
+            Direction
+            <select id="ms-explanation-sector"></select>
+          </label>
+          <div id="ms-explanation" class="note">Run an analysis to inspect shielding rejection reasons.</div>
         </div>
       </section>
 
@@ -217,7 +243,7 @@
         <h2>Terrain Category Evidence</h2>
         <p class="disclaimer">
           Evidence support only. OpenWind-AU does not assign a final AS/NZS 1170.2 terrain
-          category and does not calculate Mz,cat values.
+          category and does not calculate final Mz,cat design values.
         </p>
         <div class="table-wrap">
           <table>
@@ -243,6 +269,35 @@
           </table>
         </div>
         <iframe id="terrain-category-frame" class="map-iframe" title="Terrain category evidence map"></iframe>
+      </section>
+
+      <section class="panel">
+        <h2>Directional Mz,cat Summary</h2>
+        <p class="disclaimer">
+          Indicative evidence only. Terrain category is not confirmed, Mz,cat values are not final
+          design values, and engineer review is required.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Direction</th>
+                <th>Suggested TC Range</th>
+                <th>Indicative Mz,cat Range</th>
+                <th>Recommended</th>
+                <th>Engineer Review</th>
+                <th>Final Selected Mz,cat</th>
+                <th>Confidence</th>
+                <th>Reasoning</th>
+                <th>Warnings</th>
+              </tr>
+            </thead>
+            <tbody id="mzcat-table">
+              <tr><td colspan="9">Indicative Mz,cat evidence will appear after analysis.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <button id="terrain-report" type="button">Open Reviewed Mz,cat Report</button>
       </section>
 
       <section class="panel">
