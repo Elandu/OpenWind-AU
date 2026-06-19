@@ -1752,7 +1752,7 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>OpenWind-AU Site Wind Workflow Report</title>
+  <title>OpenWind-AU Site Wind Assessment Report</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
     h1, h2, h3 { color: #17324d; }
@@ -1765,12 +1765,43 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   </style>
 </head>
 <body>
-  <h1>OpenWind-AU Site Wind Workflow Report</h1>
+  <h1>OpenWind-AU Site Wind Assessment Report</h1>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+
+  <h2>Executive Summary</h2>
   <p>
-    Workflow order: Project and Site Inputs; Wind Region / Regional Wind Speed, VR;
-    Wind Direction Multiplier, Md; Terrain Category / Mz,cat; Shielding Multiplier, Ms;
-    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Evidence Maps and Reports.
+    This report summarises the reviewed AS/NZS 1170.2 site wind assessment workflow
+    through Vsit,b. Pressure, cladding, Cpe, and Cpi calculations are outside this scope.
+  </p>
+  <table>
+    <tr>
+      <th>Directions calculated</th>
+      <td>
+        {{
+          result.directional_vsitb
+          |selectattr("status", "equalto", "calculated")
+          |list|length
+        }}
+      </td>
+    </tr>
+    <tr>
+      <th>Directions blocked</th>
+      <td>
+        {{
+          result.directional_vsitb
+          |selectattr("status", "equalto", "blocked")
+          |list|length
+        }}
+      </td>
+    </tr>
+    <tr><th>Primary warning</th><td>{{ result.warnings[0] if result.warnings else "" }}</td></tr>
+  </table>
+
+  <h2>Site Wind Assessment</h2>
+  <p>
+    Workflow order: Site Inputs; Wind Region and Regional Wind Speed, VR;
+    Direction Multiplier, Md; Terrain Category and Mz,cat; Shielding Multiplier, Ms;
+    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Supporting Evidence and Maps.
   </p>
 
   {% if result.warnings %}
@@ -1780,21 +1811,40 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   </div>
   {% endif %}
 
-  <h2>Project and Site Inputs</h2>
+  <h3>Site Inputs</h3>
   <table>
+    <tr>
+      <th>Address</th>
+      <td>{{ result.input.address or result.site.display_name or "not supplied" }}</td>
+    </tr>
     <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
     <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
+    <tr>
+      <th>Coordinates</th>
+      <td>
+        {{ "%.6f"|format(result.site.latitude) }},
+        {{ "%.6f"|format(result.site.longitude) }}
+      </td>
+    </tr>
     <tr><th>Wind region</th><td>{{ result.input.wind_region }}</td></tr>
     <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability }}</td></tr>
+    <tr>
+      <th>Return period / importance level</th>
+      <td>{{ result.input.importance_level or "user input" }}</td>
+    </tr>
     <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
+    <tr>
+      <th>User assumptions</th>
+      <td>{{ result.input.user_assumptions or "No additional assumptions supplied." }}</td>
+    </tr>
   </table>
 
   <h2>Variable Summary</h2>
   <table>
     <tr>
       <th>Variable</th><th>Direction</th><th>Recommended</th><th>Confidence</th>
-      <th>Engineer-selected Final</th><th>Review Status</th><th>Warnings</th>
-      <th>Evidence Reference</th>
+      <th>Engineer-selected Final</th><th>Review Status</th><th>Source Reference</th>
+      <th>Warnings</th><th>Evidence Reference</th>
     </tr>
     {% for variable in result.variables %}
     <tr>
@@ -1802,7 +1852,8 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
       <td>{{ variable.direction or "all" }}</td>
       <td>
         {% if variable.recommended_value is not none %}
-        {{ "%.3f"|format(variable.recommended_value) }} {{ variable.unit }}
+        {{ variable.recommended_label or "" }}
+        <br>{{ "%.3f"|format(variable.recommended_value) }} {{ variable.unit }}
         {% else %}
         review required
         {% endif %}
@@ -1811,21 +1862,28 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
       <td>
         {% if variable.review_status in ["accepted", "overridden"]
           and variable.final_value is not none %}
-        {{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
+        {{ variable.final_label or "" }}
+        <br>{{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
         {% else %}
         unreviewed
         {% endif %}
       </td>
       <td>{{ variable.review_status }}</td>
+      <td>{{ variable.source_reference }}</td>
       <td>{{ variable.warnings|join(" ") }}</td>
       <td>{{ variable.evidence_link }}</td>
     </tr>
     <tr class="calc">
       <td></td>
-      <td colspan="7">
+      <td colspan="8">
+        <strong>{{ variable.detail_label }}:</strong><br>
         <strong>Formula / basis:</strong> {{ variable.formula_basis }}<br>
         <strong>Inputs:</strong>
         <ul>{% for item in variable.calculation_inputs %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% if variable.detail_items %}
+        <strong>Evidence / source details:</strong>
+        <ul>{% for item in variable.detail_items %}<li>{{ item }}</li>{% endfor %}</ul>
+        {% endif %}
         <strong>Result:</strong> {{ variable.calculation_result }}
         {% if variable.review_notes %}
         <br><strong>Review notes:</strong> {{ variable.review_notes }}
@@ -1870,6 +1928,31 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
 
   <h2>Supporting Evidence References</h2>
   <ul>{% for reference in result.evidence_references %}<li>{{ reference }}</li>{% endfor %}</ul>
+
+  <h2>Supporting Evidence</h2>
+  <ul>
+    <li>Terrain profiles</li>
+    <li>Topographic screening</li>
+    <li>Obstruction inventory</li>
+    <li>Shielding diagnostics</li>
+    <li>Terrain category evidence</li>
+  </ul>
+
+  <h2>Engineer Review Notes</h2>
+  <table>
+    <tr><th>Variable</th><th>Direction</th><th>Status</th><th>Reviewed By</th><th>Notes</th></tr>
+    {% for variable in result.variables %}
+    {% if variable.review_status in ["accepted", "overridden"] or variable.review_notes %}
+    <tr>
+      <td>{{ variable.label }}</td>
+      <td>{{ variable.direction or "all" }}</td>
+      <td>{{ variable.review_status }}</td>
+      <td>{{ variable.reviewed_by or "" }}</td>
+      <td>{{ variable.review_notes or "" }}</td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </table>
 
   <p class="disclaimer">
     No final design pressure calculations are included in this report.

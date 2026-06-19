@@ -79,6 +79,7 @@ def apply_review(
     return assessment.model_copy(
         update={
             "final_value": review.final_value,
+            "final_label": review.final_label,
             "review_status": review.review_status,
             "reviewed_by": review.reviewed_by,
             "review_notes": review.review_notes,
@@ -100,15 +101,24 @@ def vr_assessment(
         label="Regional wind speed, VR",
         unit="m/s",
         recommended_value=value,
+        recommended_label="Selected VR" if value is not None else "VR not selected",
         confidence=confidence,
         warnings=warnings,
         evidence_link="#project-site-inputs",
+        source_reference="AS/NZS 1170.2 regional wind speed table; engineer-selected input.",
+        detail_label="Show source",
         formula_basis=(
             "Regional wind speed selected from wind region and annual probability of exceedance."
         ),
         calculation_inputs=[
             f"Region: {request.wind_region}",
             f"AEP / ARI: {request.annual_exceedance_probability}",
+            f"Importance level / return period: {request.importance_level or 'user input'}",
+        ],
+        detail_items=[
+            f"Selected region: {request.wind_region}",
+            f"Selected ARI: {request.annual_exceedance_probability}",
+            "Lookup basis: AS/NZS 1170.2 regional wind speed table selected by engineer.",
         ],
         calculation_result=(
             f"VR = {value:.3f} m/s"
@@ -135,11 +145,24 @@ def md_assessments(
             label="Wind direction multiplier, Md",
             direction=direction,
             recommended_value=value,
+            recommended_label=f"Selected Md for {direction}",
             confidence="medium" if supplied else "low",
             warnings=warnings,
             evidence_link="#wind-direction-md",
+            source_reference=(
+                "AS/NZS 1170.2 wind direction multiplier table; engineer review input."
+            ),
+            detail_label="Show source",
             formula_basis="Wind direction multiplier selected for the assessed wind direction.",
-            calculation_inputs=[f"Direction: {direction}"],
+            calculation_inputs=[
+                f"Direction: {direction}",
+                f"Region: {request.wind_region}",
+            ],
+            detail_items=[
+                f"Direction: {direction}",
+                f"Region: {request.wind_region}",
+                "Lookup basis: AS/NZS 1170.2 direction multiplier table selected by engineer.",
+            ],
             calculation_result=f"Md = {value:.3f}",
         )
         assessments.append(apply_review(assessment, reviews))
@@ -160,13 +183,35 @@ def mzcat_assessments(
             label="Terrain height multiplier, Mz,cat",
             direction=item.direction,
             recommended_value=item.recommended_mzcat,
+            recommended_label=(
+                f"Recommended TC {item.recommended_terrain_category}; "
+                f"Recommended Mz,cat {item.recommended_mzcat:.3f}"
+                if item.recommended_mzcat is not None
+                else "Recommended TC review required; Recommended Mz,cat review required"
+            ),
             confidence=item.recommendation_confidence,
             warnings=warnings,
             evidence_link="#terrain-category-mzcat",
+            source_reference="Terrain category evidence and Mz,cat review recommendation.",
+            detail_label="Show evidence",
             formula_basis="Mz,cat selected from reviewed terrain category evidence and height.",
             calculation_inputs=[
+                f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
+                f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
+                f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
+                f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
+                f"Confidence: {item.confidence}",
                 f"Suggested terrain category range: {item.suggested_terrain_category_range}",
                 f"Assessment height: {item.assessment_height_m:.3f} m",
+            ],
+            detail_items=[
+                f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
+                f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
+                f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
+                f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
+                f"Confidence: {item.confidence}",
+                *item.recommendation_reasoning,
+                *item.reasoning,
             ],
             calculation_result=(
                 f"Mz,cat = {item.recommended_mzcat:.3f}"
@@ -189,18 +234,38 @@ def ms_assessments(
             label="Shielding multiplier, Ms",
             direction=sector.direction,
             recommended_value=sector.indicative_ms,
+            recommended_label=f"Recommended Ms {sector.indicative_ms:.3f}",
             confidence=_confidence(sector.overall_confidence),
             warnings=[
                 "Indicative Ms is preliminary and requires engineer review.",
                 *sector.warnings,
             ],
             evidence_link="#shielding-ms",
+            source_reference="Shielding sector diagnostics from reviewed obstruction inventory.",
+            detail_label="Show calculation",
             formula_basis=(
                 "Shielding multiplier inferred from reviewed obstruction sector evidence."
             ),
             calculation_inputs=[
-                f"Direction: {sector.direction}",
-                f"Included shielding obstructions: {sector.ns}",
+                f"Sector: {sector.direction}",
+                f"Radius: {sector.sector_radius_m:.1f} m",
+                f"ns: {sector.ns}",
+                f"hs: {_format_value(sector.average_hs_m)}",
+                f"bs: {_format_value(sector.average_bs_m)}",
+                f"ls: {_format_value(sector.ls_m)}",
+                f"s: {_format_value(sector.s)}",
+                f"Confidence: {sector.overall_confidence}",
+            ],
+            detail_items=[
+                f"Sector: {sector.direction}",
+                f"Radius: {sector.sector_radius_m:.1f} m",
+                f"ns: {sector.ns}",
+                f"hs: {_format_value(sector.average_hs_m)}",
+                f"bs: {_format_value(sector.average_bs_m)}",
+                f"ls: {_format_value(sector.ls_m)}",
+                f"s: {_format_value(sector.s)}",
+                f"Confidence: {sector.overall_confidence}",
+                f"Rejection reasons: {sector.rejection_reason_counts}",
             ],
             calculation_result=f"Ms = {sector.indicative_ms:.3f}",
         )
@@ -224,13 +289,30 @@ def mt_assessments(
             label="Topographic multiplier, Mt",
             direction=feature.direction,
             recommended_value=value,
+            recommended_label=f"Recommended Mt {value:.3f}",
             confidence="medium" if no_significant_feature else "low",
             warnings=warnings,
             evidence_link="#topographic-mt",
+            source_reference="Topographic screening evidence for engineer-selected Mt.",
+            detail_label="Show assessment",
             formula_basis="Topographic multiplier reviewed from topographic screening evidence.",
             calculation_inputs=[
                 f"Feature: {feature.feature_type}",
+                f"H: {feature.h_m:.3f} m",
+                f"Lu: {feature.lu_m:.3f} m",
+                f"x: {feature.x_m:.3f} m",
                 f"Average upwind slope: {feature.average_upwind_slope:.3f}",
+                f"Confidence: {feature.confidence}",
+            ],
+            detail_items=[
+                f"Feature type: {feature.feature_type}",
+                f"H: {feature.h_m:.3f} m",
+                f"Lu: {feature.lu_m:.3f} m",
+                f"x: {feature.x_m:.3f} m",
+                f"Slope: {feature.average_upwind_slope:.3f}",
+                f"Confidence: {feature.confidence}",
+                *feature.notes,
+                *warnings,
             ],
             calculation_result=f"Mt = {value:.3f}",
         )
@@ -300,6 +382,9 @@ def vsitb_assessments(
                 direction=row.direction,
                 unit="m/s",
                 recommended_value=row.recommended_vsitb,
+                recommended_label=(
+                    "Calculated Vsit,b" if row.recommended_vsitb else "Vsit,b blocked"
+                ),
                 confidence="medium" if row.status == "calculated" else "low",
                 final_value=final_value,
                 review_status=review_status,
@@ -307,6 +392,8 @@ def vsitb_assessments(
                 review_notes=review_notes,
                 warnings=warnings,
                 evidence_link="#vsitb-summary",
+                source_reference="Reviewed site wind speed variable product.",
+                detail_label="Show calculation",
                 formula_basis="Vsit,b = VR x Md x Mz,cat x Ms x Mt",
                 calculation_inputs=[
                     f"VR: {_format_value(row.vr)}",

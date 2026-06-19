@@ -20,6 +20,10 @@ def workflow_payload() -> dict:
         "default_storey_height_m": 3.0,
         "wind_region": "A2",
         "annual_exceedance_probability": "1/500",
+        "importance_level": "IL2 / 1:500",
+        "user_assumptions": (
+            "Terrain and shielding evidence to be reviewed by the project engineer."
+        ),
         "regional_wind_speed_mps": 45,
     }
 
@@ -29,6 +33,7 @@ def all_reviewed_inputs() -> list[dict]:
         {
             "variable": "VR",
             "final_value": 45,
+            "final_label": "Selected VR",
             "review_status": "accepted",
             "reviewed_by": "Engineer A",
         }
@@ -87,20 +92,32 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert support_page.status_code == 200
     body = response.text
     headings = [
-        "1. Project and Site Inputs",
+        "Site Wind Assessment",
+        "1. Site Inputs",
         "2. Wind Region / Regional Wind Speed, VR",
         "3. Wind Direction Multiplier, Md",
         "4. Terrain Category / Mz,cat",
         "5. Shielding Multiplier, Ms",
         "6. Topographic Multiplier, Mt",
         "7. Site Wind Speed, Vsit,b",
-        "8. Evidence Maps and Reports",
+        "8. Supporting Evidence and Maps",
     ]
     assert all(heading in body for heading in headings)
     assert [body.index(heading) for heading in headings] == sorted(
         body.index(heading) for heading in headings
     )
     assert "wind_workflow.js" in body
+    assert "Return period / importance level" in body
+    assert "User assumptions" in body
+    assert "source reference, and selected VR" in body
+    assert "Recommended TC, Final TC, Recommended Mz,cat, Final Mz,cat" in body
+    assert "Recommended Ms, Final Ms" in body
+    assert "Recommended Mt, Final Mt" in body
+    assert "Terrain profiles" in body
+    assert "Topographic screening" in body
+    assert "Obstruction inventory" in body
+    assert "Shielding diagnostics" in body
+    assert "Terrain category evidence" in body
 
 
 def test_calculation_panel_content_in_workflow_report(monkeypatch) -> None:
@@ -110,9 +127,16 @@ def test_calculation_panel_content_in_workflow_report(monkeypatch) -> None:
     response = test_client.post("/api/wind-workflow/report/html", json=payload)
 
     assert response.status_code == 200
+    assert "Executive Summary" in response.text
+    assert "Site Wind Assessment" in response.text
+    assert "Variable Summary" in response.text
+    assert "Supporting Evidence" in response.text
+    assert "Engineer Review Notes" in response.text
     assert "Formula / basis" in response.text
+    assert "Source Reference" in response.text
     assert "Vsit,b = VR x Md x Mz,cat x Ms x Mt" in response.text
     assert "No final design pressure calculations are included" in response.text
+    assert "Pressure, cladding, Cpe, and Cpi calculations are outside this scope." in response.text
 
 
 def test_vsitb_blocked_when_variables_are_unreviewed(monkeypatch) -> None:
@@ -122,6 +146,21 @@ def test_vsitb_blocked_when_variables_are_unreviewed(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
+    vr = next(item for item in body["variables"] if item["variable"] == "VR")
+    md_north = next(
+        item for item in body["variables"] if item["variable"] == "Md" and item["direction"] == "N"
+    )
+    mzcat_north = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert vr["detail_label"] == "Show source"
+    assert "AS/NZS 1170.2 regional wind speed table" in vr["source_reference"]
+    assert md_north["detail_label"] == "Show source"
+    assert "Direction: N" in md_north["detail_items"]
+    assert mzcat_north["detail_label"] == "Show evidence"
+    assert "Recommended TC" in mzcat_north["recommended_label"]
     north = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
     assert north["status"] == "blocked"
     assert north["final_vsitb"] is None
@@ -136,6 +175,7 @@ def test_accepted_and_override_values_propagate_to_workflow(monkeypatch) -> None
             "variable": "Md",
             "direction": "N",
             "final_value": 0.9,
+            "final_label": "Md overridden to 0.9",
             "review_status": "overridden",
             "review_notes": "Directional multiplier overridden after review.",
         }
@@ -150,6 +190,7 @@ def test_accepted_and_override_values_propagate_to_workflow(monkeypatch) -> None
         item for item in body["variables"] if item["variable"] == "Md" and item["direction"] == "N"
     )
     assert md_north["final_value"] == 0.9
+    assert md_north["final_label"] == "Md overridden to 0.9"
     assert md_north["review_status"] == "overridden"
     assert md_north["review_notes"] == "Directional multiplier overridden after review."
     vr = next(item for item in body["variables"] if item["variable"] == "VR")

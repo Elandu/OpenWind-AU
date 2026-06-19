@@ -486,6 +486,7 @@ class WindVariableReview(BaseModel):
     variable: WindWorkflowVariable
     direction: WindDirection | None = None
     final_value: float | None = Field(default=None, gt=0)
+    final_label: str | None = None
     reviewed_by: str | None = None
     review_notes: str | None = None
     review_status: ReviewStatus = "unreviewed"
@@ -506,6 +507,8 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
 
     wind_region: str = "A2"
     annual_exceedance_probability: str = "1/500"
+    importance_level: str | None = None
+    user_assumptions: str | None = None
     regional_wind_speed_mps: float | None = Field(default=None, gt=0)
     wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)
     workflow_reviews: list[WindVariableReview] = Field(default_factory=list)
@@ -519,15 +522,20 @@ class WindVariableAssessment(BaseModel):
     direction: WindDirection | None = None
     unit: str = ""
     recommended_value: float | None = None
+    recommended_label: str | None = None
     confidence: Literal["high", "medium", "low"] = "low"
     final_value: float | None = None
+    final_label: str | None = None
     review_status: ReviewStatus = "unreviewed"
     reviewed_by: str | None = None
     review_notes: str | None = None
     warnings: list[str] = Field(default_factory=list)
     evidence_link: str
+    source_reference: str = "Engineer review required."
+    detail_label: str = "Show calculation"
     formula_basis: str
     calculation_inputs: list[str] = Field(default_factory=list)
+    detail_items: list[str] = Field(default_factory=list)
     calculation_result: str
 
 

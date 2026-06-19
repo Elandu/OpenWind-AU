@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenWind-AU Wind Workflow</title>
+    <title>OpenWind-AU Site Wind Assessment</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <header>
       <div>
-        <h1>OpenWind-AU</h1>
-        <p>AS/NZS 1170.2 site wind workflow through reviewed Vsit,b.</p>
+        <h1>Site Wind Assessment</h1>
+        <p>AS/NZS 1170.2 workflow through reviewed Vsit,b.</p>
       </div>
       <nav>
         <a href="/site-analysis">Evidence tools</a>
@@ -20,7 +20,7 @@
 
     <main>
       <section id="project-site-inputs" class="panel">
-        <h2>1. Project and Site Inputs</h2>
+        <h2>1. Site Inputs</h2>
         <form id="workflow-form">
           <div class="grid">
             <label>
@@ -74,7 +74,11 @@
               <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
             </label>
             <label>
-              Engineer-supplied VR (m/s)
+              Return period / importance level
+              <input id="importance_level" name="importance_level" placeholder="e.g. IL2, 1:500 annual probability" />
+            </label>
+            <label>
+              Selected VR (m/s)
               <input id="regional_wind_speed_mps" name="regional_wind_speed_mps" type="number" step="0.1" placeholder="required for Vsit,b" />
             </label>
             <label>
@@ -84,33 +88,45 @@
                 <option value="best_estimate">Best estimate</option>
               </select>
             </label>
+            <label>
+              User assumptions
+              <textarea id="user_assumptions" name="user_assumptions" placeholder="Project-specific assumptions for engineer review"></textarea>
+            </label>
           </div>
-          <button type="submit">Run Wind Workflow</button>
+          <button type="submit">Run Site Wind Assessment</button>
         </form>
         <p class="disclaimer">
           Preliminary workflow only. The app does not calculate final design pressures and does
           not certify AS/NZS 1170.2 compliance.
         </p>
+        <div id="site-input-summary" class="workflow-card">
+          <p class="note">Run the assessment to display resolved site inputs.</p>
+        </div>
       </section>
 
       <section id="wind-region-vr" class="panel workflow-anchor">
         <h2>2. Wind Region / Regional Wind Speed, VR</h2>
+        <p class="note">Displays wind region, ARI / importance level, source reference, and selected VR.</p>
       </section>
 
       <section id="wind-direction-md" class="panel workflow-anchor">
         <h2>3. Wind Direction Multiplier, Md</h2>
+        <p class="note">Displays direction, selected Md, source reference, and review status.</p>
       </section>
 
       <section id="terrain-category-mzcat" class="panel workflow-anchor">
         <h2>4. Terrain Category / Mz,cat</h2>
+        <p class="note">Displays Recommended TC, Final TC, Recommended Mz,cat, Final Mz,cat, and review status.</p>
       </section>
 
       <section id="shielding-ms" class="panel workflow-anchor">
         <h2>5. Shielding Multiplier, Ms</h2>
+        <p class="note">Displays Recommended Ms, Final Ms, review status, and shielding calculation evidence.</p>
       </section>
 
       <section id="topographic-mt" class="panel workflow-anchor">
         <h2>6. Topographic Multiplier, Mt</h2>
+        <p class="note">Displays Recommended Mt, Final Mt, review status, and topographic assessment evidence.</p>
       </section>
 
       <section id="vsitb-summary" class="panel">
@@ -137,20 +153,27 @@
         </div>
       </section>
 
-      <section id="evidence-reports" class="panel">
-        <h2>8. Evidence Maps and Reports</h2>
+      <section id="supporting-evidence" class="panel">
+        <h2>8. Supporting Evidence and Maps</h2>
         <div class="toolbar">
           <a class="button-link" href="/site-analysis">Open evidence tools</a>
-          <button id="workflow-report" type="button">Open Workflow Report</button>
+          <button id="workflow-report" type="button">Open Site Wind Assessment Report</button>
         </div>
+        <ul class="note">
+          <li>Terrain profiles</li>
+          <li>Topographic screening</li>
+          <li>Obstruction inventory</li>
+          <li>Shielding diagnostics</li>
+          <li>Terrain category evidence</li>
+        </ul>
         <ul id="evidence-links" class="note">
           <li>Run the workflow to see supporting evidence references.</li>
         </ul>
       </section>
 
       <section class="panel">
-        <h2>Workflow Status</h2>
-        <pre id="workflow-summary">Run the workflow to review variables.</pre>
+        <h2>Assessment Status</h2>
+        <pre id="workflow-summary">Run the assessment to review variables.</pre>
       </section>
     </main>
 
