@@ -226,6 +226,8 @@ def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
     assert shielding_polygon_layer
     assert f"{shielding_polygon_layer.group(1)}.addTo(map_" in html
     assert diagnostics["plotted_polygons"] == 6
+    assert diagnostics["plotted_microsoft_polygons"] == 3
+    assert diagnostics["plotted_shielding_polygons"] == 3
     assert diagnostics["total_geojson_payload_size"] > 0
     assert "Shielding polygon display limited to 3" in html
     assert "Microsoft footprint display limited to 3" in html

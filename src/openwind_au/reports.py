@@ -44,6 +44,8 @@ class MapRenderDiagnostics:
     total_obstructions: int = 0
     selected_obstructions: int = 0
     plotted_polygons: int = 0
+    plotted_microsoft_polygons: int = 0
+    plotted_shielding_polygons: int = 0
     plotted_centroids: int = 0
     total_geojson_payload_size: int = 0
     largest_polygon_vertex_count: int = 0
@@ -66,6 +68,8 @@ class MapRenderDiagnostics:
             "total_obstructions": self.total_obstructions,
             "selected_obstructions": self.selected_obstructions,
             "plotted_polygons": self.plotted_polygons,
+            "plotted_microsoft_polygons": self.plotted_microsoft_polygons,
+            "plotted_shielding_polygons": self.plotted_shielding_polygons,
             "plotted_centroids": self.plotted_centroids,
             "total_geojson_payload_size": self.total_geojson_payload_size,
             "largest_polygon_vertex_count": self.largest_polygon_vertex_count,
@@ -719,6 +723,10 @@ def _add_workflow_microsoft_polygon_layer(
             f"{len(features)} of {len(records)} available footprints."
         )
     if not features:
+        diagnostics.warnings.append(
+            "No Microsoft building footprint polygons were available for this map "
+            f"(cache status: {result.data_quality.microsoft_cache_status})."
+        )
         return diagnostics
 
     folium.GeoJson(
@@ -731,6 +739,7 @@ def _add_workflow_microsoft_polygon_layer(
         ),
     ).add_to(layer)
     diagnostics.plotted_polygons += len(features)
+    diagnostics.plotted_microsoft_polygons += len(features)
     return diagnostics
 
 
@@ -821,6 +830,7 @@ def _add_workflow_shielding_polygon_layer(
         ),
     ).add_to(layer)
     diagnostics.plotted_polygons += len(features)
+    diagnostics.plotted_shielding_polygons += len(features)
     return diagnostics
 
 
@@ -1355,9 +1365,9 @@ def obstruction_feature_style(layer: str) -> dict[str, Any]:
     styles = {
         "manual_reviewed": {"color": "#0f766e", "fillColor": "#99f6e4", "fillOpacity": 0.30},
         "microsoft_building_footprints": {
-            "color": "#334155",
-            "fillColor": "#cbd5e1",
-            "fillOpacity": 0.22,
+            "color": "#1d4ed8",
+            "fillColor": "#60a5fa",
+            "fillOpacity": 0.38,
         },
         "OSM": {"color": "#2563eb", "fillColor": "#bfdbfe", "fillOpacity": 0.20},
         "vegetation": {"color": "#16a34a", "fillColor": "#bbf7d0", "fillOpacity": 0.22},
