@@ -1,0 +1,13 @@
+{
+  "source": {
+    "title": "Editable direction multiplier lookup table",
+    "standard_reference": "AS/NZS 1170.2 Md table, verify against licensed standard",
+    "status": "review data; not a substitute for the Standard"
+  },
+  "tables": {
+    "A": {"N": 0.90, "NE": 0.95, "E": 1.00, "SE": 1.00, "S": 0.95, "SW": 0.90, "W": 0.90, "NW": 0.90},
+    "B": {"N": 0.90, "NE": 0.95, "E": 1.00, "SE": 1.00, "S": 0.95, "SW": 0.90, "W": 0.90, "NW": 0.90},
+    "C": {"N": 0.95, "NE": 1.00, "E": 1.00, "SE": 0.95, "S": 0.90, "SW": 0.90, "W": 0.95, "NW": 1.00},
+    "D": {"N": 0.95, "NE": 1.00, "E": 1.00, "SE": 0.95, "S": 0.90, "SW": 0.90, "W": 0.95, "NW": 1.00}
+  }
+}

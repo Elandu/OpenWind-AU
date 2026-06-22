@@ -10,6 +10,7 @@ from openwind_au.dem import DEMProvider
 from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import (
+    combined_map_html,
     map_html,
     obstruction_map_html,
     profile_plot_html,
@@ -145,6 +146,46 @@ def test_terrain_category_map_uses_display_limited_obstruction_layers() -> None:
     assert diagnostics["selected_obstructions"] == 500
     assert diagnostics["plotted_polygons"] == 500
     assert "Map display limited to 500 of 1000 obstructions" in html
+
+
+def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=8,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_max_display_obstructions=500,
+        ),
+        footprints=many_microsoft_footprints(25),
+    )
+
+    html = combined_map_html(site_result, obstruction_result)
+
+    assert "Shielding sectors" in html
+    assert "Shielding obstruction polygons" in html
+    assert "Topographic feature candidates" in html
+    assert "Nearby obstructions" in html
+    assert "Topographic circles" not in html
+    assert "Raw OSM building polygons before filtering" not in html
+    assert "Manual reviewed obstruction geometry" not in html
+    assert "Microsoft building footprints" not in html
+    assert "OSM fallback and matched attributes" not in html
+    assert "Vegetation polygons" not in html
+    assert "Shielding candidates" not in html
+    shielding_layer = re.search(r'"Shielding sectors" : (feature_group_[a-f0-9]+)', html)
+    assert shielding_layer
+    assert f"{shielding_layer.group(1)}.addTo(map_" in html
 
 
 def test_invalid_geometry_is_repaired_or_reported_for_map_display() -> None:

@@ -92,6 +92,36 @@ The index maps tile keys to downloadable files:
 With an index configured, OpenWind-AU downloads only the tile keys touched by the site radius and
 stores them in the local cache.
 
+## Optional Wind Region GIS Dataset
+
+Wind-region lookup prefers Geoscience Australia's
+[1170.2 Wind Regions for Australia](https://ecat.ga.gov.au/geonetwork/srv/api/records/74dfa021-95cd-4090-9e25-a7a8efde5454)
+GIS dataset. The catalogue describes the dataset as Geoscience Australia's interpretation of the
+AS/NZS 1170.2 wind-region definitions and notes that professional designers should refer to the
+Standard for design purposes.
+
+Download and extract the GA data ZIP from the catalogue, then configure the local GeoJSON or GPKG
+path:
+
+```powershell
+$env:OPENWIND_WIND_REGION_DATASET="C:\data\openwind-au\1170_2_wind_regions.gpkg"
+```
+
+Optional settings:
+
+```powershell
+$env:OPENWIND_WIND_REGION_LAYER="wind_regions"
+$env:OPENWIND_WIND_REGION_FIELD="wind_region"
+$env:OPENWIND_WIND_REGION_BOUNDARY_WARNING_M="25000"
+```
+
+OpenWind-AU does not generate wind regions from a copied image. Test-only sample polygons live under
+`tests/fixtures` and must not be used for project assessments.
+
+Regional wind speed and direction multiplier lookup data are editable JSON files packaged under
+`src/openwind_au/data`. To use project-reviewed tables, set `OPENWIND_VR_TABLE_PATH` and
+`OPENWIND_MD_TABLE_PATH` to replacement JSON files with the same structure.
+
 ## Optional DSM/DTM Height Enrichment
 
 Obstruction height enrichment can use local DSM and DTM rasters when they are available. Set:
