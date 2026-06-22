@@ -667,9 +667,19 @@ def _add_workflow_shielding_polygon_layer(
         diagnostics.warnings.append("No shielding obstruction polygons qualified for map display.")
         return diagnostics
 
-    records = [record for record in result.obstructions if record.obstruction_id in included_ids]
+    max_display = max(
+        int(getattr(result.input, "map_max_display_obstructions", DEFAULT_MAP_DISPLAY_LIMIT)),
+        1,
+    )
+    records = sorted(
+        (record for record in result.obstructions if record.obstruction_id in included_ids),
+        key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
+    )
     features = []
-    for record in records[:DEFAULT_MAP_DISPLAY_LIMIT]:
+    payload_size = 0
+    for record in records:
+        if len(features) >= max_display:
+            break
         display_geometry = display_geometry_for_map(
             record.footprint_geometry,
             result.site,
@@ -679,22 +689,35 @@ def _add_workflow_shielding_polygon_layer(
         if display_geometry is None:
             continue
         height = record.selected_height_m or record.height_m
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": display_geometry,
-                "properties": {
-                    "id": record.obstruction_id,
-                    "height": f"{height:.1f} m" if height is not None else "missing",
-                    "source": record.footprint_source,
-                },
-            }
+        feature = {
+            "type": "Feature",
+            "geometry": display_geometry,
+            "properties": {
+                "id": record.obstruction_id,
+                "height": f"{height:.1f} m" if height is not None else "missing",
+                "source": record.footprint_source,
+            },
+        }
+        feature_size = len(json.dumps(feature, separators=(",", ":")))
+        if payload_size + feature_size > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES:
+            diagnostics.fallback_mode = True
+            diagnostics.warnings.append(
+                "Shielding obstruction polygon display stopped at the map payload budget."
+            )
+            break
+        features.append(feature)
+        payload_size += feature_size
+        diagnostics.largest_polygon_vertex_count = max(
+            diagnostics.largest_polygon_vertex_count,
+            geometry_vertex_count(display_geometry),
         )
 
-    if len(records) > DEFAULT_MAP_DISPLAY_LIMIT:
+    diagnostics.total_geojson_payload_size += payload_size
+
+    if len(records) > len(features):
         diagnostics.warnings.append(
             "Shielding polygon display limited to "
-            f"{DEFAULT_MAP_DISPLAY_LIMIT} of {len(records)} contributing obstructions."
+            f"{len(features)} of {len(records)} contributing obstructions."
         )
     if not features:
         diagnostics.warnings.append("Shielding obstruction polygons could not be rendered.")

@@ -188,6 +188,42 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert f"{shielding_layer.group(1)}.addTo(map_" in html
 
 
+def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=8,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_max_display_obstructions=3,
+        ),
+        footprints=many_microsoft_footprints(25),
+    )
+
+    html = combined_map_html(site_result, obstruction_result)
+    diagnostics = map_diagnostics(html)
+    shielding_polygon_layer = re.search(
+        r'"Shielding obstruction polygons" : (feature_group_[a-f0-9]+)',
+        html,
+    )
+
+    assert shielding_polygon_layer
+    assert f"{shielding_polygon_layer.group(1)}.addTo(map_" in html
+    assert diagnostics["plotted_polygons"] == 3
+    assert diagnostics["total_geojson_payload_size"] > 0
+    assert "Shielding polygon display limited to 3" in html
+
+
 def test_invalid_geometry_is_repaired_or_reported_for_map_display() -> None:
     bowtie = {
         "source_id": "ms-bowtie",
