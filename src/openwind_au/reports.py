@@ -642,12 +642,6 @@ def combined_map_html(
         obstruction_result,
         diagnostics,
     )
-    diagnostics = _add_workflow_microsoft_polygon_layer(
-        microsoft_polygon_layer,
-        obstruction_result,
-        diagnostics,
-    )
-
     wind_region_layer.add_to(fmap)
     site_layer.add_to(fmap)
     mzcat_layer.add_to(fmap)
@@ -656,6 +650,12 @@ def combined_map_html(
     shielding_layer.add_to(fmap)
     shielding_polygon_layer.add_to(fmap)
     microsoft_polygon_layer.add_to(fmap)
+    diagnostics = _add_workflow_microsoft_polygon_layer(
+        fmap,
+        microsoft_polygon_layer,
+        obstruction_result,
+        diagnostics,
+    )
     obstruction_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
@@ -663,6 +663,7 @@ def combined_map_html(
 
 
 def _add_workflow_microsoft_polygon_layer(
+    fmap: folium.Map,
     layer: folium.FeatureGroup,
     result: ObstructionInventoryResult,
     diagnostics: MapRenderDiagnostics,
@@ -729,18 +730,69 @@ def _add_workflow_microsoft_polygon_layer(
         )
         return diagnostics
 
-    folium.GeoJson(
-        {"type": "FeatureCollection", "features": features},
-        style_function=lambda _feature: obstruction_feature_style("microsoft_building_footprints"),
-        tooltip=folium.GeoJsonTooltip(
-            fields=["id", "source", "height", "confidence"],
-            aliases=["ID", "Source", "Height", "Confidence"],
-            sticky=False,
-        ),
-    ).add_to(layer)
+    _add_explicit_microsoft_footprint_loader(fmap, layer, features)
     diagnostics.plotted_polygons += len(features)
     diagnostics.plotted_microsoft_polygons += len(features)
     return diagnostics
+
+
+def _add_explicit_microsoft_footprint_loader(
+    fmap: folium.Map,
+    layer: folium.FeatureGroup,
+    features: list[dict[str, Any]],
+) -> None:
+    """Inject a direct Leaflet Microsoft footprint loader for iframe map reliability."""
+
+    feature_collection = {"type": "FeatureCollection", "features": features}
+    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
+    map_name = fmap.get_name()
+    layer_name = layer.get_name()
+    script = f"""
+    (function() {{
+      const microsoftFootprints = {feature_collection_json};
+      const microsoftLayer = {layer_name};
+      const microsoftGeoJson = L.geoJson(microsoftFootprints, {{
+        interactive: true,
+        style: function() {{
+          return {{
+            color: "#1d4ed8",
+            weight: 2,
+            opacity: 0.95,
+            fillColor: "#60a5fa",
+            fillOpacity: 0.42
+          }};
+        }},
+        onEachFeature: function(feature, leafletLayer) {{
+          const props = feature.properties || {{}};
+          leafletLayer.bindTooltip(
+            `<table>
+              <tr><th>ID</th><td>${{props.id || ""}}</td></tr>
+              <tr><th>Height</th><td>${{props.height || "missing"}}</td></tr>
+              <tr><th>Source</th><td>${{props.source || "Microsoft"}}</td></tr>
+              <tr><th>Confidence</th><td>${{props.confidence || ""}}</td></tr>
+            </table>`,
+            {{sticky: false, className: "foliumtooltip"}}
+          );
+        }}
+      }});
+      microsoftGeoJson.addTo(microsoftLayer);
+      microsoftLayer.addTo({map_name});
+      microsoftGeoJson.bringToFront();
+      microsoftLayer.on("add", function() {{
+        microsoftGeoJson.bringToFront();
+      }});
+      window.openWindMicrosoftFootprintLayer = {{
+        feature_count: microsoftFootprints.features.length,
+        layer_name: "Microsoft building footprints",
+        renderer: "explicit_leaflet_geojson"
+      }};
+      console.info(
+        "OpenWind-AU Microsoft footprint layer",
+        window.openWindMicrosoftFootprintLayer
+      );
+    }})();
+    """
+    fmap.get_root().script.add_child(folium.Element(script))
 
 
 def _add_workflow_shielding_polygon_layer(

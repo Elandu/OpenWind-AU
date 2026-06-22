@@ -192,6 +192,8 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     )
     assert microsoft_layer
     assert f"{microsoft_layer.group(1)}.addTo(map_" in html
+    assert "window.openWindMicrosoftFootprintLayer" in html
+    assert "explicit_leaflet_geojson" in html
 
 
 def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
@@ -231,6 +233,7 @@ def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
     assert diagnostics["total_geojson_payload_size"] > 0
     assert "Shielding polygon display limited to 3" in html
     assert "Microsoft footprint display limited to 3" in html
+    assert "window.openWindMicrosoftFootprintLayer" in html
 
 
 def test_invalid_geometry_is_repaired_or_reported_for_map_display() -> None:
