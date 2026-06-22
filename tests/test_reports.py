@@ -179,13 +179,19 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Topographic circles" not in html
     assert "Raw OSM building polygons before filtering" not in html
     assert "Manual reviewed obstruction geometry" not in html
-    assert "Microsoft building footprints" not in html
+    assert "Microsoft building footprints" in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html
     assert "Shielding candidates" not in html
     shielding_layer = re.search(r'"Shielding sectors" : (feature_group_[a-f0-9]+)', html)
     assert shielding_layer
     assert f"{shielding_layer.group(1)}.addTo(map_" in html
+    microsoft_layer = re.search(
+        r'"Microsoft building footprints" : (feature_group_[a-f0-9]+)',
+        html,
+    )
+    assert microsoft_layer
+    assert f"{microsoft_layer.group(1)}.addTo(map_" in html
 
 
 def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
@@ -219,9 +225,10 @@ def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
 
     assert shielding_polygon_layer
     assert f"{shielding_polygon_layer.group(1)}.addTo(map_" in html
-    assert diagnostics["plotted_polygons"] == 3
+    assert diagnostics["plotted_polygons"] == 6
     assert diagnostics["total_geojson_payload_size"] > 0
     assert "Shielding polygon display limited to 3" in html
+    assert "Microsoft footprint display limited to 3" in html
 
 
 def test_invalid_geometry_is_repaired_or_reported_for_map_display() -> None:

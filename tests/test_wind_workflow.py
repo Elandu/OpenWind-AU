@@ -249,7 +249,7 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Nearby obstructions" in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
-    assert "Microsoft building footprints" not in body
+    assert "Microsoft building footprints" in body
     assert "OSM fallback and matched attributes" not in body
     assert "Vegetation polygons" not in body
     assert "Shielding candidates" not in body

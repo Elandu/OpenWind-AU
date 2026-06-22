@@ -521,6 +521,7 @@ def combined_map_html(
     feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
     shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=True)
     shielding_polygon_layer = folium.FeatureGroup(name="Shielding obstruction polygons", show=True)
+    microsoft_polygon_layer = folium.FeatureGroup(name="Microsoft building footprints", show=True)
     obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=False)
 
     if wind_region_assessment is not None:
@@ -637,6 +638,11 @@ def combined_map_html(
         obstruction_result,
         diagnostics,
     )
+    diagnostics = _add_workflow_microsoft_polygon_layer(
+        microsoft_polygon_layer,
+        obstruction_result,
+        diagnostics,
+    )
 
     wind_region_layer.add_to(fmap)
     site_layer.add_to(fmap)
@@ -645,10 +651,87 @@ def combined_map_html(
     feature_layer.add_to(fmap)
     shielding_layer.add_to(fmap)
     shielding_polygon_layer.add_to(fmap)
+    microsoft_polygon_layer.add_to(fmap)
     obstruction_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
     return _render_map_with_diagnostics(fmap, diagnostics)
+
+
+def _add_workflow_microsoft_polygon_layer(
+    layer: folium.FeatureGroup,
+    result: ObstructionInventoryResult,
+    diagnostics: MapRenderDiagnostics,
+) -> MapRenderDiagnostics:
+    """Add display-limited Microsoft footprint polygons to the workflow map."""
+
+    max_display = max(
+        int(getattr(result.input, "map_max_display_obstructions", DEFAULT_MAP_DISPLAY_LIMIT)),
+        1,
+    )
+    records = sorted(
+        (
+            record
+            for record in result.obstructions
+            if record.footprint_source == "microsoft_building_footprints"
+        ),
+        key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
+    )
+    features = []
+    payload_size = 0
+    for record in records:
+        if len(features) >= max_display:
+            break
+        display_geometry = display_geometry_for_map(
+            record.footprint_geometry,
+            result.site,
+            result.input.radius_m,
+            diagnostics,
+        )
+        if display_geometry is None:
+            continue
+        feature = obstruction_display_feature(
+            record,
+            display_geometry,
+            "microsoft_building_footprints",
+        )
+        feature_size = len(json.dumps(feature, separators=(",", ":")))
+        if (
+            diagnostics.total_geojson_payload_size + payload_size + feature_size
+            > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES
+        ):
+            diagnostics.fallback_mode = True
+            diagnostics.warnings.append(
+                "Microsoft footprint polygon display stopped at the map payload budget."
+            )
+            break
+        features.append(feature)
+        payload_size += feature_size
+        diagnostics.largest_polygon_vertex_count = max(
+            diagnostics.largest_polygon_vertex_count,
+            geometry_vertex_count(display_geometry),
+        )
+
+    diagnostics.total_geojson_payload_size += payload_size
+    if len(records) > len(features):
+        diagnostics.warnings.append(
+            "Microsoft footprint display limited to "
+            f"{len(features)} of {len(records)} available footprints."
+        )
+    if not features:
+        return diagnostics
+
+    folium.GeoJson(
+        {"type": "FeatureCollection", "features": features},
+        style_function=lambda _feature: obstruction_feature_style("microsoft_building_footprints"),
+        tooltip=folium.GeoJsonTooltip(
+            fields=["id", "source", "height", "confidence"],
+            aliases=["ID", "Source", "Height", "Confidence"],
+            sticky=False,
+        ),
+    ).add_to(layer)
+    diagnostics.plotted_polygons += len(features)
+    return diagnostics
 
 
 def _add_workflow_shielding_polygon_layer(
