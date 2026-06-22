@@ -26,6 +26,7 @@ from openwind_au.models import (
     SiteLocation,
     TerrainCategoryDirectionEvidence,
     TerrainCategoryEvidenceResult,
+    WindRegionAssessment,
     WindWorkflowResult,
 )
 from openwind_au.shielding import shielding_sector_polygon
@@ -497,13 +498,14 @@ def obstruction_map_html(result: ObstructionInventoryResult) -> str:
 def combined_map_html(
     site_result: SiteAnalysisResult,
     obstruction_result: ObstructionInventoryResult,
+    evidence_result: TerrainCategoryEvidenceResult | None = None,
+    wind_region_assessment: WindRegionAssessment | None = None,
 ) -> str:
-    """Return a Folium map with toggleable layers for site, profiles, features, and obstructions.
+    """Return a Folium map with toggleable wind workflow layers.
 
     The returned document embeds a Folium/Leaflet map with a non-collapsed layer control so
-    reviewers can show or hide the four layer groups: site & analysis radius, terrain profiles,
-    topographic feature candidates, and obstruction footprints. The terrain analysis radius and
-    the obstruction inventory radius are both drawn so the difference in coverage is visible.
+    users can show or hide wind regions, Mz,cat sectors, shielding sectors, topographic
+    features, terrain profiles, and nearby obstruction centroids on one map.
     """
 
     fmap = folium.Map(
@@ -513,9 +515,16 @@ def combined_map_html(
     )
 
     site_layer = folium.FeatureGroup(name="Site & analysis radius", show=True)
+    wind_region_layer = folium.FeatureGroup(name="Wind regions", show=True)
+    mzcat_layer = folium.FeatureGroup(name="Mz,cat sectors", show=True)
     profile_layer = folium.FeatureGroup(name="Terrain profiles", show=True)
     feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
-    shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=False)
+    shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=True)
+    shielding_polygon_layer = folium.FeatureGroup(name="Shielding obstruction polygons", show=True)
+    obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=False)
+
+    if wind_region_assessment is not None:
+        _add_wind_region_layer(wind_region_layer, site_result.site, wind_region_assessment)
 
     folium.Marker(
         [site_result.site.latitude, site_result.site.longitude],
@@ -564,6 +573,25 @@ def combined_map_html(
             ),
         ).add_to(profile_layer)
 
+    if evidence_result is not None:
+        for direction in evidence_result.directions:
+            color = _terrain_category_color(direction.suggested_category_range)
+            folium.GeoJson(
+                terrain_category_sector_polygon(evidence_result.site, direction),
+                style_function=lambda _feature, color=color: {
+                    "color": color,
+                    "weight": 2,
+                    "dashArray": "5 4",
+                    "fillColor": color,
+                    "fillOpacity": 0.08,
+                },
+                tooltip=(
+                    f"{direction.direction}: Mz,cat input sector, "
+                    f"range={direction.suggested_category_range}, "
+                    f"confidence={direction.confidence}"
+                ),
+            ).add_to(mzcat_layer)
+
     for feature in site_result.features:
         if feature.feature_type == "no significant feature":
             continue
@@ -585,7 +613,7 @@ def combined_map_html(
             ),
         ).add_to(feature_layer)
 
-    diagnostics = _add_obstruction_review_layers(fmap, obstruction_result)
+    diagnostics = _add_obstruction_centroid_layer(fmap, obstruction_layer, obstruction_result)
 
     for sector in obstruction_result.shielding_sectors:
         color = _shielding_sector_color(sector.indicative_ms)
@@ -604,13 +632,154 @@ def combined_map_html(
             ),
         ).add_to(shielding_layer)
 
+    diagnostics = _add_workflow_shielding_polygon_layer(
+        shielding_polygon_layer,
+        obstruction_result,
+        diagnostics,
+    )
+
+    wind_region_layer.add_to(fmap)
     site_layer.add_to(fmap)
+    mzcat_layer.add_to(fmap)
     profile_layer.add_to(fmap)
     feature_layer.add_to(fmap)
     shielding_layer.add_to(fmap)
+    shielding_polygon_layer.add_to(fmap)
+    obstruction_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
     return _render_map_with_diagnostics(fmap, diagnostics)
+
+
+def _add_workflow_shielding_polygon_layer(
+    layer: folium.FeatureGroup,
+    result: ObstructionInventoryResult,
+    diagnostics: MapRenderDiagnostics,
+) -> MapRenderDiagnostics:
+    """Add polygons that actually contributed to shielding-sector evidence."""
+
+    included_ids = {
+        obstruction_id
+        for sector in result.shielding_sectors
+        for obstruction_id in sector.included_obstruction_ids
+    }
+    if not included_ids:
+        diagnostics.warnings.append("No shielding obstruction polygons qualified for map display.")
+        return diagnostics
+
+    records = [record for record in result.obstructions if record.obstruction_id in included_ids]
+    features = []
+    for record in records[:DEFAULT_MAP_DISPLAY_LIMIT]:
+        display_geometry = display_geometry_for_map(
+            record.footprint_geometry,
+            result.site,
+            result.input.radius_m,
+            diagnostics,
+        )
+        if display_geometry is None:
+            continue
+        height = record.selected_height_m or record.height_m
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": display_geometry,
+                "properties": {
+                    "id": record.obstruction_id,
+                    "height": f"{height:.1f} m" if height is not None else "missing",
+                    "source": record.footprint_source,
+                },
+            }
+        )
+
+    if len(records) > DEFAULT_MAP_DISPLAY_LIMIT:
+        diagnostics.warnings.append(
+            "Shielding polygon display limited to "
+            f"{DEFAULT_MAP_DISPLAY_LIMIT} of {len(records)} contributing obstructions."
+        )
+    if not features:
+        diagnostics.warnings.append("Shielding obstruction polygons could not be rendered.")
+        return diagnostics
+
+    folium.GeoJson(
+        {"type": "FeatureCollection", "features": features},
+        style_function=lambda _feature: {
+            "color": "#047857",
+            "weight": 2,
+            "fillColor": "#10b981",
+            "fillOpacity": 0.22,
+        },
+        tooltip=folium.GeoJsonTooltip(
+            fields=["id", "height", "source"],
+            aliases=["ID", "Height", "Source"],
+            sticky=False,
+        ),
+    ).add_to(layer)
+    diagnostics.plotted_polygons += len(features)
+    return diagnostics
+
+
+def _add_obstruction_centroid_layer(
+    fmap: folium.Map,
+    layer: folium.FeatureGroup,
+    result: ObstructionInventoryResult,
+) -> MapRenderDiagnostics:
+    """Add one lightweight obstruction centroid overlay for workflow maps."""
+
+    diagnostics = MapRenderDiagnostics(
+        display_mode="centroids_only",
+        max_displayed_obstructions=min(DEFAULT_MAP_DISPLAY_LIMIT, len(result.obstructions)),
+        total_obstructions=len(result.obstructions),
+    )
+    selected = sorted(result.obstructions, key=lambda record: record.distance_m)[
+        : diagnostics.max_displayed_obstructions
+    ]
+    diagnostics.selected_obstructions = len(selected)
+    diagnostics.fallback_mode = True
+    diagnostics.console_safe_errors.append(
+        "Workflow map uses centroid-only obstruction display for map clarity."
+    )
+    if diagnostics.selected_obstructions < diagnostics.total_obstructions:
+        diagnostics.warnings.append(
+            "Map display limited to "
+            f"{diagnostics.selected_obstructions} of {diagnostics.total_obstructions} "
+            "obstructions. Calculations used full dataset."
+        )
+    _add_obstruction_centroid_collection(layer, selected, diagnostics)
+    _add_map_diagnostics_banner(fmap, diagnostics)
+    return diagnostics
+
+
+def _add_wind_region_layer(
+    layer: folium.FeatureGroup,
+    site: SiteLocation,
+    assessment: WindRegionAssessment,
+) -> None:
+    if assessment.region_polygon:
+        folium.GeoJson(
+            display_region_geometry(assessment.region_polygon),
+            style_function=lambda _feature: {
+                "color": "#155eef",
+                "weight": 3,
+                "fillColor": "#84adff",
+                "fillOpacity": 0.14,
+            },
+            tooltip=f"Selected wind region {assessment.wind_region}",
+        ).add_to(layer)
+    if assessment.near_boundary and assessment.distance_to_boundary_m is not None:
+        folium.Circle(
+            location=[site.latitude, site.longitude],
+            radius=assessment.distance_to_boundary_m,
+            color="#b54708",
+            weight=2,
+            fill=False,
+            tooltip="Approximate distance to wind-region boundary",
+        ).add_to(layer)
+
+
+def display_region_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
+    """Simplify wind-region geometry for map display only."""
+
+    return mapping(shape(geometry).simplify(0.02, preserve_topology=True))
 
 
 def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
@@ -1754,26 +1923,180 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   <meta charset="utf-8">
   <title>OpenWind-AU Site Wind Assessment Report</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 32px; color: #202124; }
-    h1, h2, h3 { color: #17324d; }
-    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-    th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
-    th { background: #f6f8fa; }
-    .disclaimer { border-left: 4px solid #b42318; padding: 12px; background: #fff4f2; }
-    .warning { border-left: 4px solid #b45309; padding: 12px; background: #fff7ed; }
+    :root {
+      color: #101828;
+      background: #f5f7fb;
+      font-family: Inter, Arial, sans-serif;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #ffffff 0, #f7f9fc 240px, #f5f7fb 100%);
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: center;
+      min-height: 64px;
+      padding: 0 24px;
+      border-bottom: 1px solid #e4e7ec;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgb(16 24 40 / 6%);
+    }
+    h1, h2, h3 { color: #101828; }
+    h1 { margin: 0; font-size: 1.1rem; }
+    h2 {
+      margin: 18px 0 8px;
+      font-size: 1rem;
+    }
+    h3 {
+      margin: 14px 0 8px;
+      font-size: 0.92rem;
+    }
+    .subtitle { margin: 4px 0 0; color: #667085; font-size: 0.82rem; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      color: #ffffff;
+      background: #155eef;
+      font-weight: 800;
+      font-size: 0.82rem;
+    }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(100px, 1fr));
+      gap: 0;
+      min-width: 360px;
+    }
+    .kpis div {
+      border-left: 1px solid #e4e7ec;
+      padding: 6px 16px;
+    }
+    .kpis span {
+      display: block;
+      color: #667085;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .kpis strong {
+      display: block;
+      margin-top: 3px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.88rem;
+    }
+    section {
+      margin-bottom: 12px;
+      border: 1px solid #e4e7ec;
+      border-radius: 8px;
+      padding: 16px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+    }
+    table {
+      border-collapse: separate;
+      border-spacing: 0;
+      width: 100%;
+      margin: 12px 0;
+      border: 1px solid #e4e7ec;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 0.86rem;
+    }
+    th, td {
+      border: 0;
+      border-bottom: 1px solid #e4e7ec;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: 0; }
+    th {
+      background: #f9fafb;
+      color: #344054;
+      font-size: 0.76rem;
+      text-transform: uppercase;
+    }
+    .disclaimer {
+      border: 1px solid #fecdca;
+      border-left: 4px solid #b42318;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fffbfa;
+      color: #912018;
+    }
+    .warning {
+      border: 1px solid #fedf89;
+      border-left: 4px solid #b54708;
+      border-radius: 6px;
+      padding: 12px;
+      background: #fffbeb;
+    }
     .calc { background: #f8fafc; }
+    .governing { background: #ecfdf3; font-weight: 700; }
+    @media (max-width: 720px) {
+      header { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
+      main { padding: 16px; }
+      .kpis { width: 100%; min-width: 0; }
+    }
   </style>
 </head>
 <body>
-  <h1>OpenWind-AU Site Wind Assessment Report</h1>
+  <header>
+    <div class="brand">
+      <div class="mark">OW</div>
+      <div>
+        <h1>OpenWind-AU</h1>
+        <p class="subtitle">Site wind assessment report</p>
+      </div>
+    </div>
+    <div class="kpis">
+      <div>
+        <span>Region</span>
+        <strong>
+          {% if result.wind_region_assessment %}
+          {{ result.wind_region_assessment.wind_region }}
+          {% else %}
+          n/a
+          {% endif %}
+        </strong>
+      </div>
+      <div><span>Governing</span><strong>{{ result.governing_direction or "n/a" }}</strong></div>
+      <div>
+        <span>Vsit,b</span>
+        <strong>
+          {% if result.governing_vsitb is not none %}
+          {{ "%.3f"|format(result.governing_vsitb) }} m/s
+          {% else %}
+          n/a
+          {% endif %}
+        </strong>
+      </div>
+    </div>
+  </header>
+  <main>
   <p class="disclaimer">{{ result.disclaimer }}</p>
 
-  <h2>Executive Summary</h2>
+  <section>
+  <h2>1. Executive Summary</h2>
   <p>
-    This report summarises the reviewed AS/NZS 1170.2 site wind assessment workflow
+    This report summarises the AS/NZS 1170.2 site wind assessment workflow
     through Vsit,b. Pressure, cladding, Cpe, and Cpi calculations are outside this scope.
   </p>
   <table>
+    <tr><th>Overrides applied</th><td>{{ result.overrides_applied|length }}</td></tr>
     <tr>
       <th>Directions calculated</th>
       <td>
@@ -1784,24 +2107,30 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
         }}
       </td>
     </tr>
+    <tr><th>Primary warning</th><td>{{ result.warnings[0] if result.warnings else "" }}</td></tr>
     <tr>
-      <th>Directions blocked</th>
+      <th>Governing direction</th>
+      <td>{{ result.governing_direction or "not available" }}</td>
+    </tr>
+    <tr>
+      <th>Governing Vsit,b</th>
       <td>
-        {{
-          result.directional_vsitb
-          |selectattr("status", "equalto", "blocked")
-          |list|length
-        }}
+        {% if result.governing_vsitb is not none %}
+        {{ "%.3f"|format(result.governing_vsitb) }} m/s
+        {% else %}
+        not available
+        {% endif %}
       </td>
     </tr>
-    <tr><th>Primary warning</th><td>{{ result.warnings[0] if result.warnings else "" }}</td></tr>
   </table>
+  </section>
 
-  <h2>Site Wind Assessment</h2>
+  <section>
+  <h2>2. Site Information</h2>
   <p>
-    Workflow order: Site Inputs; Wind Region and Regional Wind Speed, VR;
+    Workflow order: Site Information; Regional Wind Speed, VR;
     Direction Multiplier, Md; Terrain Category and Mz,cat; Shielding Multiplier, Ms;
-    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Supporting Evidence and Maps.
+    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Report and Diagnostics.
   </p>
 
   {% if result.warnings %}
@@ -1811,152 +2140,360 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   </div>
   {% endif %}
 
-  <h3>Site Inputs</h3>
   <table>
     <tr>
       <th>Address</th>
       <td>{{ result.input.address or result.site.display_name or "not supplied" }}</td>
     </tr>
-    <tr><th>Latitude</th><td>{{ "%.6f"|format(result.site.latitude) }}</td></tr>
-    <tr><th>Longitude</th><td>{{ "%.6f"|format(result.site.longitude) }}</td></tr>
-    <tr>
-      <th>Coordinates</th>
-      <td>
-        {{ "%.6f"|format(result.site.latitude) }},
-        {{ "%.6f"|format(result.site.longitude) }}
-      </td>
-    </tr>
-    <tr><th>Wind region</th><td>{{ result.input.wind_region }}</td></tr>
+    <tr><th>Elevation</th><td>{{ "%.2f"|format(result.site.ground_elevation_m) }} m</td></tr>
     <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability }}</td></tr>
     <tr>
       <th>Return period / importance level</th>
       <td>{{ result.input.importance_level or "user input" }}</td>
     </tr>
     <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
+  </table>
+  </section>
+
+  <section>
+  <h2>3. Wind Assessment Summary</h2>
+  <h3>Wind Region Assessment</h3>
+  {% if result.wind_region_assessment %}
+  <table>
+    <tr><th>Wind Region</th><td>{{ result.wind_region_assessment.wind_region }}</td></tr>
     <tr>
-      <th>User assumptions</th>
-      <td>{{ result.input.user_assumptions or "No additional assumptions supplied." }}</td>
+      <th>Region sub-classification</th>
+      <td>{{ result.wind_region_assessment.region_subclassification or "not applicable" }}</td>
+    </tr>
+    <tr><th>Source</th><td>{{ result.wind_region_assessment.source }}</td></tr>
+    <tr><th>Confidence</th><td>{{ result.wind_region_assessment.confidence }}</td></tr>
+    <tr>
+      <th>Distance to boundary</th>
+      <td>
+        {% if result.wind_region_assessment.distance_to_boundary_m is not none %}
+        {{ "%.1f"|format(result.wind_region_assessment.distance_to_boundary_m) }} m
+        {% else %}
+        not available
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Warnings</th>
+      <td>{{ result.wind_region_assessment.warnings|join(" ") }}</td>
     </tr>
   </table>
+  {% endif %}
 
-  <h2>Variable Summary</h2>
+  <h3>Regional Wind Speed Assessment</h3>
+  {% if result.regional_wind_speed_assessment %}
+  <table>
+    <tr><th>Region</th><td>{{ result.regional_wind_speed_assessment.wind_region }}</td></tr>
+    <tr>
+      <th>Importance Level</th>
+      <td>{{ result.regional_wind_speed_assessment.importance_level or "not supplied" }}</td>
+    </tr>
+    <tr><th>ARI</th><td>{{ result.regional_wind_speed_assessment.ari_years }} years</td></tr>
+    <tr>
+      <th>VR,ult</th>
+      <td>
+        {% if result.regional_wind_speed_assessment.vr_ult is not none %}
+        {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_ult) }} m/s
+        {% else %}
+        manual input required
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>VR,serv</th>
+      <td>
+        {% if result.regional_wind_speed_assessment.vr_serv is not none %}
+        {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_serv) }} m/s
+        {% else %}
+        manual input required
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Selected table</th>
+      <td>{{ result.regional_wind_speed_assessment.selected_table }}</td>
+    </tr>
+    <tr>
+      <th>Lookup values</th>
+      <td>
+        <ul>
+          {% for item in result.regional_wind_speed_assessment.lookup_values %}
+          <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </td>
+    </tr>
+    <tr>
+      <th>Interpolation</th>
+      <td>{{ result.regional_wind_speed_assessment.interpolation or "not required" }}</td>
+    </tr>
+  </table>
+  {% endif %}
+
+  <h3>Direction Multiplier Assessment</h3>
+  {% if result.direction_multiplier_assessment %}
+  <table>
+    <tr><th>Wind Region</th><td>{{ result.direction_multiplier_assessment.wind_region }}</td></tr>
+    <tr><th>Source table</th><td>{{ result.direction_multiplier_assessment.source_table }}</td></tr>
+    <tr>
+      <th>Highest Md</th>
+      <td>
+        {% if result.direction_multiplier_assessment.highest_md is not none %}
+        {{ "%.3f"|format(result.direction_multiplier_assessment.highest_md) }}
+        {% else %}
+        manual input required
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Governing direction(s)</th>
+      <td>{{ result.direction_multiplier_assessment.governing_directions|join(", ") }}</td>
+    </tr>
+  </table>
+  <table>
+    <tr><th>Direction</th><th>Md</th></tr>
+    {% for row in result.direction_multiplier_assessment.directions %}
+    <tr class="{% if row.is_governing %}governing{% endif %}">
+      <td>{{ row.direction }}{% if row.is_governing %}<br>highest Md{% endif %}</td>
+      <td>
+        {% if row.md is not none %}
+        {{ "%.3f"|format(row.md) }}
+        {% else %}
+        manual input required
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <h3>Variable Summary</h3>
   <table>
     <tr>
-      <th>Variable</th><th>Direction</th><th>Recommended</th><th>Confidence</th>
-      <th>Engineer-selected Final</th><th>Review Status</th><th>Source Reference</th>
-      <th>Warnings</th><th>Evidence Reference</th>
+      <th>Variable</th><th>Direction</th><th>Calculated</th><th>Confidence</th>
+      <th>Final</th><th>Source Reference</th>
+      <th>Warnings</th>
     </tr>
     {% for variable in result.variables %}
     <tr>
       <td>{{ variable.label }}</td>
       <td>{{ variable.direction or "all" }}</td>
       <td>
-        {% if variable.recommended_value is not none %}
+        {% if variable.calculated_value is not none %}
         {{ variable.recommended_label or "" }}
-        <br>{{ "%.3f"|format(variable.recommended_value) }} {{ variable.unit }}
+        <br>{{ "%.3f"|format(variable.calculated_value) }} {{ variable.unit }}
         {% else %}
-        review required
+        not available
         {% endif %}
       </td>
       <td>{{ variable.confidence }}</td>
       <td>
-        {% if variable.review_status in ["accepted", "overridden"]
-          and variable.final_value is not none %}
+        {% if variable.final_value is not none %}
         {{ variable.final_label or "" }}
         <br>{{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
+        {% if variable.is_overridden %}
+        <br><strong>Override:</strong> {{ variable.override_reason }}
+        {% endif %}
         {% else %}
-        unreviewed
+        not available
         {% endif %}
       </td>
-      <td>{{ variable.review_status }}</td>
       <td>{{ variable.source_reference }}</td>
       <td>{{ variable.warnings|join(" ") }}</td>
-      <td>{{ variable.evidence_link }}</td>
     </tr>
     <tr class="calc">
       <td></td>
-      <td colspan="8">
+      <td colspan="6">
         <strong>{{ variable.detail_label }}:</strong><br>
         <strong>Formula / basis:</strong> {{ variable.formula_basis }}<br>
         <strong>Inputs:</strong>
         <ul>{% for item in variable.calculation_inputs %}<li>{{ item }}</li>{% endfor %}</ul>
         {% if variable.detail_items %}
-        <strong>Evidence / source details:</strong>
+        <strong>Source details:</strong>
         <ul>{% for item in variable.detail_items %}<li>{{ item }}</li>{% endfor %}</ul>
         {% endif %}
         <strong>Result:</strong> {{ variable.calculation_result }}
-        {% if variable.review_notes %}
-        <br><strong>Review notes:</strong> {{ variable.review_notes }}
+        {% if variable.override_reason %}
+        <br><strong>Override reason:</strong> {{ variable.override_reason }}
         {% endif %}
       </td>
     </tr>
     {% endfor %}
   </table>
+  </section>
 
-  <h2>Vsit,b Directional Summary</h2>
+  <section>
+  <h2>4. Directional Results Table</h2>
   <p>Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
   <table>
     <tr>
       <th>Direction</th><th>VR</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th>
-      <th>Vsit,b</th><th>Status</th>
+      <th>Vsit,b</th><th>Warnings</th>
     </tr>
     {% for row in result.directional_vsitb %}
-    <tr>
-      <td>{{ row.direction }}</td>
-      <td>{% if row.vr is not none %}{{ "%.3f"|format(row.vr) }}{% else %}unreviewed{% endif %}</td>
-      <td>{% if row.md is not none %}{{ "%.3f"|format(row.md) }}{% else %}unreviewed{% endif %}</td>
+    <tr class="{% if row.is_governing %}governing{% endif %}">
+      <td>
+        {{ row.direction }}
+        {% if row.is_governing %}<br>governing direction{% endif %}
+      </td>
+      <td>
+        {% if row.vr is not none %}{{ "%.3f"|format(row.vr) }}{% else %}not available{% endif %}
+      </td>
+      <td>
+        {% if row.md is not none %}{{ "%.3f"|format(row.md) }}{% else %}not available{% endif %}
+      </td>
       <td>
         {% if row.mzcat is not none %}
         {{ "%.3f"|format(row.mzcat) }}
         {% else %}
-        unreviewed
+        not available
         {% endif %}
       </td>
-      <td>{% if row.ms is not none %}{{ "%.3f"|format(row.ms) }}{% else %}unreviewed{% endif %}</td>
-      <td>{% if row.mt is not none %}{{ "%.3f"|format(row.mt) }}{% else %}unreviewed{% endif %}</td>
+      <td>
+        {% if row.ms is not none %}{{ "%.3f"|format(row.ms) }}{% else %}not available{% endif %}
+      </td>
+      <td>
+        {% if row.mt is not none %}{{ "%.3f"|format(row.mt) }}{% else %}not available{% endif %}
+      </td>
       <td>
         {% if row.final_vsitb is not none %}
         {{ "%.3f"|format(row.final_vsitb) }} m/s
+        {% if row.is_governing %}<br>governing Vsit,b{% endif %}
         {% else %}
-        blocked
+        not available
         {% endif %}
       </td>
-      <td>{{ row.status }} {{ row.warnings|join(" ") }}</td>
+      <td>{{ row.warnings|join(" ") }}</td>
     </tr>
     {% endfor %}
   </table>
+  </section>
 
-  <h2>Supporting Evidence References</h2>
-  <ul>{% for reference in result.evidence_references %}<li>{{ reference }}</li>{% endfor %}</ul>
-
-  <h2>Supporting Evidence</h2>
+  <section>
+  <h2>5. Terrain Category</h2>
   <ul>
-    <li>Terrain profiles</li>
-    <li>Topographic screening</li>
-    <li>Obstruction inventory</li>
-    <li>Shielding diagnostics</li>
-    <li>Terrain category evidence</li>
-  </ul>
-
-  <h2>Engineer Review Notes</h2>
-  <table>
-    <tr><th>Variable</th><th>Direction</th><th>Status</th><th>Reviewed By</th><th>Notes</th></tr>
     {% for variable in result.variables %}
-    {% if variable.review_status in ["accepted", "overridden"] or variable.review_notes %}
-    <tr>
-      <td>{{ variable.label }}</td>
-      <td>{{ variable.direction or "all" }}</td>
-      <td>{{ variable.review_status }}</td>
-      <td>{{ variable.reviewed_by or "" }}</td>
-      <td>{{ variable.review_notes or "" }}</td>
-    </tr>
+    {% if variable.variable == "Mzcat" %}
+    <li>
+      {{ variable.direction }}:
+      {{ variable.recommended_label or "review required" }};
+      final
+      {% if variable.final_value is not none %}
+      {{ "%.3f"|format(variable.final_value) }}
+      {% else %}
+      not available
+      {% endif %};
+      confidence {{ variable.confidence }}.
+    </li>
     {% endif %}
     {% endfor %}
+  </ul>
+  </section>
+
+  <section>
+  <h2>6. Shielding</h2>
+  <ul>
+    {% for variable in result.variables %}
+    {% if variable.variable == "Ms" %}
+    <li>
+      {{ variable.direction }}:
+      {{ variable.recommended_label or "review required" }};
+      final
+      {% if variable.final_value is not none %}
+      {{ "%.3f"|format(variable.final_value) }}
+      {% else %}
+      not available
+      {% endif %};
+      confidence {{ variable.confidence }}.
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+  </section>
+
+  <section>
+  <h2>7. Topography</h2>
+  <ul>
+    {% for variable in result.variables %}
+    {% if variable.variable == "Mt" %}
+    <li>
+      {{ variable.direction }}:
+      {{ variable.recommended_label or "review required" }};
+      final
+      {% if variable.final_value is not none %}
+      {{ "%.3f"|format(variable.final_value) }}
+      {% else %}
+      not available
+      {% endif %};
+      confidence {{ variable.confidence }}.
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+  </section>
+
+  <section>
+  <h2>8. Vsit,b</h2>
+  <p>Governing direction: {{ result.governing_direction or "not available" }}.</p>
+  <p>
+    Governing Vsit,b:
+    {% if result.governing_vsitb is not none %}
+    {{ "%.3f"|format(result.governing_vsitb) }} m/s.
+    {% else %}
+    not available.
+    {% endif %}
+  </p>
+  </section>
+
+  <section>
+  <h2>9. Maps</h2>
+  <p>
+    Use the application map views for terrain, shielding, topographic and combined layers.
+  </p>
+  </section>
+
+  <section>
+  <h2>10. Profiles</h2>
+  <p>Terrain profiles remain available in the site analysis tools.</p>
+  </section>
+
+  <section>
+  <h2>11. Engineer Notes</h2>
+  <p>{{ result.engineer_notes or "No engineer notes supplied." }}</p>
+  </section>
+
+  <section>
+  <h2>12. Limitations</h2>
+  <p>No final design pressure calculations are included in this report.</p>
+  </section>
+
+  <section>
+  <h2>Overrides Applied</h2>
+  {% if result.overrides_applied %}
+  <table>
+    <tr><th>Variable</th><th>Direction</th><th>Override value</th><th>Reason</th></tr>
+    {% for override in result.overrides_applied %}
+    <tr>
+      <td>{{ override.variable }}</td>
+      <td>{{ override.direction or "all" }}</td>
+      <td>{{ "%.3f"|format(override.override_value) }}</td>
+      <td>{{ override.reason }}</td>
+    </tr>
+    {% endfor %}
   </table>
+  {% else %}
+  <p>No overrides applied.</p>
+  {% endif %}
 
   <p class="disclaimer">
     No final design pressure calculations are included in this report.
   </p>
+  </section>
+  </main>
 </body>
 </html>
 """

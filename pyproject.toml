@@ -66,6 +66,7 @@ packages = ["src/openwind_au"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/openwind_au/static" = "openwind_au/static"
+"src/openwind_au/data" = "openwind_au/data"
 
 [tool.ruff]
 line-length = 100

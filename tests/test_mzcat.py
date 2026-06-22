@@ -110,14 +110,15 @@ def test_best_estimate_mode_selects_upper_category_bound() -> None:
     assert assessment.recommended_mzcat == pytest.approx(0.96)
 
 
-def test_medium_confidence_has_no_final_or_auto_recommendation() -> None:
+def test_medium_confidence_gets_auto_recommendation_without_final_review_fields() -> None:
     assessment = direction_mzcat_assessment(
         evidence(suggested_range="TC2-TC2.5", confidence="medium", height_coverage=90),
         10,
     )
 
-    assert assessment.recommended_terrain_category == "review required"
-    assert assessment.recommended_mzcat is None
+    assert assessment.recommended_terrain_category == "TC2"
+    assert assessment.recommended_mzcat == pytest.approx(1.0)
+    assert assessment.recommendation_confidence == "medium"
     assert assessment.final_terrain_category is None
     assert assessment.final_mzcat is None
     assert assessment.review_status == "unreviewed"

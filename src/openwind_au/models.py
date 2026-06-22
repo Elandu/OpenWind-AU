@@ -478,10 +478,81 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 ReviewStatus = Literal["unreviewed", "accepted", "overridden"]
+AssessmentStatus = Literal["draft", "reviewed", "final"]
+WindRegionLabel = Literal[
+    "A",
+    "A0",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "A6",
+    "A7",
+    "B",
+    "B1",
+    "B2",
+    "C",
+    "D",
+]
+
+
+class WindRegionAssessment(BaseModel):
+    """Wind region assigned from bundled AS/NZS wind-region GIS polygons."""
+
+    latitude: float
+    longitude: float
+    wind_region: WindRegionLabel
+    region_subclassification: str | None = None
+    dataset_path: str | None = None
+    dataset_name: str | None = None
+    polygon_count: int | None = None
+    available_region_names: list[str] = Field(default_factory=list)
+    source: str
+    confidence: Literal["high", "medium", "low"]
+    distance_to_boundary_m: float | None = None
+    near_boundary: bool = False
+    region_polygon: dict[str, Any] | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RegionalWindSpeedAssessment(BaseModel):
+    """VR lookup for the assessed wind region and selected annual probability."""
+
+    wind_region: WindRegionLabel
+    importance_level: str | None = None
+    ari_years: int
+    annual_exceedance_probability: str
+    vr_ult: float | None = None
+    vr_serv: float | None = None
+    selected_table: str
+    lookup_values: list[str] = Field(default_factory=list)
+    interpolation: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class DirectionMultiplierRow(BaseModel):
+    """Directional Md value for one cardinal/intercardinal direction."""
+
+    direction: WindDirection
+    md: float | None = None
+    is_governing: bool = False
+
+
+class DirectionMultiplierAssessment(BaseModel):
+    """Direction multiplier table selected from the assessed wind region."""
+
+    wind_region: WindRegionLabel
+    source_table: str
+    directions: list[DirectionMultiplierRow]
+    highest_md: float | None = None
+    governing_directions: list[WindDirection]
+    lookup_values: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WindVariableReview(BaseModel):
-    """Engineer review state for one wind workflow variable."""
+    """Deprecated engineer review state for one wind workflow variable."""
 
     variable: WindWorkflowVariable
     direction: WindDirection | None = None
@@ -498,19 +569,35 @@ class WindVariableReview(BaseModel):
         return self
 
 
+class WindVariableOverride(BaseModel):
+    """Optional override for a calculated wind workflow variable."""
+
+    variable: WindWorkflowVariable
+    direction: WindDirection | None = None
+    override_value: float = Field(gt=0)
+    reason: str = Field(min_length=1)
+    label: str | None = None
+
+
 class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     """AS/NZS 1170.2 site wind workflow request.
 
-    The workflow does not embed AS/NZS table values. Engineers must supply VR
-    and confirm or override all final variables before Vsit,b is marked available.
+    The workflow uses bundled wind-region, VR, and Md lookup data for engineering
+    review and does not calculate pressures.
     """
 
     wind_region: str = "A2"
     annual_exceedance_probability: str = "1/500"
     importance_level: str | None = None
     user_assumptions: str | None = None
+    structure_type: str | None = None
+    building_dimensions: str | None = None
+    design_life_years: int | None = Field(default=None, gt=0)
     regional_wind_speed_mps: float | None = Field(default=None, gt=0)
     wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)
+    assessment_status: AssessmentStatus = "draft"
+    engineer_notes: str | None = None
+    workflow_overrides: list[WindVariableOverride] = Field(default_factory=list)
     workflow_reviews: list[WindVariableReview] = Field(default_factory=list)
 
 
@@ -524,11 +611,12 @@ class WindVariableAssessment(BaseModel):
     recommended_value: float | None = None
     recommended_label: str | None = None
     confidence: Literal["high", "medium", "low"] = "low"
+    calculated_value: float | None = None
     final_value: float | None = None
     final_label: str | None = None
-    review_status: ReviewStatus = "unreviewed"
-    reviewed_by: str | None = None
-    review_notes: str | None = None
+    override_value: float | None = None
+    override_reason: str | None = None
+    is_overridden: bool = False
     warnings: list[str] = Field(default_factory=list)
     evidence_link: str
     source_reference: str = "Engineer review required."
@@ -550,8 +638,8 @@ class SiteWindSpeedRow(BaseModel):
     mt: float | None = None
     recommended_vsitb: float | None = None
     final_vsitb: float | None = None
-    review_status: ReviewStatus = "unreviewed"
     status: Literal["blocked", "calculated"] = "blocked"
+    is_governing: bool = False
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -560,8 +648,16 @@ class WindWorkflowResult(BaseModel):
 
     input: WindWorkflowRequest
     site: SiteLocation
+    wind_region_assessment: WindRegionAssessment | None = None
+    regional_wind_speed_assessment: RegionalWindSpeedAssessment | None = None
+    direction_multiplier_assessment: DirectionMultiplierAssessment | None = None
+    assessment_status: AssessmentStatus = "draft"
+    engineer_notes: str | None = None
+    overrides_applied: list[WindVariableOverride] = Field(default_factory=list)
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    governing_direction: WindDirection | None = None
+    governing_vsitb: float | None = None
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (

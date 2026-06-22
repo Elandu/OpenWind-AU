@@ -14,5 +14,6 @@ dist/
 .idea/
 .vscode/
 data/cache/
+data/wind-region/
 reports/
 .server.pid
