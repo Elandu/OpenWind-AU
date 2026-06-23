@@ -27,6 +27,12 @@ const variableAnchors = {
   Vsitb: "vsitb-summary",
 };
 
+const hiddenWindInputWarningPatterns = [
+  /GIS interpretation/i,
+  /table lookups/i,
+  /automatically selected/i,
+];
+
 let currentWorkflow = null;
 let workflowOverrides = [];
 
@@ -170,12 +176,10 @@ function workflowPayload() {
     annual_exceedance_probability: data.get("annual_exceedance_probability") || "1/500",
     importance_level: data.get("importance_level") || null,
     mzcat_recommendation_mode: "conservative",
-    engineer_notes: data.get("engineer_notes") || null,
     workflow_overrides: workflowOverrides,
   };
   if (!payload.address) delete payload.address;
   if (payload.importance_level === null) delete payload.importance_level;
-  if (payload.engineer_notes === null) delete payload.engineer_notes;
   return payload;
 }
 
@@ -196,7 +200,7 @@ function renderWorkflow(workflow) {
   workflowSummary.textContent = JSON.stringify({
     site: workflow.site,
     overrides_applied: workflow.overrides_applied?.length || 0,
-    warnings: workflow.warnings,
+    warnings: visibleWarnings(workflow.warnings),
     vsitb_status: workflow.directional_vsitb.map((row) => ({
       direction: row.direction,
       status: row.status,
@@ -412,7 +416,6 @@ function renderSiteInputs(workflow) {
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>
           <tr><th>Building height</th><td>${Number(input.building_height_m).toFixed(2)} m</td></tr>
           <tr><th>Return period / importance level</th><td>${escapeHtml(input.importance_level || input.annual_exceedance_probability || "user input")}</td></tr>
-          <tr><th>Engineer notes</th><td>${escapeHtml(workflow.engineer_notes || "No notes supplied.")}</td></tr>
         </tbody>
       </table>
     </div>
@@ -427,7 +430,11 @@ function renderWindInputs(workflow) {
     windInputsSummary.innerHTML = "<p class=\"note\">Wind inputs were not generated.</p>";
     return;
   }
-  const warnings = [...(region.warnings || []), ...(speed.warnings || []), ...(md.warnings || [])];
+  const warnings = visibleWarnings([
+    ...(region.warnings || []),
+    ...(speed.warnings || []),
+    ...(md.warnings || []),
+  ]);
   windInputsSummary.innerHTML = `
     <h3>Wind Inputs Summary</h3>
     <div class="status-strip">
@@ -447,7 +454,7 @@ function renderWindInputs(workflow) {
         <span class="muted">${escapeHtml(region.dataset_name || "dataset not configured")}</span>
       </div>
     </div>
-    ${warnings.length ? `<div class="warning-list">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>` : ""}
+    ${warningListHtml(warnings)}
     <div class="table-wrap">
       <table>
         <tbody>
@@ -716,9 +723,22 @@ function sharedSourceDetails(rows) {
 }
 
 function warningsCell(row) {
-  return (row.warnings || []).length
-    ? (row.warnings || []).map(escapeHtml).join(" ")
+  const warnings = visibleWarnings(row.warnings || []);
+  return warnings.length
+    ? warnings.map(escapeHtml).join(" ")
     : "<span class=\"muted\">None</span>";
+}
+
+function visibleWarnings(warnings) {
+  return (warnings || []).filter((warning) =>
+    !hiddenWindInputWarningPatterns.some((hidden) => hidden.test(String(warning)))
+  );
+}
+
+function warningListHtml(warnings) {
+  return warnings.length
+    ? `<div class="warning-list">${warnings.map((warning) => `<p>${escapeHtml(warning)}</p>`).join("")}</div>`
+    : "";
 }
 
 function renderVsitbTable(rows) {
