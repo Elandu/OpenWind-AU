@@ -9,6 +9,8 @@ import pytest
 
 from openwind_au.models import SiteLocation
 from openwind_au.wind_inputs import (
+    MD_METADATA_WARNING,
+    VR_METADATA_WARNING,
     direction_multiplier_assessment,
     lookup_vr,
     parse_ari_years,
@@ -244,6 +246,33 @@ def test_missing_vr_table_value_warns(monkeypatch, tmp_path) -> None:
     assert any("manual input required" in warning for warning in speed.warnings)
 
 
+def test_unverified_vr_table_metadata_warns(monkeypatch, tmp_path) -> None:
+    table_path = tmp_path / "vr.json"
+    table_path.write_text(
+        json.dumps(
+            {
+                "source": {"title": "test VR", "standard_reference": "test", "status": "test"},
+                "tables": {
+                    "A": {"ultimate": {"500": 45.0}, "serviceability": {"25": 37.0}},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
+    region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
+
+    speed = regional_wind_speed_assessment(
+        region,
+        importance_level="IL2",
+        annual_exceedance_probability="1/500",
+    )
+
+    assert speed.vr_ult == 45.0
+    assert VR_METADATA_WARNING in speed.warnings
+
+
 def test_md_lookup_and_governing_rows(monkeypatch) -> None:
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
     region = assess_wind_region(site(-27.47, 153.03, "Brisbane"))
@@ -252,8 +281,8 @@ def test_md_lookup_and_governing_rows(monkeypatch) -> None:
 
     assert region.wind_region == "B1"
     assert len(md.directions) == 8
-    assert md.highest_md == 1.0
-    assert md.governing_directions == ["E", "SE"]
+    assert md.highest_md == 0.95
+    assert md.governing_directions == ["S", "SW", "W"]
     assert "Editable direction multiplier" in md.source_table
 
 
@@ -277,6 +306,38 @@ def test_missing_md_table_value_warns(monkeypatch, tmp_path) -> None:
     assert md.highest_md == 1.0
     assert next(row for row in md.directions if row.direction == "NE").md is None
     assert any("Md table value missing for NE" in warning for warning in md.warnings)
+
+
+def test_unverified_md_table_metadata_warns(monkeypatch, tmp_path) -> None:
+    table_path = tmp_path / "md.json"
+    table_path.write_text(
+        json.dumps(
+            {
+                "source": {"title": "test Md", "standard_reference": "test", "status": "test"},
+                "tables": {
+                    "A2": {
+                        "N": 0.85,
+                        "NE": 0.75,
+                        "E": 0.85,
+                        "SE": 0.95,
+                        "S": 0.95,
+                        "SW": 0.95,
+                        "W": 1.0,
+                        "NW": 0.95,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+    monkeypatch.setenv("OPENWIND_MD_TABLE_PATH", str(table_path))
+    region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
+
+    md = direction_multiplier_assessment(region)
+
+    assert md.highest_md == 1.0
+    assert MD_METADATA_WARNING in md.warnings
 
 
 def test_wind_region_map_html(monkeypatch) -> None:

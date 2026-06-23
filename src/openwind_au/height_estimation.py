@@ -28,6 +28,14 @@ HEIGHT_SOURCE_LABELS = {
     "missing": "Unknown",
 }
 
+HEIGHT_SOURCE_METHODS = {
+    "manual_verified": "manual",
+    "DSM_DTM": "dsm_dtm",
+    "OSM_HEIGHT": "osm_height",
+    "OSM_LEVELS": "osm_levels",
+    "ESTIMATED": "assumption",
+}
+
 
 def resolve_operational_heights(
     records: list[ObstructionRecord],
@@ -125,6 +133,7 @@ def resolve_operational_height(
             "height_m": None,
             "selected_height_m": None,
             "height_source": "missing",
+            "height_method": "unknown",
             "confidence": "unknown",
             "manual_review_required": True,
             "review_required": True,
@@ -191,6 +200,7 @@ def _copy_with_height(
             "height_m": height,
             "selected_height_m": height,
             "height_source": source,
+            "height_method": HEIGHT_SOURCE_METHODS.get(source, "unknown"),
             "confidence": confidence,
             "manual_review_required": review_required,
             "review_required": review_required,

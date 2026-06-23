@@ -199,10 +199,10 @@ header {
 
 .workflow-progress-track {
   position: relative;
-  height: 7px;
+  height: 8px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e4e7ec;
+  background: linear-gradient(90deg, #e4e7ec, #eef2f7);
 }
 
 .workflow-progress-track span {
@@ -211,19 +211,56 @@ header {
   width: 0%;
   border-radius: inherit;
   background: var(--engineering-blue);
-  transition: width 220ms ease, background-color 160ms ease;
+  box-shadow: 0 0 16px rgb(27 80 214 / 22%);
+  transition:
+    width 760ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.workflow-progress-track span::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgb(255 255 255 / 46%),
+    transparent
+  );
+  content: "";
+  opacity: 0;
+  transform: translateX(-100%);
 }
 
 .workflow-progress[data-progress-state="running"] .workflow-progress-track span {
   background: linear-gradient(90deg, var(--engineering-blue), #528bff);
 }
 
+.workflow-progress[data-progress-state="running"] .workflow-progress-track span::after {
+  animation: progress-sheen 1.55s ease-in-out infinite;
+  opacity: 1;
+}
+
 .workflow-progress[data-progress-state="complete"] .workflow-progress-track span {
   background: var(--success);
+  box-shadow: 0 0 14px rgb(14 158 110 / 18%);
 }
 
 .workflow-progress[data-progress-state="error"] .workflow-progress-track span {
   background: var(--danger);
+  box-shadow: 0 0 14px rgb(200 48 42 / 18%);
+}
+
+@keyframes progress-sheen {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  55%,
+  100% {
+    transform: translateX(100%);
+  }
 }
 
 header h1 {

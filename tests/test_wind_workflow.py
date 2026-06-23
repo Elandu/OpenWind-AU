@@ -113,13 +113,13 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260622-scroll-fix" in body
+    assert "20260623-workflow-ux" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
     assert "<h2>9." not in body
     assert "Return period / importance level" in body
-    assert "Engineer notes" in body
+    assert "Engineer notes" not in body
     assert "Advanced inputs" in body
     assert "Street address" not in body
     assert "Assessment status" not in body
@@ -159,6 +159,8 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert 'href="/site-analysis#profiles"' not in body
     assert "Dataset details" in script.text
     assert "setWorkflowProgress" in script.text
+    assert "hiddenWindInputWarningPatterns" in script.text
+    assert "visibleWarnings" in script.text
     assert "activateSidePanel" in script.text
     assert "aria-selected" in script.text
     assert "/api/wind-workflow/stream" in script.text
@@ -249,7 +251,7 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Nearby obstructions" in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
-    assert "Microsoft building footprints" not in body
+    assert "Microsoft building footprints" in body
     assert "OSM fallback and matched attributes" not in body
     assert "Vegetation polygons" not in body
     assert "Shielding candidates" not in body
@@ -317,8 +319,8 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
     assert vr["calculated_value"] == 45.0
     assert md_north["detail_label"] == "Show source"
     assert "Direction: N" in md_north["detail_items"]
-    assert md_north["final_value"] == 0.9
-    assert md_north["calculated_value"] == 0.9
+    assert md_north["final_value"] == 0.85
+    assert md_north["calculated_value"] == 0.85
     assert mzcat_north["detail_label"] == "Show details"
     assert "Recommended TC" in mzcat_north["recommended_label"]
     assert mzcat_north["final_value"] is not None
@@ -354,7 +356,7 @@ def test_reasoned_override_values_propagate_to_workflow(monkeypatch) -> None:
     md_north = next(
         item for item in body["variables"] if item["variable"] == "Md" and item["direction"] == "N"
     )
-    assert md_north["calculated_value"] == 0.9
+    assert md_north["calculated_value"] == 0.85
     assert md_north["final_value"] == 0.8
     assert md_north["is_overridden"] is True
     assert (

@@ -1,8 +1,13 @@
 {
   "source": {
     "title": "Editable regional wind speed lookup table",
-    "standard_reference": "AS/NZS 1170.2 regional wind speed table, verify against licensed standard",
-    "status": "review data; not a substitute for the Standard"
+    "standard": "AS/NZS 1170.2:2021",
+    "clause": "Section 3",
+    "table": "Table 3.1(A) - Regional wind speeds - Australia",
+    "standard_reference": "AS/NZS 1170.2:2021 Section 3 Table 3.1(A)",
+    "status": "review data; not a substitute for the Standard",
+    "review_status": "verified_against_standard",
+    "review_note": "Values manually checked against licensed standard. User must hold appropriate rights to verify source standard."
   },
   "tables": {
     "A": {
@@ -10,16 +15,16 @@
       "serviceability": {"25": 37.0}
     },
     "B": {
-      "ultimate": {"25": 45.0, "100": 50.0, "500": 57.0, "1000": 60.0, "2000": 63.0},
-      "serviceability": {"25": 45.0}
+      "ultimate": {"25": 39.0, "100": 48.0, "500": 57.0, "1000": 60.0, "2000": 63.0},
+      "serviceability": {"25": 39.0}
     },
     "C": {
-      "ultimate": {"25": 55.0, "100": 61.0, "500": 66.0, "1000": 69.0, "2000": 73.0},
-      "serviceability": {"25": 55.0}
+      "ultimate": {"25": 47.0, "100": 56.0, "500": 66.0, "1000": 70.0, "2000": 73.0},
+      "serviceability": {"25": 47.0}
     },
     "D": {
-      "ultimate": {"25": 67.0, "100": 75.0, "500": 80.0, "1000": 83.0, "2000": 88.0},
-      "serviceability": {"25": 67.0}
+      "ultimate": {"25": 53.0, "100": 66.0, "500": 80.0, "1000": 85.0, "2000": 90.0},
+      "serviceability": {"25": 53.0}
     }
   }
 }

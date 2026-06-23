@@ -488,6 +488,13 @@ def reviewed_footprints_to_records(reviewed: list[ReviewedFootprint]) -> list[di
             "building_levels": item.building_levels,
             "footprint_source": "manual_reviewed",
             "source": item.source,
+            "obstruction_source_type": item.obstruction_source_type,
+            "source_dataset": item.source_dataset or item.source,
+            "height_method": item.height_method
+            if item.height_method != "unknown"
+            else reviewed_height_method(item),
+            "is_vegetation_candidate": item.is_vegetation_candidate
+            or item.classification == "vegetation",
             "source_provenance": [f"manual_reviewed:{item.id}"],
             "tags": {
                 "source": item.source,
@@ -670,12 +677,13 @@ def build_obstruction_records_with_exclusions(
             continue
         tags = footprint.get("tags", {})
         height = height_from_footprint(footprint, tags, default_storey_height_m)
+        classification = footprint.get("classification") or classify_obstruction(tags)
         obstruction_id = source_id
         records.append(
             ObstructionRecord(
                 obstruction_id=obstruction_id,
                 source_id=source_id,
-                classification=footprint.get("classification") or classify_obstruction(tags),
+                classification=classification,
                 footprint_geometry=geometry,
                 centroid_latitude=centroid_lat,
                 centroid_longitude=centroid_lon,
@@ -697,6 +705,21 @@ def build_obstruction_records_with_exclusions(
                 confidence=height["confidence"],
                 manual_review_required=height["manual_review_required"],
                 review_required=height["manual_review_required"],
+                obstruction_source_type=obstruction_source_type_for(
+                    classification,
+                    tags,
+                    footprint,
+                ),
+                source_dataset=source_dataset_for_footprint(footprint, source),
+                height_method=normalise_height_method(
+                    footprint.get("height_method"),
+                    height_method_for_height_source(height["height_source"]),
+                ),
+                is_vegetation_candidate=is_vegetation_candidate(
+                    classification,
+                    tags,
+                    footprint,
+                ),
                 footprint_source=source,
                 source_provenance=footprint.get("source_provenance", [source_id]),
                 duplicate_source_ids=footprint.get("duplicate_source_ids", []),
@@ -707,6 +730,91 @@ def build_obstruction_records_with_exclusions(
 
     records.sort(key=lambda item: item.distance_m)
     return records, excluded
+
+
+def reviewed_height_method(item: ReviewedFootprint) -> str:
+    """Return a future provenance height-method label for reviewed obstruction data."""
+
+    if item.height_m is not None or item.building_levels is not None:
+        return "manual"
+    return "unknown"
+
+
+def obstruction_source_type_for(
+    classification: str,
+    tags: dict[str, Any],
+    footprint: dict[str, Any],
+) -> str:
+    """Return a broad source-type placeholder for future obstruction provenance."""
+
+    configured = footprint.get("obstruction_source_type")
+    if configured in {"building", "vegetation", "other", "unknown"}:
+        return configured
+    if classification == "vegetation":
+        return "vegetation"
+    if classification in {"residential", "commercial", "industrial", "apartment"}:
+        return "building"
+    if classification == "mixed":
+        return "other"
+    if tags.get("building"):
+        return "building"
+    return "unknown"
+
+
+def source_dataset_for_footprint(footprint: dict[str, Any], source: str) -> str | None:
+    """Return a human-readable source dataset placeholder for an obstruction footprint."""
+
+    if footprint.get("source_dataset"):
+        return str(footprint["source_dataset"])
+    if source == MICROSOFT_FOOTPRINT_SOURCE:
+        return "Microsoft Australia Building Footprints"
+    if source == "OSM":
+        return "OpenStreetMap"
+    if source == "manual_reviewed":
+        return str(footprint.get("source") or "reviewed obstruction JSON")
+    if source == "DSM_DERIVED":
+        return "DSM-DTM derived obstruction candidate"
+    return None
+
+
+def height_method_for_height_source(height_source: str) -> str:
+    """Map current height-source labels to future provenance height-method labels."""
+
+    if height_source == "manual_verified":
+        return "manual"
+    if height_source == "DSM_DTM":
+        return "dsm_dtm"
+    if height_source == "OSM_HEIGHT":
+        return "osm_height"
+    if height_source == "OSM_LEVELS":
+        return "osm_levels"
+    if height_source == "ESTIMATED":
+        return "assumption"
+    return "unknown"
+
+
+def normalise_height_method(value: Any, fallback: str = "unknown") -> str:
+    """Return a supported height-method placeholder."""
+
+    if value in {"manual", "dsm_dtm", "osm_height", "osm_levels", "assumption", "unknown"}:
+        return str(value)
+    return fallback
+
+
+def is_vegetation_candidate(
+    classification: str,
+    tags: dict[str, Any],
+    footprint: dict[str, Any],
+) -> bool:
+    """Return whether a footprint should be tracked as a vegetation obstruction candidate."""
+
+    if bool(footprint.get("is_vegetation_candidate")):
+        return True
+    if classification == "vegetation":
+        return True
+    if footprint.get("obstruction_source_type") == "vegetation":
+        return True
+    return classify_obstruction(tags) == "vegetation"
 
 
 def elevation_providers_from_env() -> tuple[
@@ -994,6 +1102,7 @@ def apply_manual_overrides(
                     if building_levels is not None
                     else record.building_levels,
                     "height_source": "manual_verified",
+                    "height_method": "manual",
                     "confidence": "high" if height_m is not None else "unknown",
                     "manual_review_required": height_m is None,
                     "review_required": height_m is None,
