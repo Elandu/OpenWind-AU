@@ -252,6 +252,17 @@ class ReviewedFootprint(BaseModel):
     height_m: float | None = Field(default=None, ge=0)
     building_levels: float | None = Field(default=None, ge=0)
     source: str = "reviewed obstruction JSON"
+    obstruction_source_type: Literal["building", "vegetation", "other", "unknown"] = "unknown"
+    source_dataset: str | None = None
+    height_method: Literal[
+        "manual",
+        "dsm_dtm",
+        "osm_height",
+        "osm_levels",
+        "assumption",
+        "unknown",
+    ] = "unknown"
+    is_vegetation_candidate: bool = False
     notes: str | None = None
 
 
@@ -375,6 +386,17 @@ class ObstructionRecord(BaseModel):
     enrichment_method: str | None = None
     manual_review_required: bool
     review_required: bool
+    obstruction_source_type: Literal["building", "vegetation", "other", "unknown"] = "unknown"
+    source_dataset: str | None = None
+    height_method: Literal[
+        "manual",
+        "dsm_dtm",
+        "osm_height",
+        "osm_levels",
+        "assumption",
+        "unknown",
+    ] = "unknown"
+    is_vegetation_candidate: bool = False
     footprint_source: Literal[
         "OSM",
         "microsoft_building_footprints",

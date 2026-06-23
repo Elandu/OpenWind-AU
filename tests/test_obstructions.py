@@ -529,3 +529,15 @@ def test_source_summary_metrics_do_not_count_estimates_as_height_data() -> None:
     assert result.data_quality.percentage_with_height_data == pytest.approx(33.3)
     assert result.data_quality.percentage_requiring_manual_review == pytest.approx(100.0)
     assert "Missing footprints can materially affect shielding evidence." in result.warnings
+
+    records = {record.obstruction_id: record for record in result.obstructions}
+    building = records["osm-way-height"]
+    vegetation = records["osm-way-tree"]
+    assert building.obstruction_source_type == "building"
+    assert building.source_dataset == "OpenStreetMap"
+    assert building.height_method == "osm_height"
+    assert building.is_vegetation_candidate is False
+    assert vegetation.obstruction_source_type == "vegetation"
+    assert vegetation.source_dataset == "OpenStreetMap"
+    assert vegetation.height_method == "assumption"
+    assert vegetation.is_vegetation_candidate is True

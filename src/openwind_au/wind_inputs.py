@@ -27,6 +27,9 @@ MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
 VR_DATA_FILE = "regional_wind_speeds.json"
 MD_DATA_FILE = "direction_multipliers.json"
 DIRECTIONS: tuple[WindDirection, ...] = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+VERIFIED_LOOKUP_REVIEW_STATUS = "verified_against_standard"
+VR_METADATA_WARNING = "VR lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
+MD_METADATA_WARNING = "Md lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
 
 
 def regional_wind_speed_assessment(
@@ -46,6 +49,7 @@ def regional_wind_speed_assessment(
         "VR values are table lookups for engineering review; confirm against the current "
         "project standard."
     ]
+    warnings.extend(lookup_metadata_warnings(data, VR_METADATA_WARNING))
     vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
     vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
     if vr_ult is None:
@@ -100,6 +104,7 @@ def direction_multiplier_assessment(
     highest = max(numeric_values) if numeric_values else None
     rows: list[DirectionMultiplierRow] = []
     warnings = ["Md values are automatically selected and require engineering review."]
+    warnings.extend(lookup_metadata_warnings(data, MD_METADATA_WARNING))
     for direction in DIRECTIONS:
         raw = values.get(direction)
         md = float(raw) if raw is not None else None
@@ -353,6 +358,15 @@ def load_lookup_data(env_var: str, package_file: str) -> dict[str, Any]:
     return json.loads(data_path.read_text(encoding="utf-8"))
 
 
+def lookup_metadata_warnings(data: dict[str, Any], warning: str) -> list[str]:
+    """Return a warning when lookup source metadata is not marked verified."""
+
+    source = data.get("source", {})
+    if source.get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS:
+        return []
+    return [warning]
+
+
 def source_reference(data: dict[str, Any]) -> str:
     """Build a compact source reference string from lookup metadata."""
 
@@ -360,6 +374,7 @@ def source_reference(data: dict[str, Any]) -> str:
     parts = [
         source.get("title"),
         source.get("standard_reference"),
+        source.get("review_status"),
         source.get("status"),
     ]
     return "; ".join(str(part) for part in parts if part)
