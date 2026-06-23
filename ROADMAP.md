@@ -3,6 +3,9 @@
 OpenWind-AU is early-stage engineering support software. This roadmap separates implemented
 review aids from experimental workflows and features that are not implemented or certified.
 
+For output derivation, dataset hierarchy, and review boundaries, see
+[`docs/calculation-basis.md`](docs/calculation-basis.md).
+
 ## Implemented As Review Aid
 
 - Address and coordinate input.

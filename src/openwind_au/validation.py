@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from jinja2 import Template
@@ -21,6 +22,11 @@ ExpectedFeatureType = Literal[
     "valley",
     "no significant feature",
 ]
+
+CALCULATION_BASIS_DOC_PATH = Path("docs/calculation-basis.md")
+CALCULATION_BASIS_REPORT_TEXT = (
+    "Calculation basis and data lineage reference: docs/calculation-basis.md."
+)
 
 VALIDATION_DISCLAIMER = (
     "Validation cases are broad qualitative checks against representative Australian terrain "
@@ -233,7 +239,19 @@ def validation_report_to_json(report: ValidationReport) -> dict:
 def render_validation_report_html(report: ValidationReport) -> str:
     """Render an HTML validation report."""
 
-    return VALIDATION_REPORT_TEMPLATE.render(report=report)
+    return VALIDATION_REPORT_TEMPLATE.render(
+        report=report,
+        calculation_basis_reference=calculation_basis_report_reference(),
+    )
+
+
+def calculation_basis_report_reference() -> str | None:
+    """Return the calculation-basis report note when the docs file is available."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / CALCULATION_BASIS_DOC_PATH).exists():
+        return CALCULATION_BASIS_REPORT_TEXT
+    return None
 
 
 def _evaluate_flat_expectation(
@@ -292,6 +310,9 @@ VALIDATION_REPORT_TEMPLATE = Template(
 <body>
   <h1>OpenWind-AU Validation Report</h1>
   <p class="disclaimer">{{ report.disclaimer }}</p>
+  {% if calculation_basis_reference %}
+  <p>{{ calculation_basis_reference }}</p>
+  {% endif %}
   <p>Generated: {{ report.generated_at_utc }}</p>
 
   <h2>Summary</h2>
