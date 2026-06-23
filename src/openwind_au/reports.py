@@ -637,11 +637,6 @@ def combined_map_html(
             ),
         ).add_to(shielding_layer)
 
-    diagnostics = _add_workflow_shielding_polygon_layer(
-        shielding_polygon_layer,
-        obstruction_result,
-        diagnostics,
-    )
     wind_region_layer.add_to(fmap)
     site_layer.add_to(fmap)
     mzcat_layer.add_to(fmap)
@@ -649,6 +644,12 @@ def combined_map_html(
     feature_layer.add_to(fmap)
     shielding_layer.add_to(fmap)
     shielding_polygon_layer.add_to(fmap)
+    diagnostics = _add_workflow_shielding_polygon_layer(
+        fmap,
+        shielding_polygon_layer,
+        obstruction_result,
+        diagnostics,
+    )
     microsoft_polygon_layer.add_to(fmap)
     diagnostics = _add_workflow_microsoft_polygon_layer(
         fmap,
@@ -796,29 +797,38 @@ def _add_explicit_microsoft_footprint_loader(
 
 
 def _add_workflow_shielding_polygon_layer(
+    fmap: folium.Map,
     layer: folium.FeatureGroup,
     result: ObstructionInventoryResult,
     diagnostics: MapRenderDiagnostics,
 ) -> MapRenderDiagnostics:
-    """Add polygons that actually contributed to shielding-sector evidence."""
+    """Add polygons reviewed by shielding-sector evidence."""
 
     included_ids = {
         obstruction_id
         for sector in result.shielding_sectors
         for obstruction_id in sector.included_obstruction_ids
     }
-    if not included_ids:
-        diagnostics.warnings.append("No shielding obstruction polygons qualified for map display.")
-        return diagnostics
+    subject_height_m = result.input.building_height_m
+    shielding_radius_m = 20.0 * subject_height_m if subject_height_m is not None else None
 
     max_display = max(
         int(getattr(result.input, "map_max_display_obstructions", DEFAULT_MAP_DISPLAY_LIMIT)),
         1,
     )
     records = sorted(
-        (record for record in result.obstructions if record.obstruction_id in included_ids),
+        (
+            record
+            for record in result.obstructions
+            if record.obstruction_id in included_ids
+            or (shielding_radius_m is not None and record.distance_m <= shielding_radius_m)
+        ),
         key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
     )
+    if not records:
+        diagnostics.warnings.append("No shielding obstruction polygons qualified for map display.")
+        return diagnostics
+
     features = []
     payload_size = 0
     for record in records:
@@ -832,16 +842,12 @@ def _add_workflow_shielding_polygon_layer(
         )
         if display_geometry is None:
             continue
-        height = record.selected_height_m or record.height_m
-        feature = {
-            "type": "Feature",
-            "geometry": display_geometry,
-            "properties": {
-                "id": record.obstruction_id,
-                "height": f"{height:.1f} m" if height is not None else "missing",
-                "source": record.footprint_source,
-            },
-        }
+        feature = obstruction_display_feature(record, display_geometry, "shielding")
+        feature["properties"]["status"] = shielding_obstruction_display_status(
+            record,
+            included_ids,
+            subject_height_m,
+        )
         feature_size = len(json.dumps(feature, separators=(",", ":")))
         if payload_size + feature_size > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES:
             diagnostics.fallback_mode = True
@@ -861,29 +867,121 @@ def _add_workflow_shielding_polygon_layer(
     if len(records) > len(features):
         diagnostics.warnings.append(
             "Shielding polygon display limited to "
-            f"{len(features)} of {len(records)} contributing obstructions."
+            f"{len(features)} of {len(records)} candidate obstructions."
         )
     if not features:
         diagnostics.warnings.append("Shielding obstruction polygons could not be rendered.")
         return diagnostics
 
-    folium.GeoJson(
-        {"type": "FeatureCollection", "features": features},
-        style_function=lambda _feature: {
-            "color": "#047857",
-            "weight": 2,
-            "fillColor": "#10b981",
-            "fillOpacity": 0.22,
-        },
-        tooltip=folium.GeoJsonTooltip(
-            fields=["id", "height", "source"],
-            aliases=["ID", "Height", "Source"],
-            sticky=False,
-        ),
-    ).add_to(layer)
+    _add_explicit_shielding_footprint_loader(fmap, layer, features)
     diagnostics.plotted_polygons += len(features)
     diagnostics.plotted_shielding_polygons += len(features)
     return diagnostics
+
+
+def shielding_obstruction_display_status(
+    record: ObstructionRecord,
+    included_ids: set[str],
+    subject_height_m: float | None,
+) -> str:
+    """Return display status for a shielding obstruction polygon."""
+
+    if record.obstruction_id in included_ids:
+        return "included"
+    height = record.selected_height_m if record.selected_height_m is not None else record.height_m
+    if height is None:
+        return "height_missing"
+    if subject_height_m is not None and height < subject_height_m:
+        return "height_below_subject"
+    return "candidate"
+
+
+def _add_explicit_shielding_footprint_loader(
+    fmap: folium.Map,
+    layer: folium.FeatureGroup,
+    features: list[dict[str, Any]],
+) -> None:
+    """Inject a direct Leaflet shielding footprint loader for iframe map reliability."""
+
+    feature_collection = {"type": "FeatureCollection", "features": features}
+    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
+    map_name = fmap.get_name()
+    layer_name = layer.get_name()
+    script = f"""
+    (function() {{
+      const shieldingFootprints = {feature_collection_json};
+      const shieldingLayer = {layer_name};
+      const shieldingGeoJson = L.geoJson(shieldingFootprints, {{
+        interactive: true,
+        style: function(feature) {{
+          const status = (feature.properties || {{}}).status || "candidate";
+          if (status === "included") {{
+            return {{
+              color: "#047857",
+              weight: 3,
+              opacity: 1,
+              fillColor: "#10b981",
+              fillOpacity: 0.45
+            }};
+          }}
+          if (status === "height_below_subject") {{
+            return {{
+              color: "#b45309",
+              weight: 2,
+              opacity: 0.95,
+              fillColor: "#fbbf24",
+              fillOpacity: 0.34
+            }};
+          }}
+          if (status === "height_missing") {{
+            return {{
+              color: "#b42318",
+              weight: 2,
+              opacity: 0.95,
+              fillColor: "#fca5a5",
+              fillOpacity: 0.34
+            }};
+          }}
+          return {{
+            color: "#0f766e",
+            weight: 2,
+            opacity: 0.95,
+            fillColor: "#99f6e4",
+            fillOpacity: 0.34
+          }};
+        }},
+        onEachFeature: function(feature, leafletLayer) {{
+          const props = feature.properties || {{}};
+          leafletLayer.bindTooltip(
+            `<table>
+              <tr><th>ID</th><td>${{props.id || ""}}</td></tr>
+              <tr><th>Status</th><td>${{props.status || "candidate"}}</td></tr>
+              <tr><th>Height</th><td>${{props.height || "missing"}}</td></tr>
+              <tr><th>Source</th><td>${{props.source || ""}}</td></tr>
+              <tr><th>Confidence</th><td>${{props.confidence || ""}}</td></tr>
+            </table>`,
+            {{sticky: false, className: "foliumtooltip"}}
+          );
+        }}
+      }});
+      shieldingGeoJson.addTo(shieldingLayer);
+      shieldingLayer.addTo({map_name});
+      shieldingGeoJson.bringToFront();
+      shieldingLayer.on("add", function() {{
+        shieldingGeoJson.bringToFront();
+      }});
+      window.openWindShieldingFootprintLayer = {{
+        feature_count: shieldingFootprints.features.length,
+        layer_name: "Shielding obstruction polygons",
+        renderer: "explicit_leaflet_geojson"
+      }};
+      console.info(
+        "OpenWind-AU shielding footprint layer",
+        window.openWindShieldingFootprintLayer
+      );
+    }})();
+    """
+    fmap.get_root().script.add_child(folium.Element(script))
 
 
 def _add_obstruction_centroid_layer(
