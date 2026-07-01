@@ -68,8 +68,9 @@ Validation examples can be proposed with the GitHub issue template:
 ## Deterministic Calculation Validation
 
 The qualitative site validation above depends on public terrain data and broad expected behaviour.
-OpenWind-AU also includes deterministic calculation validation for shielding and topographic
-screening formulas using synthetic inputs with known expected outputs.
+OpenWind-AU also includes deterministic calculation validation for wind inputs, shielding, and
+topographic screening formulas using synthetic inputs and prior project-reference checks with
+known expected outputs.
 
 Use:
 
@@ -81,6 +82,7 @@ These checks are designed to be stable without external DEM, geocoding, Microsof
 Overpass data. They validate covered implementation details such as:
 
 - indicative `Ms` interpolation thresholds;
+- the prior Modos 04625 Region A2 serviceability regional wind speed reference of 37 m/s;
 - shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
 - topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
 - threshold behaviour where sub-5 m relief is screened out.

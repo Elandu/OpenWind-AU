@@ -10,13 +10,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from openwind_au.geo import EARTH_RADIUS_M
-from openwind_au.models import ObstructionRecord, SiteLocation, TerrainPoint, TerrainProfile
+from openwind_au.models import (
+    ObstructionRecord,
+    SiteLocation,
+    TerrainPoint,
+    TerrainProfile,
+    WindRegionAssessment,
+)
 from openwind_au.shielding import (
     footprint_breadth_normal_to_wind,
     ms_from_shielding_parameter,
     run_shielding_sector_analysis,
 )
 from openwind_au.topography import analyse_profile_topography
+from openwind_au.wind_inputs import regional_wind_speed_assessment
 
 CalculationValidationStatus = Literal["pass", "fail"]
 
@@ -38,7 +45,7 @@ class CalculationValidationCaseResult(BaseModel):
     """Result for one deterministic calculation validation case."""
 
     case_id: str
-    calculation_area: Literal["shielding", "topography"]
+    calculation_area: Literal["shielding", "topography", "wind_inputs"]
     description: str
     status: CalculationValidationStatus
     checks: list[CalculationValidationCheck] = Field(default_factory=list)
@@ -66,6 +73,7 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
     """Run deterministic shielding and topographic calculation checks."""
 
     results = [
+        _wind_region_a2_serviceability_reference_case(),
         _shielding_ms_interpolation_case(),
         _shielding_sector_reference_case(),
         _shielding_height_rejection_case(),
@@ -90,6 +98,43 @@ def calculation_validation_report_to_json(report: CalculationValidationReport) -
     """Convert a calculation validation report into JSON-serialisable data."""
 
     return json.loads(report.model_dump_json())
+
+
+def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCaseResult:
+    wind_region = WindRegionAssessment(
+        latitude=-33.309,
+        longitude=151.524,
+        wind_region="A2",
+        source="Prior Modos job 04625 reference input: Magenta NSW, Region A2",
+        confidence="high",
+    )
+    assessment = regional_wind_speed_assessment(
+        wind_region,
+        importance_level=None,
+        annual_exceedance_probability="1/20",
+    )
+    checks = [
+        _check_equal("wind region", assessment.wind_region, "A2"),
+        _check_equal("base table lookup", assessment.lookup_values[1], "Base region table: A"),
+        _check_equal("parsed ARI years", assessment.ari_years, 20),
+        _check_close("serviceability VR", assessment.vr_serv, 37.0),
+        _check_equal("ultimate VR requires manual input", assessment.vr_ult, None),
+    ]
+    return _case_result(
+        case_id="modos-04625-a2-serviceability-reference",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates the prior Modos 04625 check: Magenta NSW Region A2 reports "
+            "approximately 37 m/s serviceability regional wind speed. The packaged "
+            "AS/NZS lookup reports this as the Region A/A2 25-year serviceability value "
+            "while flagging 20-year ultimate VR as outside the ultimate table."
+        ),
+        checks=checks,
+        notes=[
+            "Prior report wording used 20-year ARI serviceability; OpenWind-AU reports the "
+            "packaged 25-year serviceability row used by the current lookup workflow."
+        ],
+    )
 
 
 def _shielding_ms_interpolation_case() -> CalculationValidationCaseResult:
@@ -263,9 +308,10 @@ def _topography_hill_reference_case() -> CalculationValidationCaseResult:
 def _case_result(
     *,
     case_id: str,
-    calculation_area: Literal["shielding", "topography"],
+    calculation_area: Literal["shielding", "topography", "wind_inputs"],
     description: str,
     checks: list[CalculationValidationCheck],
+    notes: list[str] | None = None,
 ) -> CalculationValidationCaseResult:
     status: CalculationValidationStatus = (
         "pass" if all(check.status == "pass" for check in checks) else "fail"
@@ -276,6 +322,7 @@ def _case_result(
         description=description,
         status=status,
         checks=checks,
+        notes=notes or [],
     )
 
 
