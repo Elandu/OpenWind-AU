@@ -53,6 +53,7 @@ def test_report_helpers_render_outputs() -> None:
     assert "Preliminary Topographic Screening" in html
     assert "no significant feature" in html
     assert "competent engineer" in html
+    assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
     assert "plotly" in plot.lower()
     assert "site" in plot
     assert "leaflet" in fmap.lower()

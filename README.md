@@ -159,6 +159,7 @@ a production wind-region map.
 - [Installation](docs/installation.md)
 - [Running locally](docs/running-locally.md)
 - [Workflow guide](docs/workflow.md)
+- [Calculation basis and data lineage](docs/calculation-basis.md)
 - [Reviewer checklist](docs/reviewer-checklist.md)
 - [API usage](docs/api.md)
 - [Report exports](docs/reports.md)

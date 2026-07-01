@@ -501,6 +501,9 @@ WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 ReviewStatus = Literal["unreviewed", "accepted", "overridden"]
 AssessmentStatus = Literal["draft", "reviewed", "final"]
+TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+ShieldingClassLabel = Literal["FS", "PS", "NS"]
+TopographicClassLabel = Literal["T0", "T1", "T2", "T3", "T4", "T5"]
 WindRegionLabel = Literal[
     "A",
     "A0",
@@ -601,6 +604,20 @@ class WindVariableOverride(BaseModel):
     label: str | None = None
 
 
+class WindClassMultiplierOverride(BaseModel):
+    """Optional reviewed class inputs for directional Mz,cat, Ms, and Mt values."""
+
+    direction: WindDirection
+    terrain_category: TerrainCategoryLabel | None = None
+    shielding_class: ShieldingClassLabel | None = None
+    topographic_class: TopographicClassLabel | None = None
+    mzcat: float | None = Field(default=None, gt=0)
+    ms: float | None = Field(default=None, gt=0)
+    mt: float | None = Field(default=None, gt=0)
+    reason: str = Field(min_length=1)
+    source_reference: str | None = None
+
+
 class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     """AS/NZS 1170.2 site wind workflow request.
 
@@ -619,6 +636,7 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)
     assessment_status: AssessmentStatus = "draft"
     engineer_notes: str | None = None
+    class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(default_factory=list)
     workflow_overrides: list[WindVariableOverride] = Field(default_factory=list)
     workflow_reviews: list[WindVariableReview] = Field(default_factory=list)
 

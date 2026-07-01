@@ -370,6 +370,52 @@ def test_reasoned_override_values_propagate_to_workflow(monkeypatch) -> None:
     assert north["final_vsitb"] is not None
 
 
+def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "class_multiplier_overrides": [
+            {
+                "direction": "N",
+                "terrain_category": "TC3",
+                "shielding_class": "FS",
+                "topographic_class": "T1",
+                "reason": "Reference calculation classes accepted by engineer.",
+                "source_reference": "reference calculation reference",
+            }
+        ]
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    mzcat_north = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    ms_north = next(
+        item for item in body["variables"] if item["variable"] == "Ms" and item["direction"] == "N"
+    )
+    mt_north = next(
+        item for item in body["variables"] if item["variable"] == "Mt" and item["direction"] == "N"
+    )
+
+    assert mzcat_north["final_value"] == 0.91
+    assert ms_north["final_value"] == 0.85
+    assert mt_north["final_value"] == 1.08
+    assert "Reviewed TC TC3" in mzcat_north["recommended_label"]
+    assert "Reviewed FS" in ms_north["recommended_label"]
+    assert "Reviewed T1" in mt_north["recommended_label"]
+    assert any("Reference calculation classes" in item for item in mzcat_north["detail_items"])
+    assert any("class override" in warning for warning in ms_north["warnings"])
+    north = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
+    assert north["mzcat"] == 0.91
+    assert north["ms"] == 0.85
+    assert north["mt"] == 1.08
+    assert north["final_vsitb"] is not None
+
+
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload()

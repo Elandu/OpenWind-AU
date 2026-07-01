@@ -33,6 +33,10 @@ from openwind_au.shielding import shielding_sector_polygon
 
 DEFAULT_MAP_DISPLAY_LIMIT = 500
 MAX_POLYGON_GEOJSON_PAYLOAD_BYTES = 2_500_000
+CALCULATION_BASIS_DOC_PATH = Path("docs/calculation-basis.md")
+CALCULATION_BASIS_REPORT_TEXT = (
+    "Calculation basis and data lineage reference: docs/calculation-basis.md."
+)
 
 
 @dataclass
@@ -103,6 +107,9 @@ REPORT_TEMPLATE = Template(
 <body>
   <h1>OpenWind-AU Preliminary Terrain Report</h1>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if calculation_basis_reference %}
+  <p class="note">{{ calculation_basis_reference }}</p>
+  {% endif %}
 
   <h2>Site</h2>
   <table>
@@ -183,7 +190,10 @@ def result_to_json(result: SiteAnalysisResult) -> dict:
 def render_html_report(result: SiteAnalysisResult) -> str:
     """Render an HTML report string."""
 
-    return REPORT_TEMPLATE.render(result=result)
+    return REPORT_TEMPLATE.render(
+        result=result,
+        calculation_basis_reference=calculation_basis_report_reference(),
+    )
 
 
 def write_html_report(result: SiteAnalysisResult, path: Path) -> Path:
@@ -203,6 +213,11 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
     story = [
         Paragraph("OpenWind-AU Preliminary Terrain Report", styles["Title"]),
         Paragraph(result.disclaimer, styles["BodyText"]),
+        *(
+            [Paragraph(reference, styles["BodyText"])]
+            if (reference := calculation_basis_report_reference())
+            else []
+        ),
         Spacer(1, 12),
         Paragraph("Site", styles["Heading2"]),
         Table(
@@ -1051,19 +1066,37 @@ def display_region_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
 def render_obstruction_report_html(result: ObstructionInventoryResult) -> str:
     """Render an HTML obstruction inventory report."""
 
-    return OBSTRUCTION_REPORT_TEMPLATE.render(result=result)
+    return OBSTRUCTION_REPORT_TEMPLATE.render(
+        result=result,
+        calculation_basis_reference=calculation_basis_report_reference(),
+    )
 
 
 def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -> str:
     """Render an HTML terrain category evidence report."""
 
-    return TERRAIN_CATEGORY_REPORT_TEMPLATE.render(result=result)
+    return TERRAIN_CATEGORY_REPORT_TEMPLATE.render(
+        result=result,
+        calculation_basis_reference=calculation_basis_report_reference(),
+    )
 
 
 def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
     """Render an HTML AS/NZS 1170.2 site wind workflow report."""
 
-    return WIND_WORKFLOW_REPORT_TEMPLATE.render(result=result)
+    return WIND_WORKFLOW_REPORT_TEMPLATE.render(
+        result=result,
+        calculation_basis_reference=calculation_basis_report_reference(),
+    )
+
+
+def calculation_basis_report_reference() -> str | None:
+    """Return the calculation-basis report note when the docs file is available."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / CALCULATION_BASIS_DOC_PATH).exists():
+        return CALCULATION_BASIS_REPORT_TEXT
+    return None
 
 
 def terrain_category_map_html(
@@ -1764,6 +1797,9 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
 <body>
   <h1>OpenWind-AU Obstruction Inventory Report</h1>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if calculation_basis_reference %}
+  <p>{{ calculation_basis_reference }}</p>
+  {% endif %}
   {% if result.warnings %}
   <div class="warning">
     <strong>Inventory warning</strong>
@@ -2014,6 +2050,9 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
 <body>
   <h1>OpenWind-AU Terrain Category Evidence Report</h1>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if calculation_basis_reference %}
+  <p>{{ calculation_basis_reference }}</p>
+  {% endif %}
   {% if result.warnings %}
   <div class="warning">
     <strong>Workflow warnings</strong>
@@ -2354,6 +2393,9 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   </header>
   <main>
   <p class="disclaimer">{{ result.disclaimer }}</p>
+  {% if calculation_basis_reference %}
+  <p>{{ calculation_basis_reference }}</p>
+  {% endif %}
 
   <section>
   <h2>1. Executive Summary</h2>
@@ -2758,6 +2800,9 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   <p class="disclaimer">
     No final design pressure calculations are included in this report.
   </p>
+  {% if calculation_basis_reference %}
+  <p>{{ calculation_basis_reference }}</p>
+  {% endif %}
   </section>
   </main>
 </body>

@@ -70,6 +70,13 @@ C:\data\openwind-au\microsoft_building_footprints\tiles\-34_151.geojsonl
 If no Microsoft cache tile is available for a site, OpenWind-AU falls back to OSM/Overpass where
 available and reports the fallback in the obstruction data quality fields.
 
+Successful OSM/Overpass building queries are cached locally so repeat analyses can survive
+temporary Overpass outages. Override the cache location with:
+
+```powershell
+$env:OPENWIND_OSM_FOOTPRINT_CACHE="C:\data\openwind-au\osm_building_footprints"
+```
+
 Teams that maintain tiled footprint hosting can also provide an index:
 
 ```powershell

@@ -11,6 +11,10 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from openwind_au.analysis import run_site_analysis
+from openwind_au.calculation_validation import (
+    calculation_validation_report_to_json,
+    run_calculation_validation_cases,
+)
 from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
     CombinedMapRequest,
@@ -32,6 +36,11 @@ from openwind_au.obstructions import (
     manual_overrides_from_json,
     parse_manual_overrides_csv,
     run_obstruction_inventory,
+)
+from openwind_au.reference_calc_validation import (
+    compare_reference_calc_7989,
+    reference_calc_7989_class_overrides,
+    reference_calc_7989_osm_footprints,
 )
 from openwind_au.reports import (
     combined_map_html,
@@ -460,6 +469,44 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return render_validation_report_html(report)
+
+    @app.get("/api/calculation-validation")
+    def calculation_validation_report() -> Response:
+        content = json.dumps(
+            calculation_validation_report_to_json(run_calculation_validation_cases()),
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/reference-validation/7989")
+    def reference_calc_7989_validation(apply_reference_overrides: bool = False) -> Response:
+        class_overrides = (
+            reference_calc_7989_class_overrides() if apply_reference_overrides else []
+        )
+        request = WindWorkflowRequest(
+            latitude=-27.520503,
+            longitude=152.936814,
+            building_height_m=4.0,
+            radius_m=2000,
+            obstruction_radius_m=500,
+            sample_interval_m=50,
+            annual_exceedance_probability="1/500",
+            mzcat_recommendation_mode="best_estimate",
+            class_multiplier_overrides=class_overrides,
+        )
+        site_result = run_site_analysis(request, SRTMProvider())
+        obstruction_result = run_obstruction_inventory(
+            _obstruction_request_from_combined(request),
+            footprints=reference_calc_7989_osm_footprints(),
+        )
+        terrain_result = run_terrain_category_evidence(site_result, obstruction_result)
+        content = compare_reference_calc_7989(
+            site_result=site_result,
+            obstruction_result=obstruction_result,
+            terrain_result=terrain_result,
+            class_overrides=class_overrides,
+        ).model_dump_json(indent=2)
+        return Response(content=content, media_type="application/json")
 
     @app.get("/api/wind-region/validation")
     def wind_region_validation() -> Response:

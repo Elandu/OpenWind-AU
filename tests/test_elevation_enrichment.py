@@ -83,7 +83,7 @@ def test_flat_ground_building_gets_dsm_dtm_height() -> None:
     )
 
     assert warnings == []
-    assert enriched[0].classification == "unknown"
+    assert enriched[0].classification == "residential"
     assert enriched[0].ground_rl_m == pytest.approx(50.0)
     assert enriched[0].surface_rl_m == pytest.approx(62.4)
     assert enriched[0].obstruction_height_m == pytest.approx(12.4)

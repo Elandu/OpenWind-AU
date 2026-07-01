@@ -9,6 +9,7 @@ from openwind_au.models import (
     SiteAnalysisResult,
     SiteWindSpeedRow,
     TerrainCategoryEvidenceResult,
+    WindClassMultiplierOverride,
     WindDirection,
     WindRegionAssessment,
     WindVariableAssessment,
@@ -17,6 +18,7 @@ from openwind_au.models import (
     WindWorkflowResult,
     WindWorkflowVariable,
 )
+from openwind_au.mzcat import indicative_mzcat
 from openwind_au.shielding import DIRECTION_AZIMUTHS
 from openwind_au.wind_inputs import direction_multiplier_assessment, regional_wind_speed_assessment
 from openwind_au.wind_region import assess_wind_region
@@ -37,6 +39,7 @@ def run_wind_workflow(
     """Assemble reviewable AS/NZS 1170.2 site wind variables through Vsit,b."""
 
     overrides = override_lookup(request.workflow_overrides)
+    class_overrides = class_override_lookup(request.class_multiplier_overrides)
     variables: list[WindVariableAssessment] = []
     wind_region = wind_region or assess_wind_region(site_result.site)
     regional_speed = regional_speed or regional_wind_speed_assessment(
@@ -48,9 +51,9 @@ def run_wind_workflow(
     vr = vr_assessment(request, regional_speed, overrides)
     variables.append(vr)
     variables.extend(md_assessments(direction_multipliers, overrides))
-    variables.extend(mzcat_assessments(terrain_result, overrides))
-    variables.extend(ms_assessments(obstruction_result, overrides))
-    variables.extend(mt_assessments(site_result, overrides))
+    variables.extend(mzcat_assessments(request, terrain_result, overrides, class_overrides))
+    variables.extend(ms_assessments(obstruction_result, overrides, class_overrides))
+    variables.extend(mt_assessments(site_result, overrides, class_overrides))
     vsitb_rows = vsitb_directional_rows(variables)
     vsitb_rows = mark_governing_vsitb(vsitb_rows)
     variables.extend(vsitb_assessments(vsitb_rows, overrides))
@@ -99,6 +102,14 @@ def override_lookup(
     """Return the latest override keyed by variable and optional direction."""
 
     return {(override.variable, override.direction): override for override in overrides}
+
+
+def class_override_lookup(
+    overrides: list[WindClassMultiplierOverride],
+) -> dict[WindDirection, WindClassMultiplierOverride]:
+    """Return the latest class override keyed by direction."""
+
+    return {override.direction: override for override in overrides}
 
 
 def apply_override(
@@ -223,39 +234,72 @@ def md_assessments(
 
 
 def mzcat_assessments(
+    request: WindWorkflowRequest,
     terrain_result: TerrainCategoryEvidenceResult,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
+    class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
     assessments = []
     for item in terrain_result.mzcat_assessment:
+        class_override = class_overrides.get(item.direction)
         warnings = list(item.warnings)
-        if item.recommended_mzcat is None:
+        value = item.recommended_mzcat
+        final_label = (
+            f"Calculated TC {item.recommended_terrain_category}"
+            if item.recommended_mzcat is not None
+            else None
+        )
+        class_inputs: list[str] = []
+        class_details: list[str] = []
+        source_reference = "Terrain category inputs and Mz,cat recommendation."
+        confidence = item.recommendation_confidence
+        if class_override and class_override.terrain_category:
+            value = class_override.mzcat or indicative_mzcat(
+                class_override.terrain_category,
+                request.building_height_m,
+            )
+            final_label = f"Reviewed TC {class_override.terrain_category}"
+            confidence = "high" if class_override.mzcat else "medium"
+            source_reference = class_override.source_reference or source_reference
+            class_inputs = [
+                f"Reviewed terrain category: {class_override.terrain_category}",
+                f"Review reason: {class_override.reason}",
+            ]
+            if class_override.mzcat is not None:
+                class_inputs.append(f"Reviewed Mz,cat: {class_override.mzcat:.3f}")
+            class_details = [
+                "Reviewed terrain category class override applied.",
+                *class_inputs,
+            ]
+            warnings.append("Mz,cat uses reviewed class override.")
+        if value is None:
             warnings.append("Mz,cat could not be calculated for this direction.")
         assessment = WindVariableAssessment(
             variable="Mzcat",
             label="Terrain height multiplier, Mz,cat",
             direction=item.direction,
-            recommended_value=item.recommended_mzcat,
+            recommended_value=value,
             recommended_label=(
-                f"Recommended TC {item.recommended_terrain_category}; "
-                f"Recommended Mz,cat {item.recommended_mzcat:.3f}"
+                f"Reviewed TC {class_override.terrain_category}; Mz,cat {value:.3f}"
+                if class_override and class_override.terrain_category and value is not None
+                else (
+                    f"Recommended TC {item.recommended_terrain_category}; "
+                    f"Recommended Mz,cat {item.recommended_mzcat:.3f}"
+                )
                 if item.recommended_mzcat is not None
                 else "Recommended TC review required; Recommended Mz,cat review required"
             ),
-            confidence=item.recommendation_confidence,
-            calculated_value=item.recommended_mzcat,
-            final_value=item.recommended_mzcat,
-            final_label=(
-                f"Calculated TC {item.recommended_terrain_category}"
-                if item.recommended_mzcat is not None
-                else None
-            ),
+            confidence=confidence,
+            calculated_value=value,
+            final_value=value,
+            final_label=final_label,
             warnings=warnings,
             evidence_link="#terrain-category-mzcat",
-            source_reference="Terrain category inputs and Mz,cat recommendation.",
+            source_reference=source_reference,
             detail_label="Show details",
             formula_basis="Mz,cat selected from terrain category inputs and height.",
             calculation_inputs=[
+                *class_inputs,
                 f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
                 f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
                 f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
@@ -271,6 +315,7 @@ def mzcat_assessments(
                 ),
             ],
             detail_items=[
+                *class_details,
                 f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
                 f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
                 f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
@@ -286,8 +331,8 @@ def mzcat_assessments(
                 *item.reasoning,
             ],
             calculation_result=(
-                f"Mz,cat = {item.recommended_mzcat:.3f}"
-                if item.recommended_mzcat is not None
+                f"Mz,cat = {value:.3f}"
+                if value is not None
                 else "Mz,cat recommendation requires review."
             ),
         )
@@ -298,25 +343,54 @@ def mzcat_assessments(
 def ms_assessments(
     obstruction_result: ObstructionInventoryResult,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
+    class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
     assessments = []
     for sector in obstruction_result.shielding_sectors:
+        class_override = class_overrides.get(sector.direction)
+        value = sector.indicative_ms
+        confidence = _confidence(sector.overall_confidence)
+        source_reference = "Shielding sector diagnostics from obstruction inventory."
+        class_inputs: list[str] = []
+        class_details: list[str] = []
+        warnings = ["Indicative Ms is preliminary.", *sector.warnings]
+        if class_override and class_override.shielding_class:
+            value = class_override.ms or ms_from_shielding_class(class_override.shielding_class)
+            confidence = "high" if class_override.ms else "medium"
+            source_reference = class_override.source_reference or source_reference
+            class_inputs = [
+                f"Reviewed shielding class: {class_override.shielding_class}",
+                f"Review reason: {class_override.reason}",
+            ]
+            if class_override.ms is not None:
+                class_inputs.append(f"Reviewed Ms: {class_override.ms:.3f}")
+            class_details = ["Reviewed shielding class override applied.", *class_inputs]
+            warnings.append("Ms uses reviewed shielding class override.")
         assessment = WindVariableAssessment(
             variable="Ms",
             label="Shielding multiplier, Ms",
             direction=sector.direction,
-            recommended_value=sector.indicative_ms,
-            recommended_label=f"Recommended Ms {sector.indicative_ms:.3f}",
-            confidence=_confidence(sector.overall_confidence),
-            calculated_value=sector.indicative_ms,
-            final_value=sector.indicative_ms,
-            final_label="Calculated Ms",
-            warnings=["Indicative Ms is preliminary.", *sector.warnings],
+            recommended_value=value,
+            recommended_label=(
+                f"Reviewed {class_override.shielding_class}; Ms {value:.3f}"
+                if class_override and class_override.shielding_class
+                else f"Recommended Ms {sector.indicative_ms:.3f}"
+            ),
+            confidence=confidence,
+            calculated_value=value,
+            final_value=value,
+            final_label=(
+                f"Reviewed shielding class {class_override.shielding_class}"
+                if class_override and class_override.shielding_class
+                else "Calculated Ms"
+            ),
+            warnings=warnings,
             evidence_link="#shielding-ms",
-            source_reference="Shielding sector diagnostics from obstruction inventory.",
+            source_reference=source_reference,
             detail_label="Show details",
             formula_basis="Shielding multiplier inferred from obstruction sector inputs.",
             calculation_inputs=[
+                *class_inputs,
                 f"Sector: {sector.direction}",
                 f"Radius: {sector.sector_radius_m:.1f} m",
                 f"ns: {sector.ns}",
@@ -332,6 +406,7 @@ def ms_assessments(
                 ),
             ],
             detail_items=[
+                *class_details,
                 f"Sector: {sector.direction}",
                 f"Radius: {sector.sector_radius_m:.1f} m",
                 f"Shielding sector: {sector.sector_start_deg:.1f}-{sector.sector_end_deg:.1f} deg",
@@ -349,7 +424,7 @@ def ms_assessments(
                 f"Confidence: {sector.overall_confidence}",
                 f"Rejection reasons: {sector.rejection_reason_counts}",
             ],
-            calculation_result=f"Ms = {sector.indicative_ms:.3f}",
+            calculation_result=f"Ms = {value:.3f}",
         )
         assessments.append(apply_override(assessment, overrides))
     return assessments
@@ -358,30 +433,57 @@ def ms_assessments(
 def mt_assessments(
     site_result: SiteAnalysisResult,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
+    class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
     assessments = []
     for feature in site_result.features:
+        class_override = class_overrides.get(feature.direction)
         no_significant_feature = feature.feature_type == "no significant feature"
         warnings = []
         if not no_significant_feature:
             warnings.append("Candidate topographic feature requires engineer-selected Mt.")
         value = 1.0
+        confidence = "medium" if no_significant_feature else "low"
+        final_label = "Calculated Mt"
+        source_reference = "Topographic screening details for engineer-selected Mt."
+        class_inputs: list[str] = []
+        class_details: list[str] = []
+        if class_override and class_override.topographic_class:
+            value = class_override.mt or mt_from_topographic_class(
+                class_override.topographic_class
+            )
+            confidence = "high" if class_override.mt else "medium"
+            final_label = f"Reviewed topographic class {class_override.topographic_class}"
+            source_reference = class_override.source_reference or source_reference
+            class_inputs = [
+                f"Reviewed topographic class: {class_override.topographic_class}",
+                f"Review reason: {class_override.reason}",
+            ]
+            if class_override.mt is not None:
+                class_inputs.append(f"Reviewed Mt: {class_override.mt:.3f}")
+            class_details = ["Reviewed topographic class override applied.", *class_inputs]
+            warnings.append("Mt uses reviewed topographic class override.")
         assessment = WindVariableAssessment(
             variable="Mt",
             label="Topographic multiplier, Mt",
             direction=feature.direction,
             recommended_value=value,
-            recommended_label=f"Recommended Mt {value:.3f}",
-            confidence="medium" if no_significant_feature else "low",
+            recommended_label=(
+                f"Reviewed {class_override.topographic_class}; Mt {value:.3f}"
+                if class_override and class_override.topographic_class
+                else f"Recommended Mt {value:.3f}"
+            ),
+            confidence=confidence,
             calculated_value=value,
             final_value=value,
-            final_label="Calculated Mt",
+            final_label=final_label,
             warnings=warnings,
             evidence_link="#topographic-mt",
-            source_reference="Topographic screening details for engineer-selected Mt.",
+            source_reference=source_reference,
             detail_label="Show details",
             formula_basis="Topographic multiplier reviewed from topographic screening details.",
             calculation_inputs=[
+                *class_inputs,
                 f"Feature: {feature.feature_type}",
                 f"H: {feature.h_m:.3f} m",
                 f"Lu: {feature.lu_m:.3f} m",
@@ -390,6 +492,7 @@ def mt_assessments(
                 f"Confidence: {feature.confidence}",
             ],
             detail_items=[
+                *class_details,
                 f"Feature type: {feature.feature_type}",
                 f"H: {feature.h_m:.3f} m",
                 f"Lu: {feature.lu_m:.3f} m",
@@ -525,6 +628,29 @@ def variable_for(
 
 def _confidence(value: str) -> str:
     return value if value in {"high", "medium", "low"} else "low"
+
+
+def ms_from_shielding_class(shielding_class: str) -> float:
+    """Return a preliminary Ms default for a reviewed shielding class."""
+
+    return {
+        "FS": 0.85,
+        "PS": 0.95,
+        "NS": 1.0,
+    }.get(shielding_class, 1.0)
+
+
+def mt_from_topographic_class(topographic_class: str) -> float:
+    """Return a preliminary Mt default for a reviewed topographic class."""
+
+    return {
+        "T0": 1.0,
+        "T1": 1.08,
+        "T2": 1.16,
+        "T3": 1.24,
+        "T4": 1.32,
+        "T5": 1.40,
+    }.get(topographic_class, 1.0)
 
 
 def _product(values: list[float | None]) -> float:
