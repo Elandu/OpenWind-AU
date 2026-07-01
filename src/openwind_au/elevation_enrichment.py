@@ -149,7 +149,7 @@ def classify_obstruction(tags: dict) -> str:
         return "mixed"
     if has_vegetation:
         return "vegetation"
-    if building in {"house", "detached", "semidetached_house", "terrace", "residential"}:
+    if building in {"yes", "house", "detached", "semidetached_house", "terrace", "residential"}:
         return "residential"
     if landuse == "residential":
         return "residential"

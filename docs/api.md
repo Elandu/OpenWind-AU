@@ -132,7 +132,11 @@ GET /api/validation/cases
 GET /api/validation
 GET /api/validation/report/html
 GET /api/calculation-validation
+GET /api/reference-validation/7989
 ```
 
 Validation responses are qualitative audit outputs. They are not proof of engineering accuracy or
-code compliance.
+code compliance. The reference calculation 7989 endpoint compares the current OpenWind workflow against the
+stored Byambee Street reference classes: `TC3` terrain, `FS` shielding, and `T0`/`T1` topography.
+Use `GET /api/reference-validation/7989?apply_reference_overrides=true` to rerun the comparison
+with the encoded reference calculation classes applied through `class_multiplier_overrides`.

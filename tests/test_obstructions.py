@@ -205,7 +205,10 @@ def test_run_obstruction_inventory_uses_supplied_footprints() -> None:
 
 def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(
     monkeypatch,
+    tmp_path,
 ) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+
     def fail_query(*_args, **_kwargs):
         raise FootprintQueryError("Overpass unavailable")
 
@@ -280,6 +283,20 @@ def test_missing_height_buildings_are_retained() -> None:
     assert records[0].height_source == "missing"
     assert records[0].height_m is None
     assert records[0].footprint_geometry == footprint["footprint_geometry"]
+
+
+def test_generic_osm_building_yes_gets_reviewable_residential_height() -> None:
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500),
+        footprints=[square_footprint(tags={"building": "yes"})],
+    )
+
+    assert len(result.obstructions) == 1
+    record = result.obstructions[0]
+    assert record.classification == "residential"
+    assert record.height_source == "ESTIMATED"
+    assert record.selected_height_m == pytest.approx(3.0)
+    assert record.review_required is True
 
 
 def test_polygon_geometry_is_preserved_for_shielding_breadth() -> None:
@@ -401,6 +418,53 @@ def test_microsoft_footprints_are_used_when_overpass_fails(monkeypatch) -> None:
     assert result.data_quality.total_microsoft_building_footprints_found == 1
     assert result.data_quality.microsoft_cache_status == "hit"
     assert "live Overpass enrichment was skipped" in " ".join(result.warnings)
+
+
+def test_osm_footprint_cache_reused_when_live_overpass_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+
+    def missing_microsoft(*_args, **_kwargs):
+        return microsoft_result([])
+
+    footprints = [square_footprint("osm-cached", {"building": "yes"})]
+    debug = obstructions_module.empty_overpass_debug(-33.86, 151.21, 500)
+    debug["raw_overpass_counts"] = {
+        "raw_elements": 1,
+        "nodes": 0,
+        "ways": 1,
+        "relations": 0,
+        "building_tagged_ways": 1,
+        "building_tagged_relations": 0,
+    }
+    debug["parsed_counts"] = {
+        "converted_to_polygons": 1,
+        "converted_way_polygons": 1,
+        "converted_relation_polygons": 0,
+        "building_elements_without_polygon_geometry": 0,
+        "relation_multipolygons_reported_incomplete": 0,
+    }
+    calls = {"count": 0}
+
+    def flaky_osm(*_args, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return footprints, debug
+        raise FootprintQueryError("Overpass unavailable")
+
+    monkeypatch.setattr(
+        obstructions_module, "query_microsoft_building_footprints", missing_microsoft
+    )
+    monkeypatch.setattr(obstructions_module, "query_building_footprints_with_debug", flaky_osm)
+
+    request = ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500)
+    first = run_obstruction_inventory(request)
+    second = run_obstruction_inventory(request)
+
+    assert len(first.obstructions) == 1
+    assert len(second.obstructions) == 1
+    assert second.data_source_status == "ok"
+    assert second.data_quality.total_osm_building_footprints_found == 1
+    assert "reused cached OSM footprint geometry" in " ".join(second.warnings)
 
 
 def test_reviewed_geometry_has_priority_over_microsoft(monkeypatch) -> None:

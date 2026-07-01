@@ -83,3 +83,17 @@ Before using any output in project work, a competent engineer should confirm:
 - topographic effects;
 - terrain category;
 - all code calculations independently.
+
+The wind workflow API also accepts reviewed directional class inputs via
+`class_multiplier_overrides`. These are useful when a prior calculation, such as reference calculation, gives
+the controlling classes rather than raw public-data evidence. Each entry can include:
+
+- `direction`;
+- `terrain_category` such as `TC3`;
+- `shielding_class` such as `FS`, `PS`, or `NS`;
+- `topographic_class` such as `T0` or `T1`;
+- optional exact `mzcat`, `ms`, or `mt` values;
+- `reason` and `source_reference`.
+
+When exact multipliers are not supplied, OpenWind-AU uses transparent preliminary defaults for the
+class and keeps the override reason in the calculation details.

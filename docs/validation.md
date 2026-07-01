@@ -111,3 +111,35 @@ GET /api/terrain-category/validation
 
 These examples validate that suggested ranges and indicative Mz,cat ranges are broadly reasonable
 prompts for review. They do not assign final terrain categories or final `Mz,cat` design values.
+
+## reference calculation Reference Comparisons
+
+OpenWind-AU includes a fixed comparison against reference calculation job 7989 for 6 Byambee Street, Kenmore,
+QLD. The source PDF reports:
+
+- Region `B1`;
+- `Vh,ult = 40 m/s`, `Vh,serv = 26 m/s`;
+- `TC3` terrain in all eight directions;
+- `FS` shielding in all eight directions;
+- topography class `T1` for `NE` and `E`, and `T0` elsewhere.
+
+Use:
+
+```text
+GET /api/reference-validation/7989
+```
+
+This endpoint runs the current workflow for the fixed site and compares directional terrain,
+shielding, and topographic classes. It is intentionally a class-level gap check: mismatches usually
+mean the public obstruction/topographic evidence or class mapping needs review before final
+multipliers are trusted.
+
+Use:
+
+```text
+GET /api/reference-validation/7989?apply_reference_overrides=true
+```
+
+to apply the encoded reference calculation classes as reviewed `class_multiplier_overrides`. This proves the
+workflow can carry source classes through to `Mz,cat`, `Ms`, and `Mt` while preserving the raw
+evidence mismatch in the default endpoint.

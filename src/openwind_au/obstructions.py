@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from io import StringIO
 from json import JSONDecodeError
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -145,16 +146,65 @@ def run_obstruction_inventory(
                     site.longitude,
                     inventory_radius_m,
                 )
+                save_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                    raw_footprints,
+                    overpass_debug,
+                )
             except FootprintQueryError as exc:
-                raw_footprints = []
-                if not microsoft_footprints:
-                    data_source_status = "unavailable"
-                    warnings.append(
-                        "Building footprint query failed. The obstruction inventory is empty "
-                        "until Microsoft Building Footprints cache data or OSM data is available; "
-                        "indicative Ms cannot be calculated."
+                cached = load_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                )
+                if cached is not None:
+                    raw_footprints, overpass_debug = cached
+                    overpass_debug["pipeline_log"].append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
                     )
-                warnings.append(str(exc))
+                    warnings.append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(str(exc))
+                else:
+                    raw_footprints = []
+                    if not microsoft_footprints:
+                        data_source_status = "unavailable"
+                        warnings.append(
+                            "Building footprint query failed. The obstruction inventory is empty "
+                            "until Microsoft Building Footprints cache data or OSM data is "
+                            "available; "
+                            "indicative Ms cannot be calculated."
+                        )
+                    warnings.append(str(exc))
+            except Exception as exc:
+                cached = load_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                )
+                if cached is not None:
+                    raw_footprints, overpass_debug = cached
+                    overpass_debug["pipeline_log"].append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(f"Overpass query failed: {exc}")
+                else:
+                    raw_footprints = []
+                    if not microsoft_footprints:
+                        data_source_status = "unavailable"
+                        warnings.append(
+                            "Building footprint query failed. The obstruction inventory is empty "
+                            "until Microsoft Building Footprints cache data or OSM data is "
+                            "available; "
+                            "indicative Ms cannot be calculated."
+                        )
+                    warnings.append(f"Overpass query failed: {exc}")
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
     else:
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
@@ -300,6 +350,72 @@ def query_building_footprints_with_debug(
         "pipeline_log": conversion_debug["pipeline_log"],
     }
     log_obstruction_debug(debug)
+    return footprints, debug
+
+
+def default_osm_footprint_cache_dir() -> Path:
+    """Return the configured/default OSM footprint cache directory."""
+
+    configured = os.environ.get("OPENWIND_OSM_FOOTPRINT_CACHE")
+    if configured:
+        return Path(configured)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "OpenWind-AU" / "osm_building_footprints"
+    return Path.home() / ".cache" / "openwind-au" / "osm_building_footprints"
+
+
+def osm_footprint_cache_file(latitude: float, longitude: float, radius_m: int) -> Path:
+    """Return the cache file path for an OSM footprint query."""
+
+    key = f"{latitude:.6f}_{longitude:.6f}_{int(radius_m)}m".replace("-", "m").replace(".", "p")
+    return default_osm_footprint_cache_dir() / f"{key}.json"
+
+
+def save_cached_osm_footprints(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+    footprints: list[dict[str, Any]],
+    debug: dict[str, Any],
+) -> None:
+    """Persist successful OSM footprint geometry for repeatable obstruction analysis."""
+
+    if not footprints:
+        return
+    path = osm_footprint_cache_file(latitude, longitude, radius_m)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "radius_m": radius_m,
+        "footprints": footprints,
+        "debug": debug,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def load_cached_osm_footprints(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Load cached OSM footprint geometry for a failed live query."""
+
+    path = osm_footprint_cache_file(latitude, longitude, radius_m)
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    footprints = data.get("footprints", [])
+    debug = data.get("debug", {})
+    if not isinstance(footprints, list) or not isinstance(debug, dict):
+        return None
+    debug = {
+        **empty_overpass_debug(latitude, longitude, radius_m),
+        **debug,
+    }
+    debug.setdefault("pipeline_log", [])
+    debug["pipeline_log"].append(f"Loaded OSM footprint cache: {path}")
     return footprints, debug
 
 
