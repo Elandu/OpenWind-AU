@@ -37,7 +37,7 @@ def run_site_analysis(
         features=features,
         assumptions=[
             "Terrain profiles are sampled in the eight cardinal and intercardinal directions.",
-            "DEM elevations are public terrain data and may not reflect local survey levels.",
+            "DEM elevations are public SRTM terrain data and may not reflect local survey levels.",
             "Topographic screening is rule-based and conservative.",
             "Feature metrics are geometric indicators for preliminary engineering review only.",
             "Building height is recorded for context and future wind workflow integration.",
@@ -47,7 +47,8 @@ def run_site_analysis(
             "multipliers, topographic multipliers, or design wind pressures.",
             "Candidate ridges, hills, escarpments, and valleys require review "
             "by a competent engineer against project-specific context.",
-            "DEM resolution and vertical accuracy may be insufficient for final design decisions.",
+            "SRTM DEM resolution and vertical accuracy may be insufficient for final design "
+            "decisions.",
         ],
     )
 

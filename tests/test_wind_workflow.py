@@ -416,6 +416,36 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert north["final_vsitb"] is not None
 
 
+def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "structure_class": "building",
+        "structure_orientation_deg": 0,
+        "roof_shape": "gable",
+        "building_width_m": 4,
+        "building_length_m": 5,
+        "roof_pitch_deg": 15,
+        "average_height_m": 3,
+        "base_rl_m": 0,
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+    report = test_client.post("/api/wind-workflow/report/html", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["input"]["structure_class"] == "building"
+    assert body["input"]["structure_orientation_deg"] == 0
+    assert body["input"]["roof_shape"] == "gable"
+    assert body["input"]["building_width_m"] == 4
+    assert body["input"]["building_length_m"] == 5
+    assert body["input"]["base_rl_m"] == 0
+    assert report.status_code == 200
+    assert "Structure class" in report.text
+    assert "Roof shape" in report.text
+    assert "Base RL" in report.text
+
+
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload()

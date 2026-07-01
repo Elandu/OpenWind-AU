@@ -120,6 +120,50 @@
               <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
             </label>
             <label>
+              Structure class
+              <select id="structure_class" name="structure_class">
+                <option value="">Not set</option>
+                <option value="building">Building</option>
+                <option value="house">House</option>
+                <option value="monopole">Monopole</option>
+                <option value="tower">Tower</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>
+              Orientation (deg)
+              <input id="structure_orientation_deg" name="structure_orientation_deg" type="number" min="-90" max="90" step="11.25" />
+            </label>
+            <label>
+              Roof shape
+              <select id="roof_shape" name="roof_shape">
+                <option value="">Not set</option>
+                <option value="gable">Gable</option>
+                <option value="hip">Hip</option>
+                <option value="monoslope">Monoslope</option>
+              </select>
+            </label>
+            <label>
+              Width (m)
+              <input id="building_width_m" name="building_width_m" type="number" step="0.1" />
+            </label>
+            <label>
+              Length (m)
+              <input id="building_length_m" name="building_length_m" type="number" step="0.1" />
+            </label>
+            <label>
+              Roof pitch (deg)
+              <input id="roof_pitch_deg" name="roof_pitch_deg" type="number" min="0" max="90" step="0.1" />
+            </label>
+            <label>
+              Average height (m)
+              <input id="average_height_m" name="average_height_m" type="number" step="0.1" />
+            </label>
+            <label>
+              Base RL (m)
+              <input id="base_rl_m" name="base_rl_m" type="number" step="0.1" />
+            </label>
+            <label>
               Return period / importance level
               <input id="importance_level" name="importance_level" placeholder="e.g. IL2, 1:500 annual probability" />
             </label>

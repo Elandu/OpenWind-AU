@@ -2460,6 +2460,33 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
       <td>{{ result.input.importance_level or "user input" }}</td>
     </tr>
     <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
+    {% if result.input.structure_class %}
+    <tr><th>Structure class</th><td>{{ result.input.structure_class }}</td></tr>
+    {% endif %}
+    {% if result.input.structure_orientation_deg is not none %}
+    <tr>
+      <th>Orientation</th>
+      <td>{{ "%.2f"|format(result.input.structure_orientation_deg) }} deg</td>
+    </tr>
+    {% endif %}
+    {% if result.input.roof_shape %}
+    <tr><th>Roof shape</th><td>{{ result.input.roof_shape }}</td></tr>
+    {% endif %}
+    {% if result.input.building_width_m is not none %}
+    <tr><th>Width</th><td>{{ "%.2f"|format(result.input.building_width_m) }} m</td></tr>
+    {% endif %}
+    {% if result.input.building_length_m is not none %}
+    <tr><th>Length</th><td>{{ "%.2f"|format(result.input.building_length_m) }} m</td></tr>
+    {% endif %}
+    {% if result.input.roof_pitch_deg is not none %}
+    <tr><th>Roof pitch</th><td>{{ "%.2f"|format(result.input.roof_pitch_deg) }} deg</td></tr>
+    {% endif %}
+    {% if result.input.average_height_m is not none %}
+    <tr><th>Average height</th><td>{{ "%.2f"|format(result.input.average_height_m) }} m</td></tr>
+    {% endif %}
+    {% if result.input.base_rl_m is not none %}
+    <tr><th>Base RL</th><td>{{ "%.2f"|format(result.input.base_rl_m) }} m</td></tr>
+    {% endif %}
   </table>
   </section>
 

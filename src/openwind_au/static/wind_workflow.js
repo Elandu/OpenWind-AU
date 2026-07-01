@@ -165,6 +165,10 @@ async function runWorkflowFallback(originalError) {
 
 function workflowPayload() {
   const data = new FormData(workflowForm);
+  const optionalNumber = (name) => {
+    const value = data.get(name);
+    return value === null || value === "" ? null : Number(value);
+  };
   const payload = {
     address: data.get("address") || null,
     building_height_m: Number(data.get("building_height_m")),
@@ -175,11 +179,31 @@ function workflowPayload() {
     wind_region: "A2",
     annual_exceedance_probability: data.get("annual_exceedance_probability") || "1/500",
     importance_level: data.get("importance_level") || null,
+    structure_class: data.get("structure_class") || null,
+    structure_orientation_deg: optionalNumber("structure_orientation_deg"),
+    roof_shape: data.get("roof_shape") || null,
+    building_width_m: optionalNumber("building_width_m"),
+    building_length_m: optionalNumber("building_length_m"),
+    roof_pitch_deg: optionalNumber("roof_pitch_deg"),
+    average_height_m: optionalNumber("average_height_m"),
+    base_rl_m: optionalNumber("base_rl_m"),
     mzcat_recommendation_mode: "conservative",
     workflow_overrides: workflowOverrides,
   };
   if (!payload.address) delete payload.address;
   if (payload.importance_level === null) delete payload.importance_level;
+  [
+    "structure_class",
+    "structure_orientation_deg",
+    "roof_shape",
+    "building_width_m",
+    "building_length_m",
+    "roof_pitch_deg",
+    "average_height_m",
+    "base_rl_m",
+  ].forEach((key) => {
+    if (payload[key] === null || Number.isNaN(payload[key])) delete payload[key];
+  });
   return payload;
 }
 
@@ -408,6 +432,16 @@ function replaceWorkflowCards(section, html) {
 
 function renderSiteInputs(workflow) {
   const input = workflow.input || {};
+  const structureRows = [
+    input.structure_class ? `<tr><th>Structure class</th><td>${escapeHtml(input.structure_class)}</td></tr>` : "",
+    input.structure_orientation_deg !== null && input.structure_orientation_deg !== undefined ? `<tr><th>Orientation</th><td>${formatNullableNumber(input.structure_orientation_deg, 2, "deg")}</td></tr>` : "",
+    input.roof_shape ? `<tr><th>Roof shape</th><td>${escapeHtml(input.roof_shape)}</td></tr>` : "",
+    input.building_width_m !== null && input.building_width_m !== undefined ? `<tr><th>Width</th><td>${formatNullableNumber(input.building_width_m, 2, "m")}</td></tr>` : "",
+    input.building_length_m !== null && input.building_length_m !== undefined ? `<tr><th>Length</th><td>${formatNullableNumber(input.building_length_m, 2, "m")}</td></tr>` : "",
+    input.roof_pitch_deg !== null && input.roof_pitch_deg !== undefined ? `<tr><th>Roof pitch</th><td>${formatNullableNumber(input.roof_pitch_deg, 2, "deg")}</td></tr>` : "",
+    input.average_height_m !== null && input.average_height_m !== undefined ? `<tr><th>Average height</th><td>${formatNullableNumber(input.average_height_m, 2, "m")}</td></tr>` : "",
+    input.base_rl_m !== null && input.base_rl_m !== undefined ? `<tr><th>Base RL</th><td>${formatNullableNumber(input.base_rl_m, 2, "m")}</td></tr>` : "",
+  ].join("");
   siteInputSummary.innerHTML = `
     <div class="table-wrap">
       <table>
@@ -415,6 +449,7 @@ function renderSiteInputs(workflow) {
           <tr><th>Address</th><td>${escapeHtml(input.address || workflow.site?.display_name || "not supplied")}</td></tr>
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>
           <tr><th>Building height</th><td>${Number(input.building_height_m).toFixed(2)} m</td></tr>
+          ${structureRows}
           <tr><th>Return period / importance level</th><td>${escapeHtml(input.importance_level || input.annual_exceedance_probability || "user input")}</td></tr>
         </tbody>
       </table>

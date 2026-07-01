@@ -14,8 +14,9 @@ It does not:
 
 ## Data Limitations
 
-The current workflow uses public DEM data and public building footprint sources. Public DEMs and
-building datasets may not reflect:
+The current workflow uses public SRTM DEM data and public building footprint sources. SRTM is a
+coarse public terrain source, not the Google Elevation API, project lidar, or site survey. Public
+DEMs and building datasets may not reflect:
 
 - local survey levels;
 - retaining walls;

@@ -13,14 +13,24 @@ Enter either:
 Review the resolved location before relying on any output. Geocoding can place a point at a parcel,
 street segment, suburb, or other public-map reference.
 
+OpenWind-AU also accepts structured building inputs for review workflows:
+
+- structure class: `building`, `house`, `monopole`, `tower`, or `other`;
+- orientation from `-90` to `90` degrees;
+- roof shape: `gable`, `hip`, or `monoslope`;
+- width, length, roof pitch, average height, and base RL.
+
 ## 2. Terrain Profiles
 
 OpenWind-AU samples 8-direction terrain profiles for:
 
 - N, NE, E, SE, S, SW, W, and NW.
 
-Profiles use public elevation data and the selected analysis radius. Review profile endpoints,
-sample spacing, and ground elevations before using the profile as evidence.
+Profiles use public SRTM DEM elevation data from AWS terrain tiles and the selected analysis radius.
+Review profile endpoints, sample spacing, and ground elevations before using the profile as
+evidence. SRTM is useful for broad preliminary screening, but it is not a substitute for Google
+Elevation API data, local survey, lidar, or project-specific terrain review where local relief,
+retaining walls, cuts, fills, or drainage features matter.
 
 ## 3. Topographic Screening
 
