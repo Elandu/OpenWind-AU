@@ -11,6 +11,10 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from openwind_au.analysis import run_site_analysis
+from openwind_au.calculation_validation import (
+    calculation_validation_report_to_json,
+    run_calculation_validation_cases,
+)
 from openwind_au.dem import SRTMProvider
 from openwind_au.models import (
     CombinedMapRequest,
@@ -460,6 +464,14 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return render_validation_report_html(report)
+
+    @app.get("/api/calculation-validation")
+    def calculation_validation_report() -> Response:
+        content = json.dumps(
+            calculation_validation_report_to_json(run_calculation_validation_cases()),
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
 
     @app.get("/api/wind-region/validation")
     def wind_region_validation() -> Response:

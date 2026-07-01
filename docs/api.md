@@ -131,6 +131,7 @@ For the human review workflow, see [`workflow.md`](workflow.md) and
 GET /api/validation/cases
 GET /api/validation
 GET /api/validation/report/html
+GET /api/calculation-validation
 ```
 
 Validation responses are qualitative audit outputs. They are not proof of engineering accuracy or

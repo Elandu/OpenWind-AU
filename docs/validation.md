@@ -65,6 +65,30 @@ Good validation cases should be:
 Validation examples can be proposed with the GitHub issue template:
 `.github/ISSUE_TEMPLATE/validation_example.yml`.
 
+## Deterministic Calculation Validation
+
+The qualitative site validation above depends on public terrain data and broad expected behaviour.
+OpenWind-AU also includes deterministic calculation validation for shielding and topographic
+screening formulas using synthetic inputs with known expected outputs.
+
+Use:
+
+```text
+GET /api/calculation-validation
+```
+
+These checks are designed to be stable without external DEM, geocoding, Microsoft footprint, or
+Overpass data. They validate covered implementation details such as:
+
+- indicative `Ms` interpolation thresholds;
+- shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
+- topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
+- threshold behaviour where sub-5 m relief is screened out.
+
+Passing deterministic calculation validation confirms that the covered formulas and screening
+rules are internally consistent. It does not certify AS/NZS 1170.2 compliance, public dataset
+accuracy, or suitability for a project site.
+
 ## Terrain Category Evidence Examples
 
 Terrain category evidence scoring includes synthetic representative examples for:
