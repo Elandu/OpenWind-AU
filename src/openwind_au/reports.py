@@ -1341,10 +1341,10 @@ def _add_obstruction_centroid_layer(
     layer: folium.FeatureGroup,
     result: ObstructionInventoryResult,
 ) -> MapRenderDiagnostics:
-    """Add one lightweight obstruction centroid overlay for workflow maps."""
+    """Add selected nearby obstruction footprints and centroid labels for workflow maps."""
 
     diagnostics = MapRenderDiagnostics(
-        display_mode="centroids_only",
+        display_mode="nearby_footprints",
         max_displayed_obstructions=min(DEFAULT_MAP_DISPLAY_LIMIT, len(result.obstructions)),
         total_obstructions=len(result.obstructions),
     )
@@ -1352,19 +1352,120 @@ def _add_obstruction_centroid_layer(
         : diagnostics.max_displayed_obstructions
     ]
     diagnostics.selected_obstructions = len(selected)
-    diagnostics.fallback_mode = True
-    diagnostics.console_safe_errors.append(
-        "Workflow map uses centroid-only obstruction display for map clarity."
-    )
     if diagnostics.selected_obstructions < diagnostics.total_obstructions:
         diagnostics.warnings.append(
             "Map display limited to "
             f"{diagnostics.selected_obstructions} of {diagnostics.total_obstructions} "
             "obstructions. Calculations used full dataset."
         )
+    _add_nearby_obstruction_footprint_layer(fmap, layer, selected, result, diagnostics)
     _add_obstruction_centroid_collection(layer, selected, diagnostics)
     _add_map_diagnostics_banner(fmap, diagnostics)
     return diagnostics
+
+
+def _add_nearby_obstruction_footprint_layer(
+    fmap: folium.Map,
+    layer: folium.FeatureGroup,
+    selected: list[ObstructionRecord],
+    result: ObstructionInventoryResult,
+    diagnostics: MapRenderDiagnostics,
+) -> None:
+    """Inject selected nearby obstruction footprint polygons into the workflow map."""
+
+    features = []
+    payload_size = 0
+    for record in selected:
+        display_geometry = display_geometry_for_map(
+            record.footprint_geometry,
+            result.site,
+            result.input.radius_m,
+            diagnostics,
+        )
+        if display_geometry is None:
+            continue
+        feature = obstruction_display_feature(record, display_geometry, "nearby_obstruction")
+        feature_size = len(json.dumps(feature, separators=(",", ":")))
+        if payload_size + feature_size > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES:
+            diagnostics.fallback_mode = True
+            diagnostics.warnings.append(
+                "Nearby obstruction footprint display stopped at the map payload budget."
+            )
+            break
+        features.append(feature)
+        payload_size += feature_size
+        diagnostics.largest_polygon_vertex_count = max(
+            diagnostics.largest_polygon_vertex_count,
+            geometry_vertex_count(display_geometry),
+        )
+
+    diagnostics.total_geojson_payload_size += payload_size
+    if not features:
+        diagnostics.fallback_mode = True
+        diagnostics.warnings.append("Nearby obstruction footprints could not be rendered.")
+        return
+
+    feature_collection = {"type": "FeatureCollection", "features": features}
+    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
+    map_name = fmap.get_name()
+    layer_name = layer.get_name()
+    script = f"""
+    (function() {{
+      const nearbyFootprints = {feature_collection_json};
+      const nearbyLayer = {layer_name};
+      const nearbyGeoJson = L.geoJson(nearbyFootprints, {{
+        interactive: true,
+        style: function(feature) {{
+          const source = (feature.properties || {{}}).source || "";
+          if (source === "microsoft_building_footprints") {{
+            return {{
+              color: "#7c3aed",
+              weight: 2,
+              opacity: 0.92,
+              fillColor: "#c4b5fd",
+              fillOpacity: 0.34
+            }};
+          }}
+          return {{
+            color: "#334155",
+            weight: 2,
+            opacity: 0.9,
+            fillColor: "#cbd5e1",
+            fillOpacity: 0.34
+          }};
+        }},
+        onEachFeature: function(feature, leafletLayer) {{
+          const props = feature.properties || {{}};
+          leafletLayer.bindTooltip(
+            `<table>
+              <tr><th>ID</th><td>${{props.id || ""}}</td></tr>
+              <tr><th>Source</th><td>${{props.source || ""}}</td></tr>
+              <tr><th>Height</th><td>${{props.height || "missing"}}</td></tr>
+              <tr><th>Class</th><td>${{props.classification || ""}}</td></tr>
+              <tr><th>Confidence</th><td>${{props.confidence || ""}}</td></tr>
+            </table>`,
+            {{sticky: false, className: "foliumtooltip"}}
+          );
+        }}
+      }});
+      nearbyGeoJson.addTo(nearbyLayer);
+      nearbyLayer.addTo({map_name});
+      nearbyGeoJson.bringToFront();
+      nearbyLayer.on("add", function() {{
+        nearbyGeoJson.bringToFront();
+      }});
+      window.openWindNearbyObstructionFootprintLayer = {{
+        feature_count: nearbyFootprints.features.length,
+        layer_name: "Nearby obstructions",
+        renderer: "explicit_leaflet_geojson"
+      }};
+      console.info(
+        "OpenWind-AU nearby obstruction footprint layer",
+        window.openWindNearbyObstructionFootprintLayer
+      );
+    }})();
+    """
+    fmap.get_root().script.add_child(folium.Element(script))
 
 
 def _add_wind_region_layer(

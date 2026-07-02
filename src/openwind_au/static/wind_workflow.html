@@ -214,11 +214,18 @@
             </div>
           </div>
           <iframe id="workflow-map-frame" class="map-iframe" title="Interactive wind assessment map"></iframe>
+          <iframe
+            id="terrain-profile-frame"
+            class="map-iframe profile-iframe"
+            title="Terrain profile graph"
+            hidden
+          ></iframe>
         </section>
       </section>
 
       <nav class="workspace-tabs" role="tablist" aria-label="Assessment views">
         <button class="workspace-tab is-active" type="button" role="tab" aria-selected="true" data-workspace-tab="map">Map</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="profile">Profile</button>
         <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="raw-data">Raw Data</button>
         <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="documents">Documents</button>
       </nav>
@@ -228,9 +235,12 @@
           <h2>Map Layers</h2>
           <p class="note">The workspace map renders wind regions, Mz,cat sectors, shielding sectors, topographic circles, terrain profiles, obstruction footprints, and the Design building footprint.</p>
         </div>
+      </section>
+
+      <section class="workspace-panel" role="tabpanel" data-workspace-panel="profile" hidden>
         <div class="panel terrain-profile-panel">
           <h2>Terrain Profile Graph</h2>
-          <iframe id="terrain-profile-frame" class="profile-iframe" title="Terrain profile graph"></iframe>
+          <p class="note">The main workspace is showing the terrain profile graph for the current assessed site.</p>
         </div>
       </section>
 
@@ -309,6 +319,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260702-map-workspace-6"></script>
+    <script src="/static/wind_workflow.js?v=20260702-map-workspace-7"></script>
   </body>
 </html>

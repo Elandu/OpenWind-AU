@@ -177,6 +177,7 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Shielding obstruction polygons" in html
     assert "Topographic feature candidates" in html
     assert "Nearby obstructions" in html
+    assert "window.openWindNearbyObstructionFootprintLayer" in html
     assert "Topographic circles" not in html
     assert "Raw OSM building polygons before filtering" not in html
     assert "Manual reviewed obstruction geometry" not in html

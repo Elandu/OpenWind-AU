@@ -16,6 +16,7 @@ const workflowProgressLabel = document.getElementById("workflow-progress-label")
 const workflowProgressPercent = document.getElementById("workflow-progress-percent");
 const workflowProgressTrack = document.getElementById("workflow-progress-track");
 const workflowProgressBar = document.getElementById("workflow-progress-bar");
+const workspaceTitle = document.querySelector(".map-toolbar strong");
 const orientationControl = document.getElementById("structure_orientation_deg");
 const orientationReadout = document.getElementById("orientation-readout");
 const buildingWidthControl = document.getElementById("building_width_m");
@@ -733,6 +734,7 @@ function setWorkflowProgress(percent, label, state = "running") {
 
 function activateWorkspaceTab(tabName) {
   if (!tabName) return;
+  const canvasTab = tabName === "profile" ? "profile" : "map";
   document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
     const isActive = button.dataset.workspaceTab === tabName;
     button.classList.toggle("is-active", isActive);
@@ -743,6 +745,14 @@ function activateWorkspaceTab(tabName) {
     panel.classList.toggle("is-active", isActive);
     panel.hidden = !isActive;
   });
+  if (workflowMapFrame) workflowMapFrame.hidden = canvasTab !== "map";
+  if (terrainProfileFrame) terrainProfileFrame.hidden = canvasTab !== "profile";
+  if (workspaceTitle) {
+    workspaceTitle.textContent = canvasTab === "profile"
+      ? "Terrain Profile Graph"
+      : "Interactive Wind Map";
+  }
+  if (canvasTab === "map") invalidateWorkflowMap();
 }
 
 function syncDesignBuildingOverlay() {

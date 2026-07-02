@@ -109,8 +109,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="map-canvas-panel"' in body
     assert 'class="workspace-tabs"' in body
     assert 'data-workspace-tab="map"' in body
+    assert 'data-workspace-tab="profile"' in body
     assert 'data-workspace-tab="raw-data"' in body
     assert 'data-workspace-tab="documents"' in body
+    assert 'data-workspace-panel="profile"' in body
     assert 'data-workspace-panel="raw-data"' in body
     assert 'data-workspace-panel="documents"' in body
     assert 'class="workflow-sidepanel"' not in body
@@ -122,7 +124,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260702-map-workspace-6" in body
+    assert "20260702-map-workspace-7" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -173,7 +175,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'id="workflow-map-frame"' in body
     assert "Terrain Profile Graph" in body
     assert 'id="terrain-profile-frame"' in body
-    assert 'class="profile-iframe"' in body
+    assert 'class="map-iframe profile-iframe"' in body
+    assert 'title="Terrain profile graph"' in body
     assert 'id="wind-region-frame"' not in body
     assert "Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat" in body
     assert "Recommended Ms, Final Ms" in body
@@ -195,6 +198,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "hiddenWindInputWarningPatterns" in script.text
     assert "visibleWarnings" in script.text
     assert "activateWorkspaceTab" in script.text
+    assert "terrainProfileFrame.hidden" in script.text
     assert "syncDesignBuildingOverlay" in script.text
     assert "renderInitialMapFrame" in script.text
     assert "initialMapHtml" in script.text
@@ -304,6 +308,7 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Shielding obstruction polygons" in body
     assert "Topographic feature candidates" in body
     assert "Nearby obstructions" in body
+    assert "openWindNearbyObstructionFootprintLayer" in body
     assert "Design building" in body
     assert "openWindDesignBuilding" in body
     assert "openWindWorkflowMap" in body

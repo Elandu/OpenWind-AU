@@ -1070,9 +1070,14 @@ iframe {
   border-radius: 0;
 }
 
+.map-canvas-panel > iframe[hidden] {
+  display: none;
+}
+
 .profile-iframe {
   display: block;
-  height: 420px;
+  height: 100%;
+  min-height: 560px;
   background: #ffffff;
 }
 
