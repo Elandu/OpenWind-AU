@@ -41,7 +41,7 @@ third-party binary format.
 | --- | --- | --- |
 | Terrain DEM | Geoscience Australia 1-second SRTM-derived DEM, NASA SRTM, or configured DEM rasters | Local cache with versioned metadata, datum notes, and fallback behaviour |
 | Wind lookup data | AS/NZS 1170.2:2021 and AS 4055:2021 verified tables | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
-| Point elevation | Configured DEM first; optional public elevation API fallback | Source provenance in every report and clear warnings for external API data |
+| Point elevation | Configured DEM first; Open-Meteo opt-in fallback/comparison provider | Source provenance in every report and clear warnings for external API data |
 | Map context | OSM, MapTiler/Stadia, ESRI imagery, or project-configured tiles | Attribution, key management, and offline/error behaviour |
 | Building footprints | Microsoft Building Footprints, reviewed project data, OSM/Overpass fallback | Coverage diagnostics, attribution, cache controls, and manual review workflow |
 

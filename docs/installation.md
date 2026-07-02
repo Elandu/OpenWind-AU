@@ -48,6 +48,28 @@ ruff format --check .
 
 The first real terrain analysis may download public SRTM tiles into `data/cache/srtm`.
 
+## Optional Elevation Provider
+
+OpenWind-AU uses cached public SRTM terrain tiles by default:
+
+```powershell
+$env:OPENWIND_DEM_PROVIDER="srtm"
+```
+
+For source comparison against a free point-elevation API, use Open-Meteo:
+
+```powershell
+$env:OPENWIND_DEM_PROVIDER="open-meteo"
+```
+
+Open-Meteo's elevation endpoint is based on Copernicus DEM GLO-90 public terrain data. This is an
+opt-in provider for comparison and review workflows; all public DEM outputs still require
+engineering review before project use. To use a proxy or test endpoint, set:
+
+```powershell
+$env:OPENWIND_OPEN_METEO_ELEVATION_URL="https://api.open-meteo.com/v1/elevation"
+```
+
 ## Optional Microsoft Building Footprint Cache
 
 The obstruction inventory prefers

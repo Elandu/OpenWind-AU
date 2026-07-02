@@ -26,10 +26,11 @@ OpenWind-AU samples 8-direction terrain profiles for:
 
 - N, NE, E, SE, S, SW, W, and NW.
 
-Profiles use public SRTM DEM elevation data from AWS terrain tiles and the selected analysis radius.
-Review profile endpoints, sample spacing, and ground elevations before using the profile as
-evidence. SRTM is useful for broad preliminary screening, but it is not a substitute for Google
-Elevation API data, local survey, lidar, or project-specific terrain review where local relief,
+Profiles use the configured public DEM provider and the selected analysis radius. The default
+provider is cached SRTM data from AWS terrain tiles. Open-Meteo point elevations can be enabled for
+source comparison. Review profile endpoints, sample spacing, and ground elevations before using the
+profile as evidence. Public DEMs are useful for broad preliminary screening, but they are not a
+substitute for local survey, lidar, or project-specific terrain review where local relief,
 retaining walls, cuts, fills, or drainage features matter.
 
 ## 3. Topographic Screening

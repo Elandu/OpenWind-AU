@@ -32,6 +32,15 @@ SRTM terrain tiles are cached under:
 data/cache/srtm
 ```
 
+To compare with Open-Meteo point elevations instead of cached SRTM tiles, start the app with:
+
+```powershell
+$env:OPENWIND_DEM_PROVIDER="open-meteo"
+openwind-au
+```
+
+Leave `OPENWIND_DEM_PROVIDER` unset, or set it to `srtm`, for the default local-cache DEM workflow.
+
 Generated local reports are written under:
 
 ```text
