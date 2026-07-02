@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import math
 
+import geopandas as gpd
+import numpy as np
+import pyproj
 import pytest
+from affine import Affine
+from shapely.geometry import Point, Polygon
 
 from openwind_au.geo import EARTH_RADIUS_M
 from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest, SiteAnalysisResult
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.terrain import generate_standard_terrain_profiles
 from openwind_au.terrain_category import (
+    classify_terrain_category,
     confidence_from_evidence,
     polygon_area_m2,
     run_terrain_category_evidence,
@@ -25,6 +31,8 @@ from openwind_au.topography import analyse_topography
 
 SITE_LAT = -33.86
 SITE_LON = 151.21
+MOUNT_ARCHER_LAT = -23.333456
+MOUNT_ARCHER_LON = 150.571578
 
 
 class FlatDEM:
@@ -62,6 +70,56 @@ def footprint(
     }
 
 
+def empty_osm_gdf() -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame({"category": [], "height_m": []}, geometry=[], crs="EPSG:4326")
+
+
+def local_utm_for(point: Point) -> tuple[pyproj.CRS, pyproj.Transformer, pyproj.Transformer]:
+    zone = int((point.x + 180) // 6) + 1
+    epsg = (32600 if point.y >= 0 else 32700) + zone
+    crs = pyproj.CRS.from_epsg(epsg)
+    return (
+        crs,
+        pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True),
+        pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True),
+    )
+
+
+def local_polygon_gdf(
+    site: Point,
+    records: list[tuple[float, float, float, str, float]],
+) -> gpd.GeoDataFrame:
+    _crs, to_local, to_wgs84 = local_utm_for(site)
+    site_x, site_y = to_local.transform(site.x, site.y)
+    rows = []
+    geometries = []
+    for east_m, north_m, width_m, category, height_m in records:
+        half = width_m / 2
+        corners = [
+            (site_x + east_m - half, site_y + north_m - half),
+            (site_x + east_m + half, site_y + north_m - half),
+            (site_x + east_m + half, site_y + north_m + half),
+            (site_x + east_m - half, site_y + north_m + half),
+        ]
+        geometries.append(Polygon([to_wgs84.transform(x, y) for x, y in corners]))
+        rows.append({"category": category, "height_m": height_m})
+    return gpd.GeoDataFrame(rows, geometry=geometries, crs="EPSG:4326")
+
+
+def local_landcover_raster(
+    site: Point,
+    raster: np.ndarray,
+    resolution_m: float = 10.0,
+) -> tuple[np.ndarray, Affine, pyproj.CRS]:
+    crs, to_local, _to_wgs84 = local_utm_for(site)
+    site_x, site_y = to_local.transform(site.x, site.y)
+    height, width = raster.shape
+    west = site_x - (width * resolution_m) / 2
+    north = site_y + (height * resolution_m) / 2
+    transform = Affine.translation(west, north) * Affine.scale(resolution_m, -resolution_m)
+    return raster, transform, crs
+
+
 def site_result() -> SiteAnalysisResult:
     request = SiteAnalysisRequest(
         latitude=SITE_LAT,
@@ -94,6 +152,102 @@ def test_polygon_area_uses_local_projection() -> None:
     geometry = footprint("area", 0, 100, 20, {"building": "yes"})["footprint_geometry"]
 
     assert polygon_area_m2(geometry, SITE_LAT, SITE_LON) == pytest.approx(400, rel=0.03)
+
+
+def test_classify_terrain_category_empty_sources_returns_tc1() -> None:
+    site = Point(SITE_LON, SITE_LAT)
+
+    result = classify_terrain_category(
+        site,
+        empty_osm_gdf(),
+        None,
+        None,
+        None,
+        {},
+    )
+
+    assert result.terrain_class == "TC1"
+    assert result["class"] == "TC1"
+    assert result.source_coverage == "none"
+    assert set(result.per_direction.values()) == {"TC1"}
+
+
+def test_classify_terrain_category_osm_only_dense_suburban_buildings() -> None:
+    site = Point(SITE_LON, SITE_LAT)
+    buildings = [
+        (0, 25 + index * 4, 8, "building", 8.0)
+        for index in range(30)
+    ]
+
+    result = classify_terrain_category(
+        site,
+        local_polygon_gdf(site, buildings),
+        None,
+        None,
+        None,
+        {},
+        radius_m=180,
+    )
+
+    assert result.terrain_class == "TC3"
+    assert result.source_coverage == "osm_only"
+    assert result.obstruction_density_per_ha >= 8
+    assert result.average_obstruction_height_m == pytest.approx(8)
+
+
+def test_classify_terrain_category_raster_only_built_up_with_river() -> None:
+    site = Point(SITE_LON, SITE_LAT)
+    raster = np.full((50, 50), 50, dtype=np.uint8)
+    raster[:, 20:30] = 80
+    raster, transform, crs = local_landcover_raster(site, raster)
+
+    result = classify_terrain_category(
+        site,
+        empty_osm_gdf(),
+        raster,
+        transform,
+        crs,
+        {},
+        radius_m=250,
+    )
+
+    assert result.terrain_class in {"TC3", "TC4"}
+    assert result.source_coverage == "raster_only"
+    assert result.built_fraction > 0
+    assert result.water_fraction > 0
+
+
+def test_classify_terrain_category_mount_archer_fixture_shape() -> None:
+    site = Point(MOUNT_ARCHER_LON, MOUNT_ARCHER_LAT)
+    raster = np.full((50, 50), 50, dtype=np.uint8)
+    raster[0:10, :] = 10
+    raster[:, 0:5] = 10
+    raster, transform, crs = local_landcover_raster(site, raster)
+    buildings = [
+        (-80, 90, 12, "building", 8.0),
+        (-40, 120, 12, "building", 8.0),
+        (0, 140, 12, "building", 8.0),
+        (40, 120, 12, "building", 8.0),
+        (80, 90, 12, "building", 8.0),
+        (90, -80, 12, "building", 8.0),
+        (120, -40, 12, "building", 8.0),
+        (-120, -40, 12, "building", 8.0),
+    ]
+
+    result = classify_terrain_category(
+        site,
+        local_polygon_gdf(site, buildings),
+        raster,
+        transform,
+        crs,
+        {},
+        radius_m=250,
+    )
+
+    assert result.terrain_class == "TC3"
+    assert result.source_coverage == "osm+raster"
+    assert set(result.per_direction) == {"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
+    assert "worst=TC3" in result.reasoning
 
 
 def test_directional_evidence_metrics_and_range_generation() -> None:
