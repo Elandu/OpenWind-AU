@@ -58,6 +58,11 @@ const hiddenWindInputWarningPatterns = [
 
 let currentWorkflow = null;
 let workflowOverrides = [];
+let currentMapSite = {
+  latitude: -33.8688,
+  longitude: 151.2093,
+  display_name: "Sydney CBD",
+};
 
 try {
   if (dashboardProjectNumber) {
@@ -76,6 +81,10 @@ document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
 
 workflowForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (document.activeElement === dashboardAddress) {
+    await zoomMapToAddress();
+    return;
+  }
   await runWorkflow();
 });
 
@@ -84,11 +93,19 @@ syncDesignBuildingOverlay();
 
 workflowMapFrame?.addEventListener("load", () => {
   syncDesignBuildingOverlay();
+  invalidateWorkflowMap();
 });
 
 [orientationControl, buildingWidthControl, buildingLengthControl].forEach((control) => {
   control?.addEventListener("input", syncDesignBuildingOverlay);
   control?.addEventListener("change", syncDesignBuildingOverlay);
+});
+
+dashboardAddress?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  event.stopPropagation();
+  await zoomMapToAddress();
 });
 
 workflowReport?.addEventListener("click", async () => {
@@ -299,14 +316,16 @@ async function renderWorkflowMap() {
     const response = await postJson("/api/wind-workflow/map", workflowPayload());
     workflowMapFrame.srcdoc = await response.text();
     setTimeout(syncDesignBuildingOverlay, 80);
+    setTimeout(invalidateWorkflowMap, 140);
   } catch (error) {
     workflowMapFrame.srcdoc = `<p>Combined map failed: ${escapeHtml(error.message)}</p>`;
     throw error;
   }
 }
 
-function renderInitialMapFrame(message) {
-  if (!workflowMapFrame || workflowMapFrame.srcdoc) return;
+function renderInitialMapFrame(message, options = {}) {
+  if (!workflowMapFrame) return;
+  if (workflowMapFrame.srcdoc && !options.force) return;
   workflowMapFrame.srcdoc = initialMapHtml(message);
 }
 
@@ -358,8 +377,9 @@ function initialMapHtml(message) {
   <script>
     (function () {
       const state = {
-        latitude: -33.8688,
-        longitude: 151.2093,
+        latitude: ${JSON.stringify(currentMapSite.latitude)},
+        longitude: ${JSON.stringify(currentMapSite.longitude)},
+        display_name: ${JSON.stringify(currentMapSite.display_name || "Mapped site")},
         width_m: ${JSON.stringify(widthM)},
         length_m: ${JSON.stringify(lengthM)},
         orientation_deg: ${JSON.stringify(orientation)},
@@ -484,6 +504,25 @@ function initialMapHtml(message) {
         }
       };
 
+      window.openWindWorkflowMap = {
+        setSite(site) {
+          const latitude = Number(site && site.latitude);
+          const longitude = Number(site && site.longitude);
+          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+          state.latitude = latitude;
+          state.longitude = longitude;
+          state.display_name = site.display_name || "Mapped site";
+          map.setView([state.latitude, state.longitude], 18);
+          redraw();
+        },
+        invalidate() {
+          map.invalidateSize();
+        },
+        getState() {
+          return Object.assign({}, state);
+        }
+      };
+
       redraw();
       setTimeout(() => map.invalidateSize(), 100);
     })();
@@ -530,6 +569,44 @@ function syncDesignBuildingOverlay() {
     parseOptionalNumber(buildingLengthControl?.value),
   );
   overlay.setOrientation(orientation);
+}
+
+async function zoomMapToAddress() {
+  const address = dashboardAddress?.value.trim();
+  if (!address) {
+    setWorkflowProgress(0, "Enter an address to zoom the map", "error");
+    return;
+  }
+  setWorkflowProgress(8, "Locating address on map", "running");
+  try {
+    const response = await postJson("/api/analyse", workflowPayload());
+    const siteAnalysis = await response.json();
+    currentMapSite = {
+      latitude: siteAnalysis.site.latitude,
+      longitude: siteAnalysis.site.longitude,
+      display_name: siteAnalysis.site.display_name || address,
+    };
+    renderSiteAnalysisProgress(siteAnalysis);
+    const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
+    if (mapApi?.setSite) {
+      mapApi.setSite(currentMapSite);
+      mapApi.invalidate?.();
+    } else {
+      renderInitialMapFrame("Address located. Run the assessment when ready.", { force: true });
+    }
+    setWorkflowProgress(0, "Address located; run assessment when ready", "complete");
+  } catch (error) {
+    setWorkflowProgress(0, "Address lookup failed", "error");
+    workflowSummary.textContent = `Address lookup failed: ${error.message}`;
+  }
+}
+
+function invalidateWorkflowMap() {
+  try {
+    workflowMapFrame?.contentWindow?.openWindWorkflowMap?.invalidate?.();
+  } catch (_error) {
+    // Cross-frame map invalidation is best-effort only.
+  }
 }
 
 function nearestOrientation(value) {

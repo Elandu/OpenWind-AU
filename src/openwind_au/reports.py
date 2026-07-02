@@ -716,12 +716,14 @@ def _add_design_building_overlay(
     }
     script = f"""
     (function() {{
-      const map = {fmap.get_name()};
-      const designLayer = {layer.get_name()};
+      const mapName = "{fmap.get_name()}";
+      const designLayerName = "{layer.get_name()}";
       const state = {json.dumps(payload, ensure_ascii=True)};
       let footprint = null;
       let bearingLine = null;
       let pointsLayer = null;
+      let map = null;
+      let designLayer = null;
 
       function clampDimension(value, fallback) {{
         const number = Number(value);
@@ -763,6 +765,7 @@ def _add_design_building_overlay(
       }}
 
       function renderOrientationPoints() {{
+        if (!designLayer) return;
         if (pointsLayer) designLayer.removeLayer(pointsLayer);
         pointsLayer = L.layerGroup();
         const radius = Math.max(28, Math.min(70, Math.max(state.width_m, state.length_m) * 1.15));
@@ -782,6 +785,7 @@ def _add_design_building_overlay(
       }}
 
       function redraw() {{
+        if (!map || !designLayer || typeof L === "undefined") return;
         const corners = footprintCorners();
         if (!footprint) {{
           footprint = L.polygon(corners, {{
@@ -811,25 +815,60 @@ def _add_design_building_overlay(
         renderOrientationPoints();
       }}
 
-      window.openWindDesignBuilding = {{
-        setOrientation(value) {{
-          const number = Number(value);
-          if (Number.isFinite(number)) {{
-            state.orientation_deg = number;
-            redraw();
-          }}
-        }},
-        setDimensions(widthM, lengthM) {{
-          state.width_m = clampDimension(widthM, 12);
-          state.length_m = clampDimension(lengthM, 18);
-          redraw();
-        }},
-        getState() {{
-          return Object.assign({{}}, state);
-        }},
-      }};
+      function attachOverlay() {{
+        if (typeof L === "undefined" || !window[mapName]) {{
+          setTimeout(attachOverlay, 50);
+          return;
+        }}
+        map = window[mapName];
+        designLayer = window[designLayerName] || L.layerGroup().addTo(map);
 
-      redraw();
+        window.openWindDesignBuilding = {{
+          setOrientation(value) {{
+            const number = Number(value);
+            if (Number.isFinite(number)) {{
+              state.orientation_deg = number;
+              redraw();
+            }}
+          }},
+          setDimensions(widthM, lengthM) {{
+            state.width_m = clampDimension(widthM, 12);
+            state.length_m = clampDimension(lengthM, 18);
+            redraw();
+          }},
+          getState() {{
+            return Object.assign({{}}, state);
+          }},
+        }};
+
+        window.openWindWorkflowMap = {{
+          setSite(site) {{
+            const latitude = Number(site && site.latitude);
+            const longitude = Number(site && site.longitude);
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+            state.latitude = latitude;
+            state.longitude = longitude;
+            map.setView([state.latitude, state.longitude], 18);
+            redraw();
+          }},
+          invalidate() {{
+            map.invalidateSize();
+          }},
+          getState() {{
+            return Object.assign({{}}, state);
+          }},
+        }};
+
+        redraw();
+        setTimeout(() => map.invalidateSize(), 100);
+        setTimeout(() => map.invalidateSize(), 500);
+      }}
+
+      if (document.readyState === "complete") {{
+        attachOverlay();
+      }} else {{
+        window.addEventListener("load", attachOverlay);
+      }}
     }})();
     """
     fmap.get_root().script.add_child(folium.Element(script))
