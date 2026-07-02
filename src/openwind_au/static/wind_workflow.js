@@ -79,6 +79,9 @@ workflowForm.addEventListener("submit", async (event) => {
   await runWorkflow();
 });
 
+renderInitialMapFrame("Run an assessment to load the project site map.");
+syncDesignBuildingOverlay();
+
 workflowMapFrame?.addEventListener("load", () => {
   syncDesignBuildingOverlay();
 });
@@ -291,7 +294,7 @@ function renderDashboardHeader(workflow) {
 
 async function renderWorkflowMap() {
   if (!workflowMapFrame) return;
-  workflowMapFrame.removeAttribute("srcdoc");
+  renderInitialMapFrame("Rendering project site map...");
   try {
     const response = await postJson("/api/wind-workflow/map", workflowPayload());
     workflowMapFrame.srcdoc = await response.text();
@@ -300,6 +303,193 @@ async function renderWorkflowMap() {
     workflowMapFrame.srcdoc = `<p>Combined map failed: ${escapeHtml(error.message)}</p>`;
     throw error;
   }
+}
+
+function renderInitialMapFrame(message) {
+  if (!workflowMapFrame || workflowMapFrame.srcdoc) return;
+  workflowMapFrame.srcdoc = initialMapHtml(message);
+}
+
+function initialMapHtml(message) {
+  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
+  const widthM = parseOptionalNumber(buildingWidthControl?.value) ?? 12;
+  const lengthM = parseOptionalNumber(buildingLengthControl?.value) ?? 18;
+  const safeMessage = escapeHtml(message || "Ready");
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css" />
+  <style>
+    html,
+    body,
+    #map {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      color: #172033;
+      background: #dfe6ee;
+    }
+    .map-status {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 999;
+      max-width: 340px;
+      border: 1px solid rgb(23 32 51 / 16%);
+      border-radius: 4px;
+      padding: 10px 12px;
+      background: rgb(255 255 255 / 94%);
+      box-shadow: 0 6px 20px rgb(16 24 40 / 14%);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="map-status">${safeMessage}</div>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script>
+    (function () {
+      const state = {
+        latitude: -33.8688,
+        longitude: 151.2093,
+        width_m: ${JSON.stringify(widthM)},
+        length_m: ${JSON.stringify(lengthM)},
+        orientation_deg: ${JSON.stringify(orientation)},
+        orientation_options: ${JSON.stringify(orientationOptions)}
+      };
+      const map = L.map("map", { zoomControl: true }).setView(
+        [state.latitude, state.longitude],
+        18
+      );
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 20,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+      const designLayer = L.layerGroup().addTo(map);
+      let footprint = null;
+      let bearingLine = null;
+      let pointsLayer = null;
+
+      function clampDimension(value, fallback) {
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? number : fallback;
+      }
+
+      function formatDegrees(value) {
+        return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+      }
+
+      function latLngFromMeters(eastM, northM) {
+        const earthRadiusM = 6378137;
+        const lat = state.latitude + (northM / earthRadiusM) * (180 / Math.PI);
+        const lon = state.longitude
+          + (eastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180)))
+          * (180 / Math.PI);
+        return [lat, lon];
+      }
+
+      function footprintCorners() {
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        const halfLength = clampDimension(state.length_m, 18) / 2;
+        const halfWidth = clampDimension(state.width_m, 12) / 2;
+        const lengthAxis = [Math.sin(theta), Math.cos(theta)];
+        const widthAxis = [Math.cos(theta), -Math.sin(theta)];
+        return [
+          [halfLength, halfWidth],
+          [halfLength, -halfWidth],
+          [-halfLength, -halfWidth],
+          [-halfLength, halfWidth]
+        ].map(([lengthOffset, widthOffset]) => latLngFromMeters(
+          lengthAxis[0] * lengthOffset + widthAxis[0] * widthOffset,
+          lengthAxis[1] * lengthOffset + widthAxis[1] * widthOffset
+        ));
+      }
+
+      function bearingEndpoint(distanceM) {
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        return latLngFromMeters(Math.sin(theta) * distanceM, Math.cos(theta) * distanceM);
+      }
+
+      function renderOrientationPoints() {
+        if (pointsLayer) designLayer.removeLayer(pointsLayer);
+        pointsLayer = L.layerGroup();
+        const radius = Math.max(28, Math.min(70, Math.max(state.width_m, state.length_m) * 1.15));
+        state.orientation_options.forEach((option) => {
+          const theta = Number(option) * Math.PI / 180;
+          const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
+          const active = Number(option) === Number(state.orientation_deg);
+          L.circleMarker(point, {
+            radius: active ? 5 : 3,
+            color: active ? "#0f766e" : "#475569",
+            weight: active ? 2 : 1,
+            fillColor: active ? "#14b8a6" : "#ffffff",
+            fillOpacity: active ? 0.95 : 0.8
+          }).bindTooltip(formatDegrees(option) + " deg", { sticky: true }).addTo(pointsLayer);
+        });
+        pointsLayer.addTo(designLayer);
+      }
+
+      function redraw() {
+        const corners = footprintCorners();
+        if (!footprint) {
+          footprint = L.polygon(corners, {
+            color: "#155eef",
+            weight: 3,
+            fillColor: "#3b82f6",
+            fillOpacity: 0.28
+          }).addTo(designLayer);
+        } else {
+          footprint.setLatLngs(corners);
+        }
+        footprint.bindTooltip("Design building " + formatDegrees(state.orientation_deg) + " deg", {
+          sticky: true
+        });
+        const bearingDistance = Math.max(state.length_m, 18) * 0.75;
+        const line = [[state.latitude, state.longitude], bearingEndpoint(bearingDistance)];
+        if (!bearingLine) {
+          bearingLine = L.polyline(line, {
+            color: "#155eef",
+            weight: 2,
+            dashArray: "4 4"
+          }).addTo(designLayer);
+        } else {
+          bearingLine.setLatLngs(line);
+        }
+        renderOrientationPoints();
+      }
+
+      window.openWindDesignBuilding = {
+        setOrientation(value) {
+          const number = Number(value);
+          if (Number.isFinite(number)) {
+            state.orientation_deg = number;
+            redraw();
+          }
+        },
+        setDimensions(widthM, lengthM) {
+          state.width_m = clampDimension(widthM, 12);
+          state.length_m = clampDimension(lengthM, 18);
+          redraw();
+        },
+        getState() {
+          return Object.assign({}, state);
+        }
+      };
+
+      redraw();
+      setTimeout(() => map.invalidateSize(), 100);
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 function setWorkflowProgress(percent, label, state = "running") {
@@ -604,7 +794,8 @@ function resetWorkflowSections() {
     windInputsSummary.innerHTML = "<p class=\"note\">Waiting for wind-region and regional wind speed lookup...</p>";
   }
   if (workflowMapFrame) {
-    workflowMapFrame.removeAttribute("srcdoc");
+    workflowMapFrame.srcdoc = "";
+    renderInitialMapFrame("Assessment running. The project map will replace this view.");
   }
   if (dashboardRegion) dashboardRegion.textContent = "-";
   if (dashboardGoverningDirection) dashboardGoverningDirection.textContent = "-";

@@ -120,7 +120,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260702-map-workspace" in body
+    assert "20260702-map-workspace-2" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -191,6 +191,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "visibleWarnings" in script.text
     assert "activateWorkspaceTab" in script.text
     assert "syncDesignBuildingOverlay" in script.text
+    assert "renderInitialMapFrame" in script.text
+    assert "initialMapHtml" in script.text
+    assert "tile.openstreetmap.org" in script.text
     assert "orientationOptions" in script.text
     assert "openWindDesignBuilding" in script.text
     assert "aria-selected" in script.text
