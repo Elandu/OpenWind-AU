@@ -180,6 +180,9 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Topographic circles" not in html
     assert "Raw OSM building polygons before filtering" not in html
     assert "Manual reviewed obstruction geometry" not in html
+    assert "Design building" in html
+    assert "openWindDesignBuilding" in html
+    assert "orientation_options" in html
     assert "Microsoft building footprints" in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html

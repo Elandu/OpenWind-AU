@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,8 @@ from openwind_au.calculation_validation import (
     calculation_validation_report_to_json,
     run_calculation_validation_cases,
 )
-from openwind_au.dem import SRTMProvider
+from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider
+from openwind_au.geo import geocode_address_suggestions
 from openwind_au.models import (
     CombinedMapRequest,
     MzCatAssessmentResult,
@@ -115,10 +117,20 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/geocode/suggest")
+    def geocode_suggest(
+        q: str = Query(min_length=3),
+        limit: int = Query(default=5, ge=1, le=10),
+    ) -> dict:
+        try:
+            return {"suggestions": geocode_address_suggestions(q, limit=limit)}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.post("/api/analyse", response_model=SiteAnalysisResult)
     def analyse(request: SiteAnalysisRequest) -> SiteAnalysisResult:
         try:
-            return run_site_analysis(request, SRTMProvider())
+            return run_site_analysis(request, _dem_provider())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -494,7 +506,7 @@ def create_app() -> FastAPI:
             mzcat_recommendation_mode="best_estimate",
             class_multiplier_overrides=class_overrides,
         )
-        site_result = run_site_analysis(request, SRTMProvider())
+        site_result = run_site_analysis(request, _dem_provider())
         obstruction_result = run_obstruction_inventory(
             _obstruction_request_from_combined(request),
             footprints=reference_calc_7989_osm_footprints(),
@@ -519,7 +531,7 @@ def create_app() -> FastAPI:
 def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
-    site_result = run_site_analysis(request, SRTMProvider())
+    site_result = run_site_analysis(request, _dem_provider())
     obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
     evidence = run_terrain_category_evidence(site_result, obstruction_result)
     return site_result, obstruction_result, evidence
@@ -540,7 +552,7 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
 
     try:
         yield event("start", 2, "Resolving site location and elevation")
-        site_result = run_site_analysis(request, SRTMProvider())
+        site_result = run_site_analysis(request, _dem_provider())
         yield event(
             "site",
             16,
@@ -636,6 +648,17 @@ def _optional_wind_region(site_result: SiteAnalysisResult) -> WindRegionAssessme
         return None
 
 
+def _dem_provider():
+    provider = os.environ.get("OPENWIND_DEM_PROVIDER", "srtm").strip().lower()
+    if provider in {"", "srtm"}:
+        return SRTMProvider()
+    if provider in {"open-meteo", "open_meteo", "openmeteo"}:
+        return OpenMeteoElevationProvider()
+    raise ValueError(
+        f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'."
+    )
+
+
 def _obstruction_request_from_combined(
     request: CombinedMapRequest,
 ) -> ObstructionInventoryRequest:
@@ -674,7 +697,7 @@ def _wind_region_debug_site(
         raise ValueError("Provide both latitude and longitude when using coordinates.")
     if address and address.strip():
         request = SiteAnalysisRequest(address=address, building_height_m=10)
-        return run_site_analysis(request, SRTMProvider()).site
+        return run_site_analysis(request, _dem_provider()).site
     raise ValueError("Provide either address or latitude and longitude.")
 
 

@@ -57,7 +57,7 @@ def client(monkeypatch) -> TestClient:
     return TestClient(api_module.create_app())
 
 
-def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
+def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     test_client = client(monkeypatch)
 
     response = test_client.get("/")
@@ -73,6 +73,8 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     headings = [
         "Site Wind Assessment",
         "Run Assessment",
+        "Interactive Wind Map",
+        "Map Layers",
         "Resolved Site and Wind Inputs",
         "Regional Wind Speed, VR",
         "Wind Direction Multiplier, Md",
@@ -93,27 +95,34 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert 'class="dashboard-project"' in body
     assert 'id="dashboard-project-number"' in body
     assert 'id="dashboard-address"' in body
+    assert 'list="dashboard-address-suggestions"' in body
+    assert 'id="dashboard-address-suggestions"' in body
     assert 'form="workflow-form"' in body
     assert 'name="address"' in body
     assert 'class="workflow-progress"' in body
     assert 'role="progressbar"' in body
     assert "Ready to run assessment" in body
     assert 'class="dashboard-kpis"' in body
-    assert 'class="dashboard-shell workflow-only"' in body
-    assert 'class="workflow-sidepanel"' in body
+    assert 'class="dashboard-shell workflow-only map-first-shell"' in body
+    assert 'class="map-workspace"' in body
+    assert 'class="map-control-rail"' in body
+    assert 'class="map-canvas-panel"' in body
+    assert 'class="workspace-tabs"' in body
+    assert 'data-workspace-tab="map"' in body
+    assert 'data-workspace-tab="raw-data"' in body
+    assert 'data-workspace-tab="documents"' in body
+    assert 'data-workspace-panel="raw-data"' in body
+    assert 'data-workspace-panel="documents"' in body
+    assert 'class="workflow-sidepanel"' not in body
     assert 'role="tablist"' in body
-    assert 'data-sidepanel-tab="maps"' in body
-    assert 'data-sidepanel-tab="terrain"' in body
-    assert 'data-sidepanel-tab="shielding"' in body
-    assert 'data-sidepanel-tab="topography"' in body
+    assert 'data-sidepanel-tab="maps"' not in body
     assert 'aria-selected="true"' in body
     assert 'role="tabpanel"' in body
-    assert "Combined Wind Map" in body
-    assert "Open map section" in body
+    assert "Design building footprint" in body
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260623-workflow-ux" in body
+    assert "20260702-map-workspace-4" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -121,9 +130,30 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert "Return period / importance level" in body
     assert "Engineer notes" not in body
     assert "Advanced inputs" in body
+    assert body.count("<option value=") >= 17
+    for orientation in [
+        "-90",
+        "-78.75",
+        "-67.5",
+        "-56.25",
+        "-45",
+        "-33.75",
+        "-22.5",
+        "-11.25",
+        "0",
+        "11.25",
+        "22.5",
+        "33.75",
+        "45",
+        "56.25",
+        "67.5",
+        "78.75",
+        "90",
+    ]:
+        assert f'<option value="{orientation}"' in body
     assert "Street address" not in body
     assert "Assessment status" not in body
-    assert "Resolved site data, wind-region lookup, VR, and combined map layers." in body
+    assert "Resolved site data, wind-region lookup, and VR." in body
     assert "User assumptions" not in body
     assert "Structure type" not in body
     assert "Building dimensions" not in body
@@ -139,7 +169,7 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert "Override" not in body
     assert "source reference, and VR" in body
     assert "Wind Inputs Summary" in body
-    assert "Combined wind assessment map" in body
+    assert "Interactive wind assessment map" in body
     assert 'id="workflow-map-frame"' in body
     assert 'id="wind-region-frame"' not in body
     assert "Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat" in body
@@ -161,7 +191,23 @@ def test_wind_workflow_page_loads_in_workflow_order(monkeypatch) -> None:
     assert "setWorkflowProgress" in script.text
     assert "hiddenWindInputWarningPatterns" in script.text
     assert "visibleWarnings" in script.text
-    assert "activateSidePanel" in script.text
+    assert "activateWorkspaceTab" in script.text
+    assert "syncDesignBuildingOverlay" in script.text
+    assert "renderInitialMapFrame" in script.text
+    assert "initialMapHtml" in script.text
+    assert "zoomMapToAddress" in script.text
+    assert "queueAddressSuggestions" in script.text
+    assert "dashboard-address-suggestions" in script.text
+    assert "/api/analyse" in script.text
+    assert "/api/geocode/suggest" in script.text
+    assert "keydown" in script.text
+    assert "tile.openstreetmap.org" in script.text
+    assert "orientationOptions" in script.text
+    assert "openWindDesignBuilding" in script.text
+    assert "openWindWorkflowMap" in script.text
+    assert "nudgeDesignBuilding" in script.text
+    assert "offset_east_m" in script.text
+    assert "ctrlKey" in script.text
     assert "aria-selected" in script.text
     assert "/api/wind-workflow/stream" in script.text
     assert "handleWorkflowStreamEvent" in script.text
@@ -249,6 +295,14 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Shielding obstruction polygons" in body
     assert "Topographic feature candidates" in body
     assert "Nearby obstructions" in body
+    assert "Design building" in body
+    assert "openWindDesignBuilding" in body
+    assert "openWindWorkflowMap" in body
+    assert "nudgeDesignBuilding" in body
+    assert "offset_east_m" in body
+    assert "orientation_options" in body
+    assert "setOrientation" in body
+    assert "setDimensions" in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
     assert "Microsoft building footprints" in body
@@ -414,6 +468,36 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert north["ms"] == 0.85
     assert north["mt"] == 1.08
     assert north["final_vsitb"] is not None
+
+
+def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "structure_class": "building",
+        "structure_orientation_deg": 0,
+        "roof_shape": "gable",
+        "building_width_m": 4,
+        "building_length_m": 5,
+        "roof_pitch_deg": 15,
+        "average_height_m": 3,
+        "base_rl_m": 0,
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+    report = test_client.post("/api/wind-workflow/report/html", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["input"]["structure_class"] == "building"
+    assert body["input"]["structure_orientation_deg"] == 0
+    assert body["input"]["roof_shape"] == "gable"
+    assert body["input"]["building_width_m"] == 4
+    assert body["input"]["building_length_m"] == 5
+    assert body["input"]["base_rl_m"] == 0
+    assert report.status_code == 200
+    assert "Structure class" in report.text
+    assert "Roof shape" in report.text
+    assert "Base RL" in report.text
 
 
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:

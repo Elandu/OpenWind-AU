@@ -54,6 +54,73 @@ def test_simple_ridge_profile_returns_ridge_candidate() -> None:
     assert result.confidence == "low"
 
 
+def test_broad_low_gradient_ridge_screens_out_as_public_dem_undulation() -> None:
+    elevations = [
+        110,
+        112,
+        115,
+        118,
+        121,
+        124,
+        127,
+        130,
+        132,
+        133,
+        132,
+        130,
+        127,
+        124,
+        121,
+        118,
+        115,
+        112,
+        109,
+        106,
+        103,
+        100,
+        100,
+    ]
+
+    result = analyse_profile_topography(make_profile(elevations), 110)
+
+    assert result.feature_type == "no significant feature"
+    assert result.h_m == 0
+
+
+def test_large_relief_gentle_ridge_is_still_reported_for_review() -> None:
+    elevations = [
+        110,
+        116,
+        122,
+        128,
+        134,
+        140,
+        146,
+        152,
+        158,
+        164,
+        170,
+        166,
+        162,
+        158,
+        154,
+        150,
+        145,
+        140,
+        134,
+        128,
+        120,
+        100,
+        100,
+    ]
+
+    result = analyse_profile_topography(make_profile(elevations), 110)
+
+    assert result.feature_type == "ridge"
+    assert result.h_m == pytest.approx(70)
+    assert result.average_upwind_slope < 0.1
+
+
 def test_simple_hill_profile_returns_hill_candidate() -> None:
     result = analyse_profile_topography(make_profile([100, 105, 112, 122, 135]), 100)
 

@@ -112,7 +112,7 @@ GET /api/terrain-category/validation
 These examples validate that suggested ranges and indicative Mz,cat ranges are broadly reasonable
 prompts for review. They do not assign final terrain categories or final `Mz,cat` design values.
 
-## reference calculation Reference Comparisons
+## Reference Calculation Comparisons
 
 OpenWind-AU includes a fixed comparison against reference calculation job 7989 for 6 Byambee Street, Kenmore,
 QLD. The source PDF reports:

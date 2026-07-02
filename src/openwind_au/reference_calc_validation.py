@@ -21,6 +21,7 @@ REFERENCE_CALC_7989_DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 REFERENCE_CALC_7989_SOURCE = (
     "C:\\Users\\nguye\\Downloads\\CALCS ___7989 - 6 Byambee St, Kenmore QLD 4069.pdf"
 )
+REFERENCE_TOPOGRAPHIC_T1_SLOPE = 0.18
 REFERENCE_CALC_7989_OSM_FIXTURE = (
     Path(__file__).resolve().parents[2]
     / "data"
@@ -217,7 +218,7 @@ def topographic_class_from_feature(feature_type: str, average_upwind_slope: floa
 
     if feature_type == "no significant feature":
         return "T0"
-    if average_upwind_slope >= 0.1:
+    if average_upwind_slope >= REFERENCE_TOPOGRAPHIC_T1_SLOPE:
         return "T1"
     return "T0"
 

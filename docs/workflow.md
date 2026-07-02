@@ -13,19 +13,32 @@ Enter either:
 Review the resolved location before relying on any output. Geocoding can place a point at a parcel,
 street segment, suburb, or other public-map reference.
 
+OpenWind-AU also accepts structured building inputs for review workflows:
+
+- structure class: `building`, `house`, `monopole`, `tower`, or `other`;
+- orientation from `-90` to `90` degrees;
+- roof shape: `gable`, `hip`, or `monoslope`;
+- width, length, roof pitch, average height, and base RL.
+
 ## 2. Terrain Profiles
 
 OpenWind-AU samples 8-direction terrain profiles for:
 
 - N, NE, E, SE, S, SW, W, and NW.
 
-Profiles use public elevation data and the selected analysis radius. Review profile endpoints,
-sample spacing, and ground elevations before using the profile as evidence.
+Profiles use the configured public DEM provider and the selected analysis radius. The default
+provider is cached SRTM data from AWS terrain tiles. Open-Meteo point elevations can be enabled for
+source comparison. Review profile endpoints, sample spacing, and ground elevations before using the
+profile as evidence. Public DEMs are useful for broad preliminary screening, but they are not a
+substitute for local survey, lidar, or project-specific terrain review where local relief,
+retaining walls, cuts, fills, or drainage features matter.
 
 ## 3. Topographic Screening
 
 The topographic screening table flags broad candidate terrain forms such as ridge, hill,
 escarpment, valley, or no significant feature. These are rule-based indicators only.
+Broad low-gradient DEM undulations are screened out unless they show substantial relief or a
+meaningful average upwind slope.
 
 Use the output to decide where engineering review should focus. Do not treat it as a final
 topographic multiplier calculation.

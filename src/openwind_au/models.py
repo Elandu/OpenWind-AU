@@ -629,8 +629,16 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     annual_exceedance_probability: str = "1/500"
     importance_level: str | None = None
     user_assumptions: str | None = None
+    structure_class: Literal["building", "house", "monopole", "tower", "other"] | None = None
     structure_type: str | None = None
     building_dimensions: str | None = None
+    structure_orientation_deg: float | None = Field(default=None, ge=-90, le=90)
+    roof_shape: Literal["gable", "hip", "monoslope"] | None = None
+    building_width_m: float | None = Field(default=None, gt=0)
+    building_length_m: float | None = Field(default=None, gt=0)
+    roof_pitch_deg: float | None = Field(default=None, ge=0, le=90)
+    average_height_m: float | None = Field(default=None, gt=0)
+    base_rl_m: float | None = None
     design_life_years: int | None = Field(default=None, gt=0)
     regional_wind_speed_mps: float | None = Field(default=None, gt=0)
     wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)

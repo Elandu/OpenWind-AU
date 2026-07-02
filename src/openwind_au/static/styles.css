@@ -318,13 +318,128 @@ main {
 }
 
 .dashboard-shell.workflow-only {
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
   max-width: 1440px;
+}
+
+.map-first-shell {
+  padding-top: 16px;
 }
 
 .workflow-column {
   position: relative;
+}
+
+.map-workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: calc(100vh - 178px);
+}
+
+.map-control-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.assessment-controls {
+  overflow: auto;
+  max-height: calc(100vh - 194px);
+}
+
+.primary-control-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.map-summary-card {
+  overflow: auto;
+  max-height: 260px;
+  margin-top: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  padding: 12px;
+}
+
+.map-canvas-panel {
+  display: grid;
+  grid-template-rows: auto minmax(560px, 1fr);
+  min-width: 0;
+  min-height: 640px;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+}
+
+.map-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--panel-border);
+  padding: 8px 12px;
+  background: #ffffff;
+}
+
+.map-toolbar strong,
+.orientation-readout strong {
+  display: block;
+  margin-top: 3px;
+  font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 0.88rem;
+}
+
+.workspace-tabs {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.workspace-tab {
+  flex: 0 0 auto;
+  min-width: 110px;
+  min-height: 40px;
+  margin: 0;
+  border-right: 1px solid var(--panel-border);
+  border-radius: 0;
+  padding: 9px 14px;
+  background: #ffffff;
+  color: var(--muted-ink);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.workspace-tab:last-child {
+  border-right: 0;
+}
+
+.workspace-tab:hover,
+.workspace-tab.is-active {
+  background: var(--soft-fill);
+  color: var(--ink);
+}
+
+.workspace-panel {
+  display: none;
+}
+
+.workspace-panel.is-active {
+  display: block;
+}
+
+.map-layer-summary {
+  margin-bottom: 0;
 }
 
 .panel {
@@ -358,6 +473,10 @@ main {
   padding-bottom: 24px;
 }
 
+.assessment-controls.workflow-step {
+  padding-left: 16px;
+}
+
 .workflow-step:not(:last-of-type) {
   margin-bottom: 14px;
 }
@@ -379,6 +498,11 @@ main {
   font-size: 0.9rem;
   font-weight: 800;
   box-shadow: 0 1px 2px rgb(16 24 40 / 12%);
+}
+
+.assessment-controls.workflow-step::before,
+.assessment-controls.workflow-step::after {
+  display: none;
 }
 
 .workflow-step::after {
@@ -939,51 +1063,49 @@ iframe {
 }
 
 .map-iframe {
-  height: 520px;
+  display: block;
+  height: 100%;
+  min-height: 560px;
+  border: 0;
+  border-radius: 0;
 }
 
 @media (min-width: 681px) and (max-width: 900px) {
-  .dashboard-shell.workflow-only {
-    grid-template-columns: minmax(0, 1fr);
+  .map-workspace {
+    grid-template-columns: 1fr;
+    min-height: auto;
   }
 
-  .workflow-sidepanel {
-    position: static;
+  .assessment-controls {
     max-height: none;
   }
 
-  .sidepanel-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .sidepanel-tab {
-    justify-content: center;
-    border-right: 1px solid rgb(26 29 35 / 7%);
-  }
-
-  .sidepanel-tab::after {
-    display: none;
+  .primary-control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 680px) {
-  .dashboard-shell.workflow-only {
+  .map-workspace {
     grid-template-columns: 1fr;
+    min-height: auto;
   }
 
-  .workflow-sidepanel {
-    position: static;
+  .assessment-controls {
     max-height: none;
   }
 
-  .sidepanel-tabs {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .map-canvas-panel {
+    grid-template-rows: auto minmax(420px, 60vh);
+    min-height: 480px;
   }
 
-  .sidepanel-tab::after {
-    display: none;
+  .map-iframe {
+    min-height: 420px;
+  }
+
+  .workspace-tabs {
+    overflow-x: auto;
   }
 }
 

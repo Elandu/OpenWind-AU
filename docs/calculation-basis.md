@@ -252,6 +252,11 @@ OpenWind-AU extracts terrain profiles, screens each direction for candidate ridg
 escarpment, valley, or no significant feature behaviour, and reports evidence such as site RL,
 crest RL, base RL, `H`, `Lu`, `x`, average upwind slope, confidence, and notes.
 
+Ridge and valley candidates must exceed the minimum relief threshold and also show either
+substantial relief or meaningful average upwind slope. This suppresses broad low-gradient public
+DEM undulations on flat validation sites while preserving stronger topographic evidence for
+engineering review.
+
 OpenWind-AU does not currently produce certified `Mt` values.
 
 ### Review Requirements

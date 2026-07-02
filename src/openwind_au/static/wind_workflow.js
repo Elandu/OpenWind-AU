@@ -15,7 +15,31 @@ const workflowProgressLabel = document.getElementById("workflow-progress-label")
 const workflowProgressPercent = document.getElementById("workflow-progress-percent");
 const workflowProgressTrack = document.getElementById("workflow-progress-track");
 const workflowProgressBar = document.getElementById("workflow-progress-bar");
+const orientationControl = document.getElementById("structure_orientation_deg");
+const orientationReadout = document.getElementById("orientation-readout");
+const buildingWidthControl = document.getElementById("building_width_m");
+const buildingLengthControl = document.getElementById("building_length_m");
+const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
 
+const orientationOptions = [
+  -90,
+  -78.75,
+  -67.5,
+  -56.25,
+  -45,
+  -33.75,
+  -22.5,
+  -11.25,
+  0,
+  11.25,
+  22.5,
+  33.75,
+  45,
+  56.25,
+  67.5,
+  78.75,
+  90,
+];
 const directionOrder = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const variableOrder = ["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
 const variableAnchors = {
@@ -35,6 +59,14 @@ const hiddenWindInputWarningPatterns = [
 
 let currentWorkflow = null;
 let workflowOverrides = [];
+let addressSuggestionTimer = null;
+let addressSuggestionController = null;
+let addressSuggestions = [];
+let currentMapSite = {
+  latitude: -33.8688,
+  longitude: 151.2093,
+  display_name: "Sydney CBD",
+};
 
 try {
   if (dashboardProjectNumber) {
@@ -47,13 +79,51 @@ try {
   // Local storage can be unavailable in restrictive browser modes.
 }
 
-document.querySelectorAll("[data-sidepanel-tab]").forEach((button) => {
-  button.addEventListener("click", () => activateSidePanel(button.dataset.sidepanelTab));
+document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+  button.addEventListener("click", () => activateWorkspaceTab(button.dataset.workspaceTab));
 });
 
 workflowForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (document.activeElement === dashboardAddress) {
+    await zoomMapToAddress();
+    return;
+  }
   await runWorkflow();
+});
+
+renderInitialMapFrame("Run an assessment to load the project site map.");
+syncDesignBuildingOverlay();
+
+workflowMapFrame?.addEventListener("load", () => {
+  syncDesignBuildingOverlay();
+  invalidateWorkflowMap();
+});
+
+[orientationControl, buildingWidthControl, buildingLengthControl].forEach((control) => {
+  control?.addEventListener("input", syncDesignBuildingOverlay);
+  control?.addEventListener("change", syncDesignBuildingOverlay);
+});
+
+dashboardAddress?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  event.stopPropagation();
+  await zoomMapToAddress();
+});
+
+dashboardAddress?.addEventListener("input", () => {
+  const matchedSuggestion = suggestionForAddress(dashboardAddress.value);
+  if (matchedSuggestion) {
+    applyAddressSuggestion(matchedSuggestion, { zoom: false });
+    return;
+  }
+  queueAddressSuggestions(dashboardAddress.value);
+});
+
+dashboardAddress?.addEventListener("change", () => {
+  const matchedSuggestion = suggestionForAddress(dashboardAddress.value);
+  if (matchedSuggestion) applyAddressSuggestion(matchedSuggestion, { zoom: true });
 });
 
 workflowReport?.addEventListener("click", async () => {
@@ -140,6 +210,7 @@ function handleWorkflowStreamEvent(event) {
   }
   if (event.data?.map_html && workflowMapFrame) {
     workflowMapFrame.srcdoc = event.data.map_html;
+    setTimeout(syncDesignBuildingOverlay, 80);
   }
   if (event.stage === "complete") {
     setWorkflowProgress(100, event.label, "complete");
@@ -165,6 +236,10 @@ async function runWorkflowFallback(originalError) {
 
 function workflowPayload() {
   const data = new FormData(workflowForm);
+  const optionalNumber = (name) => {
+    const value = data.get(name);
+    return value === null || value === "" ? null : Number(value);
+  };
   const payload = {
     address: data.get("address") || null,
     building_height_m: Number(data.get("building_height_m")),
@@ -175,11 +250,31 @@ function workflowPayload() {
     wind_region: "A2",
     annual_exceedance_probability: data.get("annual_exceedance_probability") || "1/500",
     importance_level: data.get("importance_level") || null,
+    structure_class: data.get("structure_class") || null,
+    structure_orientation_deg: optionalNumber("structure_orientation_deg"),
+    roof_shape: data.get("roof_shape") || null,
+    building_width_m: optionalNumber("building_width_m"),
+    building_length_m: optionalNumber("building_length_m"),
+    roof_pitch_deg: optionalNumber("roof_pitch_deg"),
+    average_height_m: optionalNumber("average_height_m"),
+    base_rl_m: optionalNumber("base_rl_m"),
     mzcat_recommendation_mode: "conservative",
     workflow_overrides: workflowOverrides,
   };
   if (!payload.address) delete payload.address;
   if (payload.importance_level === null) delete payload.importance_level;
+  [
+    "structure_class",
+    "structure_orientation_deg",
+    "roof_shape",
+    "building_width_m",
+    "building_length_m",
+    "roof_pitch_deg",
+    "average_height_m",
+    "base_rl_m",
+  ].forEach((key) => {
+    if (payload[key] === null || Number.isNaN(payload[key])) delete payload[key];
+  });
   return payload;
 }
 
@@ -234,14 +329,280 @@ function renderDashboardHeader(workflow) {
 
 async function renderWorkflowMap() {
   if (!workflowMapFrame) return;
-  workflowMapFrame.removeAttribute("srcdoc");
+  renderInitialMapFrame("Rendering project site map...");
   try {
     const response = await postJson("/api/wind-workflow/map", workflowPayload());
     workflowMapFrame.srcdoc = await response.text();
+    setTimeout(syncDesignBuildingOverlay, 80);
+    setTimeout(invalidateWorkflowMap, 140);
   } catch (error) {
     workflowMapFrame.srcdoc = `<p>Combined map failed: ${escapeHtml(error.message)}</p>`;
     throw error;
   }
+}
+
+function renderInitialMapFrame(message, options = {}) {
+  if (!workflowMapFrame) return;
+  if (workflowMapFrame.srcdoc && !options.force) return;
+  workflowMapFrame.srcdoc = initialMapHtml(message);
+}
+
+function initialMapHtml(message) {
+  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
+  const widthM = parseOptionalNumber(buildingWidthControl?.value) ?? 12;
+  const lengthM = parseOptionalNumber(buildingLengthControl?.value) ?? 18;
+  const safeMessage = escapeHtml(message || "Ready");
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css" />
+  <style>
+    html,
+    body,
+    #map {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      color: #172033;
+      background: #dfe6ee;
+    }
+    .map-status {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      z-index: 999;
+      max-width: 340px;
+      border: 1px solid rgb(23 32 51 / 16%);
+      border-radius: 4px;
+      padding: 10px 12px;
+      background: rgb(255 255 255 / 94%);
+      box-shadow: 0 6px 20px rgb(16 24 40 / 14%);
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="map-status">${safeMessage}</div>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+  <script>
+    (function () {
+      const state = {
+        latitude: ${JSON.stringify(currentMapSite.latitude)},
+        longitude: ${JSON.stringify(currentMapSite.longitude)},
+        display_name: ${JSON.stringify(currentMapSite.display_name || "Mapped site")},
+        width_m: ${JSON.stringify(widthM)},
+        length_m: ${JSON.stringify(lengthM)},
+        orientation_deg: ${JSON.stringify(orientation)},
+        offset_east_m: 0,
+        offset_north_m: 0,
+        orientation_options: ${JSON.stringify(orientationOptions)}
+      };
+      const map = L.map("map", { zoomControl: true }).setView(
+        [state.latitude, state.longitude],
+        18
+      );
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 20,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(map);
+      const designLayer = L.layerGroup().addTo(map);
+      let footprint = null;
+      let bearingLine = null;
+      let pointsLayer = null;
+
+      function clampDimension(value, fallback) {
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? number : fallback;
+      }
+
+      function formatDegrees(value) {
+        return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+      }
+
+      function latLngFromMeters(eastM, northM) {
+        const earthRadiusM = 6378137;
+        const adjustedEastM = eastM + state.offset_east_m;
+        const adjustedNorthM = northM + state.offset_north_m;
+        const lat = state.latitude + (adjustedNorthM / earthRadiusM) * (180 / Math.PI);
+        const lon = state.longitude
+          + (adjustedEastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180)))
+          * (180 / Math.PI);
+        return [lat, lon];
+      }
+
+      function metersDelta(fromLatLng, toLatLng) {
+        const earthRadiusM = 6378137;
+        const northM = (toLatLng.lat - fromLatLng.lat) * Math.PI / 180 * earthRadiusM;
+        const eastM = (toLatLng.lng - fromLatLng.lng) * Math.PI / 180
+          * earthRadiusM * Math.cos(state.latitude * Math.PI / 180);
+        return { eastM, northM };
+      }
+
+      function footprintCorners() {
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        const halfLength = clampDimension(state.length_m, 18) / 2;
+        const halfWidth = clampDimension(state.width_m, 12) / 2;
+        const lengthAxis = [Math.sin(theta), Math.cos(theta)];
+        const widthAxis = [Math.cos(theta), -Math.sin(theta)];
+        return [
+          [halfLength, halfWidth],
+          [halfLength, -halfWidth],
+          [-halfLength, -halfWidth],
+          [-halfLength, halfWidth]
+        ].map(([lengthOffset, widthOffset]) => latLngFromMeters(
+          lengthAxis[0] * lengthOffset + widthAxis[0] * widthOffset,
+          lengthAxis[1] * lengthOffset + widthAxis[1] * widthOffset
+        ));
+      }
+
+      function bearingEndpoint(distanceM) {
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        return latLngFromMeters(Math.sin(theta) * distanceM, Math.cos(theta) * distanceM);
+      }
+
+      function renderOrientationPoints() {
+        if (pointsLayer) designLayer.removeLayer(pointsLayer);
+        pointsLayer = L.layerGroup();
+        const radius = Math.max(28, Math.min(70, Math.max(state.width_m, state.length_m) * 1.15));
+        state.orientation_options.forEach((option) => {
+          const theta = Number(option) * Math.PI / 180;
+          const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
+          const active = Number(option) === Number(state.orientation_deg);
+          L.circleMarker(point, {
+            radius: active ? 5 : 3,
+            color: active ? "#0f766e" : "#475569",
+            weight: active ? 2 : 1,
+            fillColor: active ? "#14b8a6" : "#ffffff",
+            fillOpacity: active ? 0.95 : 0.8
+          }).bindTooltip(formatDegrees(option) + " deg", { sticky: true }).addTo(pointsLayer);
+        });
+        pointsLayer.addTo(designLayer);
+      }
+
+      function redraw() {
+        const corners = footprintCorners();
+        if (!footprint) {
+          footprint = L.polygon(corners, {
+            color: "#155eef",
+            weight: 3,
+            fillColor: "#3b82f6",
+            fillOpacity: 0.28
+          }).addTo(designLayer);
+          enableCtrlDrag(footprint);
+        } else {
+          footprint.setLatLngs(corners);
+        }
+        footprint.bindTooltip("Design building " + formatDegrees(state.orientation_deg) + " deg", {
+          sticky: true
+        });
+        const bearingDistance = Math.max(state.length_m, 18) * 0.75;
+        const line = [[state.latitude, state.longitude], bearingEndpoint(bearingDistance)];
+        if (!bearingLine) {
+          bearingLine = L.polyline(line, {
+            color: "#155eef",
+            weight: 2,
+            dashArray: "4 4"
+          }).addTo(designLayer);
+        } else {
+          bearingLine.setLatLngs(line);
+        }
+        renderOrientationPoints();
+      }
+
+      function nudgeDesignBuilding(eastM, northM) {
+        const east = Number(eastM);
+        const north = Number(northM);
+        if (!Number.isFinite(east) || !Number.isFinite(north)) return;
+        state.offset_east_m += east;
+        state.offset_north_m += north;
+        redraw();
+      }
+
+      function enableCtrlDrag(layer) {
+        let dragStart = null;
+        layer.on("mousedown", (event) => {
+          if (!event.originalEvent.ctrlKey) return;
+          L.DomEvent.preventDefault(event.originalEvent);
+          L.DomEvent.stopPropagation(event.originalEvent);
+          dragStart = {
+            latlng: event.latlng,
+            east: state.offset_east_m,
+            north: state.offset_north_m
+          };
+          map.dragging.disable();
+          map.getContainer().style.cursor = "move";
+        });
+        map.on("mousemove", (event) => {
+          if (!dragStart) return;
+          const delta = metersDelta(dragStart.latlng, event.latlng);
+          state.offset_east_m = dragStart.east + delta.eastM;
+          state.offset_north_m = dragStart.north + delta.northM;
+          redraw();
+        });
+        map.on("mouseup", () => {
+          if (!dragStart) return;
+          dragStart = null;
+          map.dragging.enable();
+          map.getContainer().style.cursor = "";
+        });
+      }
+
+      window.openWindDesignBuilding = {
+        setOrientation(value) {
+          const number = Number(value);
+          if (Number.isFinite(number)) {
+            state.orientation_deg = number;
+            redraw();
+          }
+        },
+        setDimensions(widthM, lengthM) {
+          state.width_m = clampDimension(widthM, 12);
+          state.length_m = clampDimension(lengthM, 18);
+          redraw();
+        },
+        nudge(eastM, northM) {
+          nudgeDesignBuilding(eastM, northM);
+        },
+        getState() {
+          return Object.assign({}, state);
+        }
+      };
+
+      window.openWindWorkflowMap = {
+        setSite(site) {
+          const latitude = Number(site && site.latitude);
+          const longitude = Number(site && site.longitude);
+          if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+          state.latitude = latitude;
+          state.longitude = longitude;
+          state.display_name = site.display_name || "Mapped site";
+          state.offset_east_m = 0;
+          state.offset_north_m = 0;
+          map.setView([state.latitude, state.longitude], 18);
+          redraw();
+        },
+        invalidate() {
+          map.invalidateSize();
+        },
+        getState() {
+          return Object.assign({}, state);
+        }
+      };
+
+      redraw();
+      setTimeout(() => map.invalidateSize(), 100);
+    })();
+  </script>
+</body>
+</html>`;
 }
 
 function setWorkflowProgress(percent, label, state = "running") {
@@ -255,18 +616,145 @@ function setWorkflowProgress(percent, label, state = "running") {
   if (workflowProgressBar) workflowProgressBar.style.width = `${bounded}%`;
 }
 
-function activateSidePanel(tabName) {
+function activateWorkspaceTab(tabName) {
   if (!tabName) return;
-  document.querySelectorAll("[data-sidepanel-tab]").forEach((button) => {
-    const isActive = button.dataset.sidepanelTab === tabName;
+  document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+    const isActive = button.dataset.workspaceTab === tabName;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
   });
-  document.querySelectorAll("[data-sidepanel-panel]").forEach((panel) => {
-    const isActive = panel.dataset.sidepanelPanel === tabName;
+  document.querySelectorAll("[data-workspace-panel]").forEach((panel) => {
+    const isActive = panel.dataset.workspacePanel === tabName;
     panel.classList.toggle("is-active", isActive);
     panel.hidden = !isActive;
   });
+}
+
+function syncDesignBuildingOverlay() {
+  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
+  if (orientationControl && Number(orientationControl.value) !== orientation) {
+    orientationControl.value = String(orientation);
+  }
+  if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
+  const overlay = workflowMapFrame?.contentWindow?.openWindDesignBuilding;
+  if (!overlay) return;
+  overlay.setDimensions(
+    parseOptionalNumber(buildingWidthControl?.value),
+    parseOptionalNumber(buildingLengthControl?.value),
+  );
+  overlay.setOrientation(orientation);
+}
+
+async function zoomMapToAddress() {
+  const address = dashboardAddress?.value.trim();
+  if (!address) {
+    setWorkflowProgress(0, "Enter an address to zoom the map", "error");
+    return;
+  }
+  setWorkflowProgress(8, "Locating address on map", "running");
+  try {
+    const response = await postJson("/api/analyse", workflowPayload());
+    const siteAnalysis = await response.json();
+    currentMapSite = {
+      latitude: siteAnalysis.site.latitude,
+      longitude: siteAnalysis.site.longitude,
+      display_name: siteAnalysis.site.display_name || address,
+    };
+    renderSiteAnalysisProgress(siteAnalysis);
+    const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
+    if (mapApi?.setSite) {
+      mapApi.setSite(currentMapSite);
+      mapApi.invalidate?.();
+    } else {
+      renderInitialMapFrame("Address located. Run the assessment when ready.", { force: true });
+    }
+    setWorkflowProgress(0, "Address located; run assessment when ready", "complete");
+  } catch (error) {
+    setWorkflowProgress(0, "Address lookup failed", "error");
+    workflowSummary.textContent = `Address lookup failed: ${error.message}`;
+  }
+}
+
+function queueAddressSuggestions(query) {
+  const trimmed = String(query || "").trim();
+  clearTimeout(addressSuggestionTimer);
+  if (addressSuggestionController) addressSuggestionController.abort();
+  if (trimmed.length < 3) {
+    addressSuggestions = [];
+    renderAddressSuggestions();
+    return;
+  }
+  addressSuggestionTimer = setTimeout(async () => {
+    addressSuggestionController = new AbortController();
+    try {
+      const params = new URLSearchParams({ q: trimmed, limit: "6" });
+      const response = await fetch(`/api/geocode/suggest?${params}`, {
+        signal: addressSuggestionController.signal,
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      addressSuggestions = data.suggestions || [];
+      renderAddressSuggestions();
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        addressSuggestions = [];
+        renderAddressSuggestions();
+      }
+    }
+  }, 280);
+}
+
+function renderAddressSuggestions() {
+  if (!addressSuggestionsList) return;
+  addressSuggestionsList.innerHTML = addressSuggestions
+    .map((suggestion) => `<option value="${escapeHtml(suggestion.display_name)}"></option>`)
+    .join("");
+}
+
+function suggestionForAddress(value) {
+  const normalized = String(value || "").trim();
+  return addressSuggestions.find((suggestion) => suggestion.display_name === normalized) || null;
+}
+
+function applyAddressSuggestion(suggestion, options = {}) {
+  if (!suggestion) return;
+  currentMapSite = {
+    latitude: suggestion.latitude,
+    longitude: suggestion.longitude,
+    display_name: suggestion.display_name,
+  };
+  if (options.zoom) {
+    const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
+    if (mapApi?.setSite) {
+      mapApi.setSite(currentMapSite);
+      mapApi.invalidate?.();
+      setWorkflowProgress(0, "Address located; run assessment when ready", "complete");
+    }
+  }
+}
+
+function invalidateWorkflowMap() {
+  try {
+    workflowMapFrame?.contentWindow?.openWindWorkflowMap?.invalidate?.();
+  } catch (_error) {
+    // Cross-frame map invalidation is best-effort only.
+  }
+}
+
+function nearestOrientation(value) {
+  return orientationOptions.reduce((closest, option) =>
+    Math.abs(option - value) < Math.abs(closest - value) ? option : closest
+  , orientationOptions[0]);
+}
+
+function parseOptionalNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatOrientation(value) {
+  return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
 }
 
 function renderSiteAnalysisProgress(siteAnalysis) {
@@ -408,6 +896,16 @@ function replaceWorkflowCards(section, html) {
 
 function renderSiteInputs(workflow) {
   const input = workflow.input || {};
+  const structureRows = [
+    input.structure_class ? `<tr><th>Structure class</th><td>${escapeHtml(input.structure_class)}</td></tr>` : "",
+    input.structure_orientation_deg !== null && input.structure_orientation_deg !== undefined ? `<tr><th>Orientation</th><td>${formatNullableNumber(input.structure_orientation_deg, 2, "deg")}</td></tr>` : "",
+    input.roof_shape ? `<tr><th>Roof shape</th><td>${escapeHtml(input.roof_shape)}</td></tr>` : "",
+    input.building_width_m !== null && input.building_width_m !== undefined ? `<tr><th>Width</th><td>${formatNullableNumber(input.building_width_m, 2, "m")}</td></tr>` : "",
+    input.building_length_m !== null && input.building_length_m !== undefined ? `<tr><th>Length</th><td>${formatNullableNumber(input.building_length_m, 2, "m")}</td></tr>` : "",
+    input.roof_pitch_deg !== null && input.roof_pitch_deg !== undefined ? `<tr><th>Roof pitch</th><td>${formatNullableNumber(input.roof_pitch_deg, 2, "deg")}</td></tr>` : "",
+    input.average_height_m !== null && input.average_height_m !== undefined ? `<tr><th>Average height</th><td>${formatNullableNumber(input.average_height_m, 2, "m")}</td></tr>` : "",
+    input.base_rl_m !== null && input.base_rl_m !== undefined ? `<tr><th>Base RL</th><td>${formatNullableNumber(input.base_rl_m, 2, "m")}</td></tr>` : "",
+  ].join("");
   siteInputSummary.innerHTML = `
     <div class="table-wrap">
       <table>
@@ -415,6 +913,7 @@ function renderSiteInputs(workflow) {
           <tr><th>Address</th><td>${escapeHtml(input.address || workflow.site?.display_name || "not supplied")}</td></tr>
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>
           <tr><th>Building height</th><td>${Number(input.building_height_m).toFixed(2)} m</td></tr>
+          ${structureRows}
           <tr><th>Return period / importance level</th><td>${escapeHtml(input.importance_level || input.annual_exceedance_probability || "user input")}</td></tr>
         </tbody>
       </table>
@@ -504,7 +1003,8 @@ function resetWorkflowSections() {
     windInputsSummary.innerHTML = "<p class=\"note\">Waiting for wind-region and regional wind speed lookup...</p>";
   }
   if (workflowMapFrame) {
-    workflowMapFrame.removeAttribute("srcdoc");
+    workflowMapFrame.srcdoc = "";
+    renderInitialMapFrame("Assessment running. The project map will replace this view.");
   }
   if (dashboardRegion) dashboardRegion.textContent = "-";
   if (dashboardGoverningDirection) dashboardGoverningDirection.textContent = "-";

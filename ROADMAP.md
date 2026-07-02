@@ -5,6 +5,8 @@ review aids from experimental workflows and features that are not implemented or
 
 For output derivation, dataset hierarchy, and review boundaries, see
 [`docs/calculation-basis.md`](docs/calculation-basis.md).
+For the consumer-readiness gap list, see
+[`docs/consumer-readiness.md`](docs/consumer-readiness.md).
 
 ## Implemented As Review Aid
 
@@ -60,6 +62,12 @@ These items should not be described as certified OpenWind-AU outputs:
 
 ## Near-Term Improvements
 
+- Build standard-derived lookup assets for `Mz,cat`, `Ms`, `Mt`, AS 4055 classes, and other
+  release-critical wind model coefficients from reviewed source tables.
+- Add a reviewer sign-off and regression workflow for derived lookup assets without committing
+  licensed standard text.
+- Expand reference calculation comparisons beyond job 7989 across regions, heights, terrain
+  categories, shielding states, and topographic classes.
 - Better DEM cache management.
 - Clearer confidence scoring for preliminary topographic screening.
 - Profile filtering and directional sector summaries.
