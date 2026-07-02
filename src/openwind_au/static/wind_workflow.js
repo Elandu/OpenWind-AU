@@ -15,7 +15,30 @@ const workflowProgressLabel = document.getElementById("workflow-progress-label")
 const workflowProgressPercent = document.getElementById("workflow-progress-percent");
 const workflowProgressTrack = document.getElementById("workflow-progress-track");
 const workflowProgressBar = document.getElementById("workflow-progress-bar");
+const orientationControl = document.getElementById("structure_orientation_deg");
+const orientationReadout = document.getElementById("orientation-readout");
+const buildingWidthControl = document.getElementById("building_width_m");
+const buildingLengthControl = document.getElementById("building_length_m");
 
+const orientationOptions = [
+  -90,
+  -78.75,
+  -67.5,
+  -56.25,
+  -45,
+  -33.75,
+  -22.5,
+  -11.25,
+  0,
+  11.25,
+  22.5,
+  33.75,
+  45,
+  56.25,
+  67.5,
+  78.75,
+  90,
+];
 const directionOrder = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 const variableOrder = ["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
 const variableAnchors = {
@@ -47,13 +70,22 @@ try {
   // Local storage can be unavailable in restrictive browser modes.
 }
 
-document.querySelectorAll("[data-sidepanel-tab]").forEach((button) => {
-  button.addEventListener("click", () => activateSidePanel(button.dataset.sidepanelTab));
+document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+  button.addEventListener("click", () => activateWorkspaceTab(button.dataset.workspaceTab));
 });
 
 workflowForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await runWorkflow();
+});
+
+workflowMapFrame?.addEventListener("load", () => {
+  syncDesignBuildingOverlay();
+});
+
+[orientationControl, buildingWidthControl, buildingLengthControl].forEach((control) => {
+  control?.addEventListener("input", syncDesignBuildingOverlay);
+  control?.addEventListener("change", syncDesignBuildingOverlay);
 });
 
 workflowReport?.addEventListener("click", async () => {
@@ -140,6 +172,7 @@ function handleWorkflowStreamEvent(event) {
   }
   if (event.data?.map_html && workflowMapFrame) {
     workflowMapFrame.srcdoc = event.data.map_html;
+    setTimeout(syncDesignBuildingOverlay, 80);
   }
   if (event.stage === "complete") {
     setWorkflowProgress(100, event.label, "complete");
@@ -262,6 +295,7 @@ async function renderWorkflowMap() {
   try {
     const response = await postJson("/api/wind-workflow/map", workflowPayload());
     workflowMapFrame.srcdoc = await response.text();
+    setTimeout(syncDesignBuildingOverlay, 80);
   } catch (error) {
     workflowMapFrame.srcdoc = `<p>Combined map failed: ${escapeHtml(error.message)}</p>`;
     throw error;
@@ -279,18 +313,49 @@ function setWorkflowProgress(percent, label, state = "running") {
   if (workflowProgressBar) workflowProgressBar.style.width = `${bounded}%`;
 }
 
-function activateSidePanel(tabName) {
+function activateWorkspaceTab(tabName) {
   if (!tabName) return;
-  document.querySelectorAll("[data-sidepanel-tab]").forEach((button) => {
-    const isActive = button.dataset.sidepanelTab === tabName;
+  document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+    const isActive = button.dataset.workspaceTab === tabName;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
   });
-  document.querySelectorAll("[data-sidepanel-panel]").forEach((panel) => {
-    const isActive = panel.dataset.sidepanelPanel === tabName;
+  document.querySelectorAll("[data-workspace-panel]").forEach((panel) => {
+    const isActive = panel.dataset.workspacePanel === tabName;
     panel.classList.toggle("is-active", isActive);
     panel.hidden = !isActive;
   });
+}
+
+function syncDesignBuildingOverlay() {
+  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
+  if (orientationControl && Number(orientationControl.value) !== orientation) {
+    orientationControl.value = String(orientation);
+  }
+  if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
+  const overlay = workflowMapFrame?.contentWindow?.openWindDesignBuilding;
+  if (!overlay) return;
+  overlay.setDimensions(
+    parseOptionalNumber(buildingWidthControl?.value),
+    parseOptionalNumber(buildingLengthControl?.value),
+  );
+  overlay.setOrientation(orientation);
+}
+
+function nearestOrientation(value) {
+  return orientationOptions.reduce((closest, option) =>
+    Math.abs(option - value) < Math.abs(closest - value) ? option : closest
+  , orientationOptions[0]);
+}
+
+function parseOptionalNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatOrientation(value) {
+  return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
 }
 
 function renderSiteAnalysisProgress(siteAnalysis) {

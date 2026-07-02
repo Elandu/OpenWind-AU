@@ -106,6 +106,8 @@ def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
     # so we assert on the layer-control wiring rather than on the literal name strings.
     assert "leaflet" in body.lower()
     assert "L.control.layers" in body
+    assert "Design building" in body
+    assert "openWindDesignBuilding" in body
     assert body.count("L.featureGroup") >= 4
 
 

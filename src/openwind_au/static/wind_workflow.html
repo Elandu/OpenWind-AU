@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260623-workflow-ux" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260702-map-workspace" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -75,12 +75,13 @@
       </div>
     </header>
 
-    <main class="dashboard-shell workflow-only">
-      <div class="workflow-column">
-      <section id="project-site-inputs" class="panel workflow-step" data-step="1">
-        <h2>Run Assessment</h2>
-        <form id="workflow-form">
-          <div class="grid">
+    <main class="dashboard-shell workflow-only map-first-shell">
+      <section class="map-workspace" aria-label="Interactive wind assessment map">
+        <div class="map-control-rail">
+          <section id="project-site-inputs" class="panel workflow-step assessment-controls" data-step="1">
+            <h2>Run Assessment</h2>
+            <form id="workflow-form">
+              <div class="primary-control-grid">
             <label>
               Building height (m)
               <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
@@ -89,7 +90,37 @@
               AEP / ARI
               <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
             </label>
-          </div>
+            <label>
+              Orientation (deg)
+              <select id="structure_orientation_deg" name="structure_orientation_deg">
+                <option value="-90">-90</option>
+                <option value="-78.75">-78.75</option>
+                <option value="-67.5">-67.5</option>
+                <option value="-56.25">-56.25</option>
+                <option value="-45">-45</option>
+                <option value="-33.75">-33.75</option>
+                <option value="-22.5">-22.5</option>
+                <option value="-11.25">-11.25</option>
+                <option value="0" selected>0</option>
+                <option value="11.25">11.25</option>
+                <option value="22.5">22.5</option>
+                <option value="33.75">33.75</option>
+                <option value="45">45</option>
+                <option value="56.25">56.25</option>
+                <option value="67.5">67.5</option>
+                <option value="78.75">78.75</option>
+                <option value="90">90</option>
+              </select>
+            </label>
+            <label>
+              Width (m)
+              <input id="building_width_m" name="building_width_m" type="number" step="0.1" />
+            </label>
+            <label>
+              Length (m)
+              <input id="building_length_m" name="building_length_m" type="number" step="0.1" />
+            </label>
+              </div>
           <details class="form-details">
             <summary>Advanced inputs</summary>
             <div class="grid">
@@ -131,10 +162,6 @@
               </select>
             </label>
             <label>
-              Orientation (deg)
-              <input id="structure_orientation_deg" name="structure_orientation_deg" type="number" min="-90" max="90" step="11.25" />
-            </label>
-            <label>
               Roof shape
               <select id="roof_shape" name="roof_shape">
                 <option value="">Not set</option>
@@ -142,14 +169,6 @@
                 <option value="hip">Hip</option>
                 <option value="monoslope">Monoslope</option>
               </select>
-            </label>
-            <label>
-              Width (m)
-              <input id="building_width_m" name="building_width_m" type="number" step="0.1" />
-            </label>
-            <label>
-              Length (m)
-              <input id="building_length_m" name="building_length_m" type="number" step="0.1" />
             </label>
             <label>
               Roof pitch (deg)
@@ -170,24 +189,54 @@
             </div>
           </details>
           <button type="submit">Run Site Wind Assessment</button>
-        </form>
-        <p class="disclaimer">
-          Preliminary workflow only. The app does not calculate final design pressures and does
-          not certify AS/NZS 1170.2 compliance.
-        </p>
+            </form>
+            <p class="disclaimer">
+              Preliminary workflow only. The app does not calculate final design pressures and does
+              not certify AS/NZS 1170.2 compliance.
+            </p>
+          </section>
+          <div id="site-input-summary" class="workflow-card map-summary-card">
+            <p class="note">Run the assessment to display resolved site inputs.</p>
+          </div>
+        </div>
+        <section class="map-canvas-panel">
+          <div class="map-toolbar" aria-label="Map workspace controls">
+            <div>
+              <span class="kicker">Workspace</span>
+              <strong>Interactive Wind Map</strong>
+            </div>
+            <div class="orientation-readout">
+              <span class="kicker">Design orientation</span>
+              <strong id="orientation-readout">0 deg</strong>
+            </div>
+          </div>
+          <iframe id="workflow-map-frame" class="map-iframe" title="Interactive wind assessment map"></iframe>
+        </section>
       </section>
+
+      <nav class="workspace-tabs" role="tablist" aria-label="Assessment views">
+        <button class="workspace-tab is-active" type="button" role="tab" aria-selected="true" data-workspace-tab="map">Map</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="raw-data">Raw Data</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="documents">Documents</button>
+      </nav>
+
+      <section class="workspace-panel is-active" role="tabpanel" data-workspace-panel="map">
+        <div class="panel map-layer-summary">
+          <h2>Map Layers</h2>
+          <p class="note">The workspace map renders wind regions, Mz,cat sectors, shielding sectors, topographic circles, terrain profiles, obstruction footprints, and the Design building footprint.</p>
+        </div>
+      </section>
+
+      <section class="workspace-panel" role="tabpanel" data-workspace-panel="raw-data" hidden>
+      <div class="workflow-column">
 
       <section id="resolved-wind-inputs" class="panel workflow-step" data-step="2">
         <h2>Resolved Site and Wind Inputs</h2>
-        <p class="note">Resolved site data, wind-region lookup, VR, and combined map layers.</p>
-        <div id="site-input-summary" class="workflow-card">
-          <p class="note">Run the assessment to display resolved site inputs.</p>
-        </div>
+        <p class="note">Resolved site data, wind-region lookup, and VR.</p>
         <div id="wind-inputs-summary" class="workflow-card">
           <h3>Wind Inputs Summary</h3>
           <p class="note">Run the assessment to display wind region and VR.</p>
         </div>
-        <iframe id="workflow-map-frame" class="map-iframe" title="Combined wind assessment map"></iframe>
       </section>
 
       <section id="wind-region-vr" class="panel workflow-anchor workflow-step" data-step="3">
@@ -238,51 +287,21 @@
         </div>
       </section>
 
-      <section id="workflow-reporting" class="panel workflow-step" data-step="9">
-        <h2>Report and Diagnostics</h2>
-        <button id="workflow-report" type="button">Open Site Wind Assessment Report</button>
-        <details class="diagnostic-details">
-          <summary>Workflow diagnostics</summary>
-          <pre id="workflow-summary">Run the assessment to review variables.</pre>
-        </details>
-      </section>
       </div>
-      <aside class="workflow-sidepanel" aria-label="Workflow support panel">
-        <div class="sidepanel-tabs" role="tablist" aria-label="Workflow views">
-          <button class="sidepanel-tab is-active" type="button" role="tab" aria-selected="true" data-sidepanel-tab="maps">Maps</button>
-          <button class="sidepanel-tab" type="button" role="tab" aria-selected="false" data-sidepanel-tab="terrain">Terrain</button>
-          <button class="sidepanel-tab" type="button" role="tab" aria-selected="false" data-sidepanel-tab="shielding">Shielding</button>
-          <button class="sidepanel-tab" type="button" role="tab" aria-selected="false" data-sidepanel-tab="topography">Topography</button>
-        </div>
-        <div class="sidepanel-content">
-          <section class="sidepanel-panel is-active" role="tabpanel" data-sidepanel-panel="maps">
-            <span class="kicker">Map Layers</span>
-            <h2>Combined Wind Map</h2>
-            <p>One map renders wind regions, Mz,cat sectors, shielding sectors, topographic circles, terrain profiles, and footprints.</p>
-            <a class="sidepanel-link" href="#resolved-wind-inputs">Open map section</a>
-          </section>
-          <section class="sidepanel-panel" role="tabpanel" data-sidepanel-panel="terrain" hidden>
-            <span class="kicker">Terrain</span>
-            <h2>Mz,cat Inputs</h2>
-            <p>Directional terrain category and height inputs feed the Mz,cat workflow step.</p>
-            <a class="sidepanel-link" href="#terrain-category-mzcat">View Mz,cat step</a>
-          </section>
-          <section class="sidepanel-panel" role="tabpanel" data-sidepanel-panel="shielding" hidden>
-            <span class="kicker">Shielding</span>
-            <h2>Ms Inputs</h2>
-            <p>Obstruction inventory and sector diagnostics feed the shielding multiplier step.</p>
-            <a class="sidepanel-link" href="#shielding-ms">View shielding step</a>
-          </section>
-          <section class="sidepanel-panel" role="tabpanel" data-sidepanel-panel="topography" hidden>
-            <span class="kicker">Topography</span>
-            <h2>Mt Inputs</h2>
-            <p>Terrain profiles and topographic circles support the topographic multiplier step.</p>
-            <a class="sidepanel-link" href="#topographic-mt">View topography step</a>
-          </section>
-        </div>
-      </aside>
+      </section>
+
+      <section class="workspace-panel" role="tabpanel" data-workspace-panel="documents" hidden>
+        <section id="workflow-reporting" class="panel workflow-step" data-step="9">
+          <h2>Report and Diagnostics</h2>
+          <button id="workflow-report" type="button">Open Site Wind Assessment Report</button>
+          <details class="diagnostic-details">
+            <summary>Workflow diagnostics</summary>
+            <pre id="workflow-summary">Run the assessment to review variables.</pre>
+          </details>
+        </section>
+      </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260623-workflow-ux"></script>
+    <script src="/static/wind_workflow.js?v=20260702-map-workspace"></script>
   </body>
 </html>

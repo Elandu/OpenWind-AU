@@ -540,6 +540,7 @@ def combined_map_html(
     feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
     shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=True)
     shielding_polygon_layer = folium.FeatureGroup(name="Shielding obstruction polygons", show=True)
+    design_building_layer = folium.FeatureGroup(name="Design building", show=True)
     microsoft_polygon_layer = folium.FeatureGroup(name="Microsoft building footprints", show=True)
     obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=False)
 
@@ -665,6 +666,8 @@ def combined_map_html(
         obstruction_result,
         diagnostics,
     )
+    design_building_layer.add_to(fmap)
+    _add_design_building_overlay(fmap, design_building_layer, site_result)
     microsoft_polygon_layer.add_to(fmap)
     diagnostics = _add_workflow_microsoft_polygon_layer(
         fmap,
@@ -676,6 +679,160 @@ def combined_map_html(
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
     return _render_map_with_diagnostics(fmap, diagnostics)
+
+
+def _add_design_building_overlay(
+    fmap: folium.Map,
+    layer: folium.FeatureGroup,
+    site_result: SiteAnalysisResult,
+) -> None:
+    """Add a parent-controllable design building footprint to the workflow map."""
+
+    payload = {
+        "latitude": site_result.site.latitude,
+        "longitude": site_result.site.longitude,
+        "width_m": getattr(site_result.input, "building_width_m", None) or 12,
+        "length_m": getattr(site_result.input, "building_length_m", None) or 18,
+        "orientation_deg": getattr(site_result.input, "structure_orientation_deg", None) or 0,
+        "orientation_options": [
+            -90,
+            -78.75,
+            -67.5,
+            -56.25,
+            -45,
+            -33.75,
+            -22.5,
+            -11.25,
+            0,
+            11.25,
+            22.5,
+            33.75,
+            45,
+            56.25,
+            67.5,
+            78.75,
+            90,
+        ],
+    }
+    script = f"""
+    (function() {{
+      const map = {fmap.get_name()};
+      const designLayer = {layer.get_name()};
+      const state = {json.dumps(payload, ensure_ascii=True)};
+      let footprint = null;
+      let bearingLine = null;
+      let pointsLayer = null;
+
+      function clampDimension(value, fallback) {{
+        const number = Number(value);
+        return Number.isFinite(number) && number > 0 ? number : fallback;
+      }}
+
+      function formatDegrees(value) {{
+        return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+      }}
+
+      function latLngFromMeters(eastM, northM) {{
+        const earthRadiusM = 6378137;
+        const lat = state.latitude + (northM / earthRadiusM) * (180 / Math.PI);
+        const lon = state.longitude
+          + (eastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180))) * (180 / Math.PI);
+        return [lat, lon];
+      }}
+
+      function footprintCorners() {{
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        const halfLength = clampDimension(state.length_m, 18) / 2;
+        const halfWidth = clampDimension(state.width_m, 12) / 2;
+        const lengthAxis = [Math.sin(theta), Math.cos(theta)];
+        const widthAxis = [Math.cos(theta), -Math.sin(theta)];
+        return [
+          [halfLength, halfWidth],
+          [halfLength, -halfWidth],
+          [-halfLength, -halfWidth],
+          [-halfLength, halfWidth],
+        ].map(([lengthOffset, widthOffset]) => latLngFromMeters(
+          lengthAxis[0] * lengthOffset + widthAxis[0] * widthOffset,
+          lengthAxis[1] * lengthOffset + widthAxis[1] * widthOffset,
+        ));
+      }}
+
+      function bearingEndpoint(distanceM) {{
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        return latLngFromMeters(Math.sin(theta) * distanceM, Math.cos(theta) * distanceM);
+      }}
+
+      function renderOrientationPoints() {{
+        if (pointsLayer) designLayer.removeLayer(pointsLayer);
+        pointsLayer = L.layerGroup();
+        const radius = Math.max(28, Math.min(70, Math.max(state.width_m, state.length_m) * 1.15));
+        state.orientation_options.forEach((option) => {{
+          const theta = Number(option) * Math.PI / 180;
+          const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
+          const active = Number(option) === Number(state.orientation_deg);
+          L.circleMarker(point, {{
+            radius: active ? 5 : 3,
+            color: active ? "#0f766e" : "#475569",
+            weight: active ? 2 : 1,
+            fillColor: active ? "#14b8a6" : "#ffffff",
+            fillOpacity: active ? 0.95 : 0.8,
+          }}).bindTooltip(formatDegrees(option) + " deg", {{ sticky: true }}).addTo(pointsLayer);
+        }});
+        pointsLayer.addTo(designLayer);
+      }}
+
+      function redraw() {{
+        const corners = footprintCorners();
+        if (!footprint) {{
+          footprint = L.polygon(corners, {{
+            color: "#155eef",
+            weight: 3,
+            fillColor: "#3b82f6",
+            fillOpacity: 0.28,
+          }}).addTo(designLayer);
+        }} else {{
+          footprint.setLatLngs(corners);
+        }}
+        footprint.bindTooltip("Design building " + formatDegrees(state.orientation_deg) + " deg", {{
+          sticky: true,
+        }});
+
+        const bearingDistance = Math.max(state.length_m, 18) * 0.75;
+        const line = [[state.latitude, state.longitude], bearingEndpoint(bearingDistance)];
+        if (!bearingLine) {{
+          bearingLine = L.polyline(line, {{
+            color: "#155eef",
+            weight: 2,
+            dashArray: "4 4",
+          }}).addTo(designLayer);
+        }} else {{
+          bearingLine.setLatLngs(line);
+        }}
+        renderOrientationPoints();
+      }}
+
+      window.openWindDesignBuilding = {{
+        setOrientation(value) {{
+          const number = Number(value);
+          if (Number.isFinite(number)) {{
+            state.orientation_deg = number;
+            redraw();
+          }}
+        }},
+        setDimensions(widthM, lengthM) {{
+          state.width_m = clampDimension(widthM, 12);
+          state.length_m = clampDimension(lengthM, 18);
+          redraw();
+        }},
+        getState() {{
+          return Object.assign({{}}, state);
+        }},
+      }};
+
+      redraw();
+    }})();
+    """
+    fmap.get_root().script.add_child(folium.Element(script))
 
 
 def _add_workflow_microsoft_polygon_layer(
