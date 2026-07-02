@@ -37,6 +37,8 @@ retaining walls, cuts, fills, or drainage features matter.
 
 The topographic screening table flags broad candidate terrain forms such as ridge, hill,
 escarpment, valley, or no significant feature. These are rule-based indicators only.
+Broad low-gradient DEM undulations are screened out unless they show substantial relief or a
+meaningful average upwind slope.
 
 Use the output to decide where engineering review should focus. Do not treat it as a final
 topographic multiplier calculation.

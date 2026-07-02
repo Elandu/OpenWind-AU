@@ -9,6 +9,8 @@ import numpy as np
 from openwind_au.models import TerrainProfile, TopographicFeature
 
 MIN_FEATURE_RELIEF_M = 5.0
+MIN_RIDGE_VALLEY_SUBSTANTIAL_RELIEF_M = 50.0
+MIN_RIDGE_VALLEY_SLOPE = 0.10
 MIN_RISING_HILL_SLOPE = 0.03
 ESCARPMENT_SLOPE = 0.15
 
@@ -63,10 +65,13 @@ def analyse_profile_topography(
     if not candidates:
         return _no_significant_feature(profile, site_rl_m)
 
-    candidate = max(candidates, key=lambda item: item.score)
-    if candidate.h_m < MIN_FEATURE_RELIEF_M or candidate.lu_m <= 0:
+    screened_candidates = [
+        candidate for candidate in candidates if _candidate_meets_review_thresholds(candidate)
+    ]
+    if not screened_candidates:
         return _no_significant_feature(profile, site_rl_m)
 
+    candidate = max(screened_candidates, key=lambda item: item.score)
     confidence = _confidence(candidate.h_m, candidate.slope)
     return TopographicFeature(
         direction=profile.direction,
@@ -230,6 +235,17 @@ def _hill_candidate(distances: np.ndarray, elevations: np.ndarray) -> _Candidate
             "Profile rises toward the analysis radius endpoint.",
             "Classified as a hill candidate; consider extending radius before relying on it.",
         ),
+    )
+
+
+def _candidate_meets_review_thresholds(candidate: _Candidate) -> bool:
+    if candidate.h_m < MIN_FEATURE_RELIEF_M or candidate.lu_m <= 0:
+        return False
+    if candidate.feature_type not in {"ridge", "valley"}:
+        return True
+    return (
+        candidate.h_m >= MIN_RIDGE_VALLEY_SUBSTANTIAL_RELIEF_M
+        or candidate.slope >= MIN_RIDGE_VALLEY_SLOPE
     )
 
 

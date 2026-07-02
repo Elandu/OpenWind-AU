@@ -50,7 +50,8 @@ def test_reference_calc_class_mapping_helpers() -> None:
 
     assert topographic_class_from_feature("no significant feature", 0.0) == "T0"
     assert topographic_class_from_feature("ridge", 0.05) == "T0"
-    assert topographic_class_from_feature("ridge", 0.12) == "T1"
+    assert topographic_class_from_feature("ridge", 0.12) == "T0"
+    assert topographic_class_from_feature("ridge", 0.18) == "T1"
 
 
 def test_compare_reference_calc_7989_reports_directional_mismatches() -> None:
@@ -60,7 +61,7 @@ def test_compare_reference_calc_7989_reports_directional_mismatches() -> None:
             SimpleNamespace(
                 direction=direction,
                 feature_type="ridge" if direction in {"NE", "E"} else "no significant feature",
-                average_upwind_slope=0.12 if direction in {"NE", "E"} else 0.0,
+                average_upwind_slope=0.18 if direction in {"NE", "E"} else 0.0,
             )
             for direction in directions
         ]
