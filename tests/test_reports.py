@@ -183,19 +183,19 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Design building" in html
     assert "openWindDesignBuilding" in html
     assert "orientation_options" in html
-    assert "Microsoft building footprints" in html
+    assert "Building footprints" in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html
     assert "Shielding candidates" not in html
     shielding_layer = re.search(r'"Shielding sectors" : (feature_group_[a-f0-9]+)', html)
     assert shielding_layer
     assert f"{shielding_layer.group(1)}.addTo(map_" in html
-    microsoft_layer = re.search(
-        r'"Microsoft building footprints" : (feature_group_[a-f0-9]+)',
+    footprint_layer = re.search(
+        r'"Building footprints" : (feature_group_[a-f0-9]+)',
         html,
     )
-    assert microsoft_layer
-    assert f"{microsoft_layer.group(1)}.addTo(map_" in html
+    assert footprint_layer
+    assert f"{footprint_layer.group(1)}.addTo(map_" in html
     assert "window.openWindMicrosoftFootprintLayer" in html
     assert "explicit_leaflet_geojson" in html
 
@@ -237,7 +237,7 @@ def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
     assert diagnostics["plotted_shielding_polygons"] == 3
     assert diagnostics["total_geojson_payload_size"] > 0
     assert "Shielding polygon display limited to 3" in html
-    assert "Microsoft footprint display limited to 3" in html
+    assert "Building footprint display limited to 3" in html
     assert "window.openWindMicrosoftFootprintLayer" in html
     assert "window.openWindShieldingFootprintLayer" in html
 

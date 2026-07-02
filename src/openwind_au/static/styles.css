@@ -1070,6 +1070,12 @@ iframe {
   border-radius: 0;
 }
 
+.profile-iframe {
+  display: block;
+  height: 420px;
+  background: #ffffff;
+}
+
 @media (min-width: 681px) and (max-width: 900px) {
   .map-workspace {
     grid-template-columns: 1fr;

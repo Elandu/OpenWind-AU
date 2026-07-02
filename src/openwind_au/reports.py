@@ -541,8 +541,8 @@ def combined_map_html(
     shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=True)
     shielding_polygon_layer = folium.FeatureGroup(name="Shielding obstruction polygons", show=True)
     design_building_layer = folium.FeatureGroup(name="Design building", show=True)
-    microsoft_polygon_layer = folium.FeatureGroup(name="Microsoft building footprints", show=True)
-    obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=False)
+    microsoft_polygon_layer = folium.FeatureGroup(name="Building footprints", show=True)
+    obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=True)
 
     if wind_region_assessment is not None:
         _add_wind_region_layer(wind_region_layer, site_result.site, wind_region_assessment)
@@ -599,6 +599,7 @@ def combined_map_html(
             color = _terrain_category_color(direction.suggested_category_range)
             folium.GeoJson(
                 terrain_category_sector_polygon(evidence_result.site, direction),
+                interactive=False,
                 style_function=lambda _feature, color=color: {
                     "color": color,
                     "weight": 2,
@@ -696,6 +697,7 @@ def _add_design_building_overlay(
         "orientation_deg": getattr(site_result.input, "structure_orientation_deg", None) or 0,
         "offset_east_m": 0,
         "offset_north_m": 0,
+        "user_modified": False,
         "orientation_options": [
             -90,
             -78.75,
@@ -777,6 +779,21 @@ def _add_design_building_overlay(
         return latLngFromMeters(Math.sin(theta) * distanceM, Math.cos(theta) * distanceM);
       }}
 
+      function centerLatLng() {{
+        return latLngFromMeters(0, 0);
+      }}
+
+      function notifyParent() {{
+        try {{
+          window.parent.postMessage({{
+            type: "openwind-design-building-change",
+            state: Object.assign({{}}, state),
+          }}, "*");
+        }} catch (_error) {{
+          // Parent notification is best-effort for embedded previews.
+        }}
+      }}
+
       function renderOrientationPoints() {{
         if (!designLayer) return;
         if (pointsLayer) designLayer.removeLayer(pointsLayer);
@@ -792,7 +809,15 @@ def _add_design_building_overlay(
             weight: active ? 2 : 1,
             fillColor: active ? "#14b8a6" : "#ffffff",
             fillOpacity: active ? 0.95 : 0.8,
-          }}).bindTooltip(formatDegrees(option) + " deg", {{ sticky: true }}).addTo(pointsLayer);
+          }})
+            .bindTooltip(formatDegrees(option) + " deg", {{ sticky: true }})
+            .on("click", () => {{
+              state.orientation_deg = Number(option);
+              state.user_modified = true;
+              redraw();
+              notifyParent();
+            }})
+            .addTo(pointsLayer);
         }});
         pointsLayer.addTo(designLayer);
       }}
@@ -816,7 +841,7 @@ def _add_design_building_overlay(
         }});
 
         const bearingDistance = Math.max(state.length_m, 18) * 0.75;
-        const line = [[state.latitude, state.longitude], bearingEndpoint(bearingDistance)];
+        const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
         if (!bearingLine) {{
           bearingLine = L.polyline(line, {{
             color: "#155eef",
@@ -835,7 +860,9 @@ def _add_design_building_overlay(
         if (!Number.isFinite(east) || !Number.isFinite(north)) return;
         state.offset_east_m += east;
         state.offset_north_m += north;
+        state.user_modified = true;
         redraw();
+        notifyParent();
       }}
 
       function enableCtrlDrag(layer) {{
@@ -857,7 +884,9 @@ def _add_design_building_overlay(
           const delta = metersDelta(dragStart.latlng, event.latlng);
           state.offset_east_m = dragStart.east + delta.eastM;
           state.offset_north_m = dragStart.north + delta.northM;
+          state.user_modified = true;
           redraw();
+          notifyParent();
         }});
         map.on("mouseup", () => {{
           if (!dragStart) return;
@@ -881,12 +910,14 @@ def _add_design_building_overlay(
             if (Number.isFinite(number)) {{
               state.orientation_deg = number;
               redraw();
+              notifyParent();
             }}
           }},
           setDimensions(widthM, lengthM) {{
             state.width_m = clampDimension(widthM, 12);
             state.length_m = clampDimension(lengthM, 18);
             redraw();
+            notifyParent();
           }},
           nudge(eastM, northM) {{
             nudgeDesignBuilding(eastM, northM);
@@ -905,8 +936,10 @@ def _add_design_building_overlay(
             state.longitude = longitude;
             state.offset_east_m = 0;
             state.offset_north_m = 0;
+            state.user_modified = false;
             map.setView([state.latitude, state.longitude], 18);
             redraw();
+            notifyParent();
           }},
           invalidate() {{
             map.invalidateSize();
@@ -917,6 +950,7 @@ def _add_design_building_overlay(
         }};
 
         redraw();
+        notifyParent();
         setTimeout(() => map.invalidateSize(), 100);
         setTimeout(() => map.invalidateSize(), 500);
       }}
@@ -937,18 +971,14 @@ def _add_workflow_microsoft_polygon_layer(
     result: ObstructionInventoryResult,
     diagnostics: MapRenderDiagnostics,
 ) -> MapRenderDiagnostics:
-    """Add display-limited Microsoft footprint polygons to the workflow map."""
+    """Add display-limited building footprint polygons to the workflow map."""
 
     max_display = max(
         int(getattr(result.input, "map_max_display_obstructions", DEFAULT_MAP_DISPLAY_LIMIT)),
         1,
     )
     records = sorted(
-        (
-            record
-            for record in result.obstructions
-            if record.footprint_source == "microsoft_building_footprints"
-        ),
+        result.obstructions,
         key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
     )
     features = []
@@ -976,7 +1006,7 @@ def _add_workflow_microsoft_polygon_layer(
         ):
             diagnostics.fallback_mode = True
             diagnostics.warnings.append(
-                "Microsoft footprint polygon display stopped at the map payload budget."
+                "Building footprint polygon display stopped at the map payload budget."
             )
             break
         features.append(feature)
@@ -989,12 +1019,12 @@ def _add_workflow_microsoft_polygon_layer(
     diagnostics.total_geojson_payload_size += payload_size
     if len(records) > len(features):
         diagnostics.warnings.append(
-            "Microsoft footprint display limited to "
+            "Building footprint display limited to "
             f"{len(features)} of {len(records)} available footprints."
         )
     if not features:
         diagnostics.warnings.append(
-            "No Microsoft building footprint polygons were available for this map "
+            "No building footprint polygons were available for this map "
             f"(cache status: {result.data_quality.microsoft_cache_status})."
         )
         return diagnostics
@@ -1010,7 +1040,7 @@ def _add_explicit_microsoft_footprint_loader(
     layer: folium.FeatureGroup,
     features: list[dict[str, Any]],
 ) -> None:
-    """Inject a direct Leaflet Microsoft footprint loader for iframe map reliability."""
+    """Inject a direct Leaflet building footprint loader for iframe map reliability."""
 
     feature_collection = {"type": "FeatureCollection", "features": features}
     feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
@@ -1037,7 +1067,7 @@ def _add_explicit_microsoft_footprint_loader(
             `<table>
               <tr><th>ID</th><td>${{props.id || ""}}</td></tr>
               <tr><th>Height</th><td>${{props.height || "missing"}}</td></tr>
-              <tr><th>Source</th><td>${{props.source || "Microsoft"}}</td></tr>
+              <tr><th>Source</th><td>${{props.source || "building footprint"}}</td></tr>
               <tr><th>Confidence</th><td>${{props.confidence || ""}}</td></tr>
             </table>`,
             {{sticky: false, className: "foliumtooltip"}}
@@ -1052,11 +1082,11 @@ def _add_explicit_microsoft_footprint_loader(
       }});
       window.openWindMicrosoftFootprintLayer = {{
         feature_count: microsoftFootprints.features.length,
-        layer_name: "Microsoft building footprints",
+        layer_name: "Building footprints",
         renderer: "explicit_leaflet_geojson"
       }};
       console.info(
-        "OpenWind-AU Microsoft footprint layer",
+        "OpenWind-AU building footprint layer",
         window.openWindMicrosoftFootprintLayer
       );
     }})();

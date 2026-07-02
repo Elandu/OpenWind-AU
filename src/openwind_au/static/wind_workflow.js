@@ -3,6 +3,7 @@ const workflowSummary = document.getElementById("workflow-summary");
 const siteInputSummary = document.getElementById("site-input-summary");
 const windInputsSummary = document.getElementById("wind-inputs-summary");
 const workflowMapFrame = document.getElementById("workflow-map-frame");
+const terrainProfileFrame = document.getElementById("terrain-profile-frame");
 const vsitbTable = document.getElementById("vsitb-table");
 const workflowReport = document.getElementById("workflow-report");
 const dashboardAddress = document.getElementById("dashboard-address");
@@ -62,6 +63,8 @@ let workflowOverrides = [];
 let addressSuggestionTimer = null;
 let addressSuggestionController = null;
 let addressSuggestions = [];
+let designBuildingState = null;
+let hasLocatedMapSite = false;
 let currentMapSite = {
   latitude: -33.8688,
   longitude: 151.2093,
@@ -81,6 +84,12 @@ try {
 
 document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
   button.addEventListener("click", () => activateWorkspaceTab(button.dataset.workspaceTab));
+});
+
+window.addEventListener("message", (event) => {
+  if (event.source !== workflowMapFrame?.contentWindow) return;
+  if (event.data?.type !== "openwind-design-building-change") return;
+  updateDesignBuildingState(event.data.state, { source: "map" });
 });
 
 workflowForm.addEventListener("submit", async (event) => {
@@ -211,6 +220,7 @@ function handleWorkflowStreamEvent(event) {
   if (event.data?.map_html && workflowMapFrame) {
     workflowMapFrame.srcdoc = event.data.map_html;
     setTimeout(syncDesignBuildingOverlay, 80);
+    renderTerrainProfileGraph();
   }
   if (event.stage === "complete") {
     setWorkflowProgress(100, event.label, "complete");
@@ -226,6 +236,7 @@ async function runWorkflowFallback(originalError) {
     renderWorkflow(currentWorkflow);
     setWorkflowProgress(78, "Rendering combined map layers", "running");
     await renderWorkflowMap();
+    await renderTerrainProfileGraph();
     setWorkflowProgress(100, "Assessment complete", "complete");
   } catch (fallbackError) {
     setWorkflowProgress(100, "Assessment failed", "error");
@@ -261,6 +272,12 @@ function workflowPayload() {
     mzcat_recommendation_mode: "conservative",
     workflow_overrides: workflowOverrides,
   };
+  const designState = currentDesignBuildingState();
+  const adjustedLocation = adjustedLocationFromDesignState(designState);
+  if (adjustedLocation) {
+    payload.latitude = adjustedLocation.latitude;
+    payload.longitude = adjustedLocation.longitude;
+  }
   if (!payload.address) delete payload.address;
   if (payload.importance_level === null) delete payload.importance_level;
   [
@@ -341,6 +358,17 @@ async function renderWorkflowMap() {
   }
 }
 
+async function renderTerrainProfileGraph() {
+  if (!terrainProfileFrame) return;
+  terrainProfileFrame.srcdoc = "<p>Rendering terrain profile graph...</p>";
+  try {
+    const response = await postJson("/api/plots/profile", workflowPayload());
+    terrainProfileFrame.srcdoc = await response.text();
+  } catch (error) {
+    terrainProfileFrame.srcdoc = `<p>Terrain profile graph failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
 function renderInitialMapFrame(message, options = {}) {
   if (!workflowMapFrame) return;
   if (workflowMapFrame.srcdoc && !options.force) return;
@@ -403,6 +431,7 @@ function initialMapHtml(message) {
         orientation_deg: ${JSON.stringify(orientation)},
         offset_east_m: 0,
         offset_north_m: 0,
+        user_modified: false,
         orientation_options: ${JSON.stringify(orientationOptions)}
       };
       const map = L.map("map", { zoomControl: true }).setView(
@@ -468,6 +497,21 @@ function initialMapHtml(message) {
         return latLngFromMeters(Math.sin(theta) * distanceM, Math.cos(theta) * distanceM);
       }
 
+      function centerLatLng() {
+        return latLngFromMeters(0, 0);
+      }
+
+      function notifyParent() {
+        try {
+          window.parent.postMessage({
+            type: "openwind-design-building-change",
+            state: Object.assign({}, state)
+          }, "*");
+        } catch (_error) {
+          // Parent notification is best-effort for embedded previews.
+        }
+      }
+
       function renderOrientationPoints() {
         if (pointsLayer) designLayer.removeLayer(pointsLayer);
         pointsLayer = L.layerGroup();
@@ -482,7 +526,15 @@ function initialMapHtml(message) {
             weight: active ? 2 : 1,
             fillColor: active ? "#14b8a6" : "#ffffff",
             fillOpacity: active ? 0.95 : 0.8
-          }).bindTooltip(formatDegrees(option) + " deg", { sticky: true }).addTo(pointsLayer);
+          })
+            .bindTooltip(formatDegrees(option) + " deg", { sticky: true })
+            .on("click", () => {
+              state.orientation_deg = Number(option);
+              state.user_modified = true;
+              redraw();
+              notifyParent();
+            })
+            .addTo(pointsLayer);
         });
         pointsLayer.addTo(designLayer);
       }
@@ -504,7 +556,7 @@ function initialMapHtml(message) {
           sticky: true
         });
         const bearingDistance = Math.max(state.length_m, 18) * 0.75;
-        const line = [[state.latitude, state.longitude], bearingEndpoint(bearingDistance)];
+        const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
         if (!bearingLine) {
           bearingLine = L.polyline(line, {
             color: "#155eef",
@@ -523,7 +575,9 @@ function initialMapHtml(message) {
         if (!Number.isFinite(east) || !Number.isFinite(north)) return;
         state.offset_east_m += east;
         state.offset_north_m += north;
+        state.user_modified = true;
         redraw();
+        notifyParent();
       }
 
       function enableCtrlDrag(layer) {
@@ -545,7 +599,9 @@ function initialMapHtml(message) {
           const delta = metersDelta(dragStart.latlng, event.latlng);
           state.offset_east_m = dragStart.east + delta.eastM;
           state.offset_north_m = dragStart.north + delta.northM;
+          state.user_modified = true;
           redraw();
+          notifyParent();
         });
         map.on("mouseup", () => {
           if (!dragStart) return;
@@ -561,12 +617,14 @@ function initialMapHtml(message) {
           if (Number.isFinite(number)) {
             state.orientation_deg = number;
             redraw();
+            notifyParent();
           }
         },
         setDimensions(widthM, lengthM) {
           state.width_m = clampDimension(widthM, 12);
           state.length_m = clampDimension(lengthM, 18);
           redraw();
+          notifyParent();
         },
         nudge(eastM, northM) {
           nudgeDesignBuilding(eastM, northM);
@@ -586,8 +644,10 @@ function initialMapHtml(message) {
           state.display_name = site.display_name || "Mapped site";
           state.offset_east_m = 0;
           state.offset_north_m = 0;
+          state.user_modified = false;
           map.setView([state.latitude, state.longitude], 18);
           redraw();
+          notifyParent();
         },
         invalidate() {
           map.invalidateSize();
@@ -598,6 +658,7 @@ function initialMapHtml(message) {
       };
 
       redraw();
+      notifyParent();
       setTimeout(() => map.invalidateSize(), 100);
     })();
   </script>
@@ -637,12 +698,68 @@ function syncDesignBuildingOverlay() {
   }
   if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
   const overlay = workflowMapFrame?.contentWindow?.openWindDesignBuilding;
+  updateDesignBuildingState(
+    {
+      ...(designBuildingState || currentMapSite),
+      orientation_deg: orientation,
+      width_m: parseOptionalNumber(buildingWidthControl?.value),
+      length_m: parseOptionalNumber(buildingLengthControl?.value),
+    },
+    { source: "form" },
+  );
   if (!overlay) return;
   overlay.setDimensions(
     parseOptionalNumber(buildingWidthControl?.value),
     parseOptionalNumber(buildingLengthControl?.value),
   );
   overlay.setOrientation(orientation);
+}
+
+function updateDesignBuildingState(state, options = {}) {
+  if (!state) return;
+  designBuildingState = {
+    ...(designBuildingState || {}),
+    ...state,
+  };
+  const orientation = nearestOrientation(parseOptionalNumber(designBuildingState.orientation_deg) ?? 0);
+  if (options.source === "map" && designBuildingState.user_modified) hasLocatedMapSite = true;
+  if (orientationControl && Number(orientationControl.value) !== orientation) {
+    orientationControl.value = String(orientation);
+  }
+  if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
+  if (options.source === "map" && currentWorkflow) {
+    setWorkflowProgress(100, "Map adjusted; rerun assessment to refresh calculated layers", "complete");
+  }
+}
+
+function currentDesignBuildingState() {
+  const overlay = workflowMapFrame?.contentWindow?.openWindDesignBuilding;
+  if (overlay?.getState) {
+    try {
+      updateDesignBuildingState(overlay.getState(), { source: "read" });
+    } catch (_error) {
+      // Cross-frame state reads can fail in some browser harnesses; use the last posted state.
+    }
+  }
+  return designBuildingState;
+}
+
+function adjustedLocationFromDesignState(state) {
+  if (!state) return null;
+  const latitude = Number(state.latitude);
+  const longitude = Number(state.longitude);
+  const eastM = Number(state.offset_east_m || 0);
+  const northM = Number(state.offset_north_m || 0);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  if (!hasLocatedMapSite && Math.abs(eastM) < 0.001 && Math.abs(northM) < 0.001) return null;
+  const earthRadiusM = 6378137;
+  const adjustedLatitude = latitude + (northM / earthRadiusM) * (180 / Math.PI);
+  const metresPerDegreeLon = earthRadiusM * Math.cos(latitude * Math.PI / 180);
+  const adjustedLongitude = longitude + (eastM / metresPerDegreeLon) * (180 / Math.PI);
+  return {
+    latitude: adjustedLatitude,
+    longitude: adjustedLongitude,
+  };
 }
 
 async function zoomMapToAddress() {
@@ -660,6 +777,7 @@ async function zoomMapToAddress() {
       longitude: siteAnalysis.site.longitude,
       display_name: siteAnalysis.site.display_name || address,
     };
+    hasLocatedMapSite = true;
     renderSiteAnalysisProgress(siteAnalysis);
     const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
     if (mapApi?.setSite) {
@@ -724,6 +842,7 @@ function applyAddressSuggestion(suggestion, options = {}) {
     display_name: suggestion.display_name,
   };
   if (options.zoom) {
+    hasLocatedMapSite = true;
     const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
     if (mapApi?.setSite) {
       mapApi.setSite(currentMapSite);
@@ -996,6 +1115,9 @@ function renderWindInputs(workflow) {
 
 function resetWorkflowSections() {
   currentWorkflow = null;
+  if (terrainProfileFrame) {
+    terrainProfileFrame.srcdoc = "<p>Run the assessment to display terrain profiles.</p>";
+  }
   if (siteInputSummary) {
     siteInputSummary.innerHTML = "<p class=\"note\">Resolving site location and elevation...</p>";
   }
