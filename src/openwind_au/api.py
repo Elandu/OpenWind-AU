@@ -17,6 +17,7 @@ from openwind_au.calculation_validation import (
     run_calculation_validation_cases,
 )
 from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider
+from openwind_au.geo import geocode_address_suggestions
 from openwind_au.models import (
     CombinedMapRequest,
     MzCatAssessmentResult,
@@ -115,6 +116,16 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/geocode/suggest")
+    def geocode_suggest(
+        q: str = Query(min_length=3),
+        limit: int = Query(default=5, ge=1, le=10),
+    ) -> dict:
+        try:
+            return {"suggestions": geocode_address_suggestions(q, limit=limit)}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/analyse", response_model=SiteAnalysisResult)
     def analyse(request: SiteAnalysisRequest) -> SiteAnalysisResult:

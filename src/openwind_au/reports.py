@@ -694,6 +694,8 @@ def _add_design_building_overlay(
         "width_m": getattr(site_result.input, "building_width_m", None) or 12,
         "length_m": getattr(site_result.input, "building_length_m", None) or 18,
         "orientation_deg": getattr(site_result.input, "structure_orientation_deg", None) or 0,
+        "offset_east_m": 0,
+        "offset_north_m": 0,
         "orientation_options": [
             -90,
             -78.75,
@@ -736,10 +738,21 @@ def _add_design_building_overlay(
 
       function latLngFromMeters(eastM, northM) {{
         const earthRadiusM = 6378137;
-        const lat = state.latitude + (northM / earthRadiusM) * (180 / Math.PI);
+        const adjustedEastM = eastM + state.offset_east_m;
+        const adjustedNorthM = northM + state.offset_north_m;
+        const lat = state.latitude + (adjustedNorthM / earthRadiusM) * (180 / Math.PI);
+        const metresPerDegreeLon = earthRadiusM * Math.cos(state.latitude * Math.PI / 180);
         const lon = state.longitude
-          + (eastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180))) * (180 / Math.PI);
+          + (adjustedEastM / metresPerDegreeLon) * (180 / Math.PI);
         return [lat, lon];
+      }}
+
+      function metersDelta(fromLatLng, toLatLng) {{
+        const earthRadiusM = 6378137;
+        const northM = (toLatLng.lat - fromLatLng.lat) * Math.PI / 180 * earthRadiusM;
+        const eastM = (toLatLng.lng - fromLatLng.lng) * Math.PI / 180
+          * earthRadiusM * Math.cos(state.latitude * Math.PI / 180);
+        return {{ eastM, northM }};
       }}
 
       function footprintCorners() {{
@@ -794,6 +807,7 @@ def _add_design_building_overlay(
             fillColor: "#3b82f6",
             fillOpacity: 0.28,
           }}).addTo(designLayer);
+          enableCtrlDrag(footprint);
         }} else {{
           footprint.setLatLngs(corners);
         }}
@@ -813,6 +827,44 @@ def _add_design_building_overlay(
           bearingLine.setLatLngs(line);
         }}
         renderOrientationPoints();
+      }}
+
+      function nudgeDesignBuilding(eastM, northM) {{
+        const east = Number(eastM);
+        const north = Number(northM);
+        if (!Number.isFinite(east) || !Number.isFinite(north)) return;
+        state.offset_east_m += east;
+        state.offset_north_m += north;
+        redraw();
+      }}
+
+      function enableCtrlDrag(layer) {{
+        let dragStart = null;
+        layer.on("mousedown", (event) => {{
+          if (!event.originalEvent.ctrlKey) return;
+          L.DomEvent.preventDefault(event.originalEvent);
+          L.DomEvent.stopPropagation(event.originalEvent);
+          dragStart = {{
+            latlng: event.latlng,
+            east: state.offset_east_m,
+            north: state.offset_north_m,
+          }};
+          map.dragging.disable();
+          map.getContainer().style.cursor = "move";
+        }});
+        map.on("mousemove", (event) => {{
+          if (!dragStart) return;
+          const delta = metersDelta(dragStart.latlng, event.latlng);
+          state.offset_east_m = dragStart.east + delta.eastM;
+          state.offset_north_m = dragStart.north + delta.northM;
+          redraw();
+        }});
+        map.on("mouseup", () => {{
+          if (!dragStart) return;
+          dragStart = null;
+          map.dragging.enable();
+          map.getContainer().style.cursor = "";
+        }});
       }}
 
       function attachOverlay() {{
@@ -836,6 +888,9 @@ def _add_design_building_overlay(
             state.length_m = clampDimension(lengthM, 18);
             redraw();
           }},
+          nudge(eastM, northM) {{
+            nudgeDesignBuilding(eastM, northM);
+          }},
           getState() {{
             return Object.assign({{}}, state);
           }},
@@ -848,6 +903,8 @@ def _add_design_building_overlay(
             if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
             state.latitude = latitude;
             state.longitude = longitude;
+            state.offset_east_m = 0;
+            state.offset_north_m = 0;
             map.setView([state.latitude, state.longitude], 18);
             redraw();
           }},

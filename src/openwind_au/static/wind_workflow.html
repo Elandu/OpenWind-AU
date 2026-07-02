@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260702-map-workspace-3" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260702-map-workspace-4" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -36,9 +36,12 @@
               name="address"
               form="workflow-form"
               type="text"
+              list="dashboard-address-suggestions"
               placeholder="1 Macquarie Street, Sydney NSW"
+              autocomplete="street-address"
               required
             />
+            <datalist id="dashboard-address-suggestions"></datalist>
           </label>
         </div>
         <div class="dashboard-kpis" aria-label="Current assessment summary">
@@ -302,6 +305,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260702-map-workspace-3"></script>
+    <script src="/static/wind_workflow.js?v=20260702-map-workspace-4"></script>
   </body>
 </html>

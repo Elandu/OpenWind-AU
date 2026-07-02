@@ -78,6 +78,28 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert "not a certified" in body["disclaimer"]
 
 
+def test_geocode_suggest_endpoint(monkeypatch) -> None:
+    def fake_suggestions(query, limit=5):
+        assert query == "macquarie"
+        assert limit == 3
+        return [
+            {
+                "latitude": -33.85918,
+                "longitude": 151.21319,
+                "display_name": "1 Macquarie Street, Sydney NSW",
+                "source": "OpenStreetMap Nominatim",
+            }
+        ]
+
+    monkeypatch.setattr(api_module, "geocode_address_suggestions", fake_suggestions)
+    client = TestClient(api_module.create_app())
+
+    response = client.get("/api/geocode/suggest", params={"q": "macquarie", "limit": 3})
+
+    assert response.status_code == 200
+    assert response.json()["suggestions"][0]["display_name"] == "1 Macquarie Street, Sydney NSW"
+
+
 def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
 

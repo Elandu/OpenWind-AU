@@ -19,6 +19,7 @@ const orientationControl = document.getElementById("structure_orientation_deg");
 const orientationReadout = document.getElementById("orientation-readout");
 const buildingWidthControl = document.getElementById("building_width_m");
 const buildingLengthControl = document.getElementById("building_length_m");
+const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
 
 const orientationOptions = [
   -90,
@@ -58,6 +59,9 @@ const hiddenWindInputWarningPatterns = [
 
 let currentWorkflow = null;
 let workflowOverrides = [];
+let addressSuggestionTimer = null;
+let addressSuggestionController = null;
+let addressSuggestions = [];
 let currentMapSite = {
   latitude: -33.8688,
   longitude: 151.2093,
@@ -106,6 +110,20 @@ dashboardAddress?.addEventListener("keydown", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   await zoomMapToAddress();
+});
+
+dashboardAddress?.addEventListener("input", () => {
+  const matchedSuggestion = suggestionForAddress(dashboardAddress.value);
+  if (matchedSuggestion) {
+    applyAddressSuggestion(matchedSuggestion, { zoom: false });
+    return;
+  }
+  queueAddressSuggestions(dashboardAddress.value);
+});
+
+dashboardAddress?.addEventListener("change", () => {
+  const matchedSuggestion = suggestionForAddress(dashboardAddress.value);
+  if (matchedSuggestion) applyAddressSuggestion(matchedSuggestion, { zoom: true });
 });
 
 workflowReport?.addEventListener("click", async () => {
@@ -383,6 +401,8 @@ function initialMapHtml(message) {
         width_m: ${JSON.stringify(widthM)},
         length_m: ${JSON.stringify(lengthM)},
         orientation_deg: ${JSON.stringify(orientation)},
+        offset_east_m: 0,
+        offset_north_m: 0,
         orientation_options: ${JSON.stringify(orientationOptions)}
       };
       const map = L.map("map", { zoomControl: true }).setView(
@@ -409,11 +429,21 @@ function initialMapHtml(message) {
 
       function latLngFromMeters(eastM, northM) {
         const earthRadiusM = 6378137;
-        const lat = state.latitude + (northM / earthRadiusM) * (180 / Math.PI);
+        const adjustedEastM = eastM + state.offset_east_m;
+        const adjustedNorthM = northM + state.offset_north_m;
+        const lat = state.latitude + (adjustedNorthM / earthRadiusM) * (180 / Math.PI);
         const lon = state.longitude
-          + (eastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180)))
+          + (adjustedEastM / (earthRadiusM * Math.cos(state.latitude * Math.PI / 180)))
           * (180 / Math.PI);
         return [lat, lon];
+      }
+
+      function metersDelta(fromLatLng, toLatLng) {
+        const earthRadiusM = 6378137;
+        const northM = (toLatLng.lat - fromLatLng.lat) * Math.PI / 180 * earthRadiusM;
+        const eastM = (toLatLng.lng - fromLatLng.lng) * Math.PI / 180
+          * earthRadiusM * Math.cos(state.latitude * Math.PI / 180);
+        return { eastM, northM };
       }
 
       function footprintCorners() {
@@ -466,6 +496,7 @@ function initialMapHtml(message) {
             fillColor: "#3b82f6",
             fillOpacity: 0.28
           }).addTo(designLayer);
+          enableCtrlDrag(footprint);
         } else {
           footprint.setLatLngs(corners);
         }
@@ -486,6 +517,44 @@ function initialMapHtml(message) {
         renderOrientationPoints();
       }
 
+      function nudgeDesignBuilding(eastM, northM) {
+        const east = Number(eastM);
+        const north = Number(northM);
+        if (!Number.isFinite(east) || !Number.isFinite(north)) return;
+        state.offset_east_m += east;
+        state.offset_north_m += north;
+        redraw();
+      }
+
+      function enableCtrlDrag(layer) {
+        let dragStart = null;
+        layer.on("mousedown", (event) => {
+          if (!event.originalEvent.ctrlKey) return;
+          L.DomEvent.preventDefault(event.originalEvent);
+          L.DomEvent.stopPropagation(event.originalEvent);
+          dragStart = {
+            latlng: event.latlng,
+            east: state.offset_east_m,
+            north: state.offset_north_m
+          };
+          map.dragging.disable();
+          map.getContainer().style.cursor = "move";
+        });
+        map.on("mousemove", (event) => {
+          if (!dragStart) return;
+          const delta = metersDelta(dragStart.latlng, event.latlng);
+          state.offset_east_m = dragStart.east + delta.eastM;
+          state.offset_north_m = dragStart.north + delta.northM;
+          redraw();
+        });
+        map.on("mouseup", () => {
+          if (!dragStart) return;
+          dragStart = null;
+          map.dragging.enable();
+          map.getContainer().style.cursor = "";
+        });
+      }
+
       window.openWindDesignBuilding = {
         setOrientation(value) {
           const number = Number(value);
@@ -498,6 +567,9 @@ function initialMapHtml(message) {
           state.width_m = clampDimension(widthM, 12);
           state.length_m = clampDimension(lengthM, 18);
           redraw();
+        },
+        nudge(eastM, northM) {
+          nudgeDesignBuilding(eastM, northM);
         },
         getState() {
           return Object.assign({}, state);
@@ -512,6 +584,8 @@ function initialMapHtml(message) {
           state.latitude = latitude;
           state.longitude = longitude;
           state.display_name = site.display_name || "Mapped site";
+          state.offset_east_m = 0;
+          state.offset_north_m = 0;
           map.setView([state.latitude, state.longitude], 18);
           redraw();
         },
@@ -598,6 +672,64 @@ async function zoomMapToAddress() {
   } catch (error) {
     setWorkflowProgress(0, "Address lookup failed", "error");
     workflowSummary.textContent = `Address lookup failed: ${error.message}`;
+  }
+}
+
+function queueAddressSuggestions(query) {
+  const trimmed = String(query || "").trim();
+  clearTimeout(addressSuggestionTimer);
+  if (addressSuggestionController) addressSuggestionController.abort();
+  if (trimmed.length < 3) {
+    addressSuggestions = [];
+    renderAddressSuggestions();
+    return;
+  }
+  addressSuggestionTimer = setTimeout(async () => {
+    addressSuggestionController = new AbortController();
+    try {
+      const params = new URLSearchParams({ q: trimmed, limit: "6" });
+      const response = await fetch(`/api/geocode/suggest?${params}`, {
+        signal: addressSuggestionController.signal,
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      addressSuggestions = data.suggestions || [];
+      renderAddressSuggestions();
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        addressSuggestions = [];
+        renderAddressSuggestions();
+      }
+    }
+  }, 280);
+}
+
+function renderAddressSuggestions() {
+  if (!addressSuggestionsList) return;
+  addressSuggestionsList.innerHTML = addressSuggestions
+    .map((suggestion) => `<option value="${escapeHtml(suggestion.display_name)}"></option>`)
+    .join("");
+}
+
+function suggestionForAddress(value) {
+  const normalized = String(value || "").trim();
+  return addressSuggestions.find((suggestion) => suggestion.display_name === normalized) || null;
+}
+
+function applyAddressSuggestion(suggestion, options = {}) {
+  if (!suggestion) return;
+  currentMapSite = {
+    latitude: suggestion.latitude,
+    longitude: suggestion.longitude,
+    display_name: suggestion.display_name,
+  };
+  if (options.zoom) {
+    const mapApi = workflowMapFrame?.contentWindow?.openWindWorkflowMap;
+    if (mapApi?.setSite) {
+      mapApi.setSite(currentMapSite);
+      mapApi.invalidate?.();
+      setWorkflowProgress(0, "Address located; run assessment when ready", "complete");
+    }
   }
 }
 

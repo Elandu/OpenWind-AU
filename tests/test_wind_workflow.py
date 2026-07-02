@@ -95,6 +95,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="dashboard-project"' in body
     assert 'id="dashboard-project-number"' in body
     assert 'id="dashboard-address"' in body
+    assert 'list="dashboard-address-suggestions"' in body
+    assert 'id="dashboard-address-suggestions"' in body
     assert 'form="workflow-form"' in body
     assert 'name="address"' in body
     assert 'class="workflow-progress"' in body
@@ -120,7 +122,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260702-map-workspace-3" in body
+    assert "20260702-map-workspace-4" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -194,12 +196,18 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "renderInitialMapFrame" in script.text
     assert "initialMapHtml" in script.text
     assert "zoomMapToAddress" in script.text
+    assert "queueAddressSuggestions" in script.text
+    assert "dashboard-address-suggestions" in script.text
     assert "/api/analyse" in script.text
+    assert "/api/geocode/suggest" in script.text
     assert "keydown" in script.text
     assert "tile.openstreetmap.org" in script.text
     assert "orientationOptions" in script.text
     assert "openWindDesignBuilding" in script.text
     assert "openWindWorkflowMap" in script.text
+    assert "nudgeDesignBuilding" in script.text
+    assert "offset_east_m" in script.text
+    assert "ctrlKey" in script.text
     assert "aria-selected" in script.text
     assert "/api/wind-workflow/stream" in script.text
     assert "handleWorkflowStreamEvent" in script.text
@@ -290,6 +298,8 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Design building" in body
     assert "openWindDesignBuilding" in body
     assert "openWindWorkflowMap" in body
+    assert "nudgeDesignBuilding" in body
+    assert "offset_east_m" in body
     assert "orientation_options" in body
     assert "setOrientation" in body
     assert "setDimensions" in body
