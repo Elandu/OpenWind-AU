@@ -122,7 +122,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260702-map-workspace-5" in body
+    assert "20260702-map-workspace-6" in body
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -210,6 +210,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "openWindWorkflowMap" in script.text
     assert "nudgeDesignBuilding" in script.text
     assert "offset_east_m" in script.text
+    assert "startOrientationDrag" in script.text
+    assert "applyOrientationFromLatLng" in script.text
+    assert "nearestOrientationOption" in script.text
     assert "openwind-design-building-change" in script.text
     assert "adjustedLocationFromDesignState" in script.text
     assert "/api/plots/profile" in script.text
@@ -309,6 +312,8 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "orientation_options" in body
     assert "setOrientation" in body
     assert "setDimensions" in body
+    assert "startOrientationDrag" in body
+    assert "applyOrientationFromLatLng" in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
     assert "Building footprints" in body

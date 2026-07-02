@@ -446,6 +446,8 @@ function initialMapHtml(message) {
       let footprint = null;
       let bearingLine = null;
       let pointsLayer = null;
+      let orientationDrag = null;
+      let suppressOrientationClick = false;
 
       function clampDimension(value, fallback) {
         const number = Number(value);
@@ -454,6 +456,14 @@ function initialMapHtml(message) {
 
       function formatDegrees(value) {
         return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+      }
+
+      function nearestOrientationOption(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return 0;
+        return state.orientation_options.reduce((best, option) => (
+          Math.abs(option - number) < Math.abs(best - number) ? option : best
+        ), state.orientation_options[0]);
       }
 
       function latLngFromMeters(eastM, northM) {
@@ -512,6 +522,41 @@ function initialMapHtml(message) {
         }
       }
 
+      function applyOrientationFromLatLng(latlng) {
+        const center = centerLatLng();
+        const delta = metersDelta({ lat: center[0], lng: center[1] }, latlng);
+        const rawDegrees = Math.atan2(delta.eastM, delta.northM) * 180 / Math.PI;
+        const snapped = nearestOrientationOption(rawDegrees);
+        if (Number(state.orientation_deg) === Number(snapped)) return;
+        if (orientationDrag) orientationDrag.moved = true;
+        state.orientation_deg = snapped;
+        state.user_modified = true;
+        redraw();
+        notifyParent();
+      }
+
+      function startOrientationDrag(event) {
+        L.DomEvent.preventDefault(event.originalEvent);
+        L.DomEvent.stopPropagation(event.originalEvent);
+        orientationDrag = { moved: false };
+        map.dragging.disable();
+        map.getContainer().style.cursor = "grabbing";
+        applyOrientationFromLatLng(event.latlng);
+      }
+
+      function stopOrientationDrag() {
+        if (!orientationDrag) return;
+        if (orientationDrag.moved) {
+          suppressOrientationClick = true;
+          setTimeout(() => {
+            suppressOrientationClick = false;
+          }, 0);
+        }
+        orientationDrag = null;
+        map.dragging.enable();
+        map.getContainer().style.cursor = "";
+      }
+
       function renderOrientationPoints() {
         if (pointsLayer) designLayer.removeLayer(pointsLayer);
         pointsLayer = L.layerGroup();
@@ -520,7 +565,7 @@ function initialMapHtml(message) {
           const theta = Number(option) * Math.PI / 180;
           const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
           const active = Number(option) === Number(state.orientation_deg);
-          L.circleMarker(point, {
+          const marker = L.circleMarker(point, {
             radius: active ? 5 : 3,
             color: active ? "#0f766e" : "#475569",
             weight: active ? 2 : 1,
@@ -529,12 +574,16 @@ function initialMapHtml(message) {
           })
             .bindTooltip(formatDegrees(option) + " deg", { sticky: true })
             .on("click", () => {
+              if (orientationDrag || suppressOrientationClick) return;
               state.orientation_deg = Number(option);
               state.user_modified = true;
               redraw();
               notifyParent();
             })
             .addTo(pointsLayer);
+          if (active) {
+            marker.on("mousedown", startOrientationDrag);
+          }
         });
         pointsLayer.addTo(designLayer);
       }
@@ -595,6 +644,10 @@ function initialMapHtml(message) {
           map.getContainer().style.cursor = "move";
         });
         map.on("mousemove", (event) => {
+          if (orientationDrag) {
+            applyOrientationFromLatLng(event.latlng);
+            return;
+          }
           if (!dragStart) return;
           const delta = metersDelta(dragStart.latlng, event.latlng);
           state.offset_east_m = dragStart.east + delta.eastM;
@@ -604,6 +657,7 @@ function initialMapHtml(message) {
           notifyParent();
         });
         map.on("mouseup", () => {
+          stopOrientationDrag();
           if (!dragStart) return;
           dragStart = null;
           map.dragging.enable();
