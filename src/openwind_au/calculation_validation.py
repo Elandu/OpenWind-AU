@@ -117,8 +117,8 @@ def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCase
         _check_equal("wind region", assessment.wind_region, "A2"),
         _check_equal("base table lookup", assessment.lookup_values[1], "Base region table: A"),
         _check_equal("parsed ARI years", assessment.ari_years, 20),
+        _check_close("20-year ultimate VR", assessment.vr_ult, 37.0),
         _check_close("serviceability VR", assessment.vr_serv, 37.0),
-        _check_equal("ultimate VR requires manual input", assessment.vr_ult, None),
     ]
     return _case_result(
         case_id="modos-04625-a2-serviceability-reference",
@@ -126,13 +126,13 @@ def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCase
         description=(
             "Validates the prior Modos 04625 check: Magenta NSW Region A2 reports "
             "approximately 37 m/s serviceability regional wind speed. The packaged "
-            "AS/NZS lookup reports this as the Region A/A2 25-year serviceability value "
-            "while flagging 20-year ultimate VR as outside the ultimate table."
+            "AS/NZS calculation reports 37 m/s for both the Region A/A2 20-year "
+            "regional equation and the 25-year serviceability value."
         ),
         checks=checks,
         notes=[
             "Prior report wording used 20-year ARI serviceability; OpenWind-AU reports the "
-            "packaged 25-year serviceability row used by the current lookup workflow."
+            "packaged 25-year serviceability value used by the current lookup workflow."
         ],
     )
 
@@ -242,8 +242,9 @@ def _topography_ridge_reference_case() -> CalculationValidationCaseResult:
         _check_close("crest RL", feature.crest_rl_m, 125.0),
         _check_close("base RL", feature.base_rl_m, 100.0),
         _check_close("H", feature.h_m, 25.0),
-        _check_close("Lu", feature.lu_m, 200.0),
-        _check_close("average upwind slope", feature.average_upwind_slope, 0.125),
+        _check_close("Lu", feature.lu_m, 62.5),
+        _check_close("H/(2Lu)", feature.average_upwind_slope, 0.2),
+        _check_equal("Mt geometry resolved", feature.mt_geometry_resolved, True),
     ]
     return _case_result(
         case_id="topography-ridge-reference",
@@ -260,6 +261,7 @@ def _topography_escarpment_reference_case() -> CalculationValidationCaseResult:
         _check_close("H", feature.h_m, 30.0),
         _check_close("Lu", feature.lu_m, 100.0),
         _check_close("average upwind slope", feature.average_upwind_slope, 0.3),
+        _check_equal("Mt geometry resolved", feature.mt_geometry_resolved, False),
         _check_equal("confidence", feature.confidence, "medium"),
     ]
     return _case_result(
@@ -296,6 +298,7 @@ def _topography_hill_reference_case() -> CalculationValidationCaseResult:
         _check_close("H", feature.h_m, 35.0),
         _check_close("Lu", feature.lu_m, 400.0),
         _check_close("crest x", feature.crest_x_m, 400.0),
+        _check_equal("Mt geometry resolved", feature.mt_geometry_resolved, False),
     ]
     return _case_result(
         case_id="topography-hill-reference",
@@ -411,7 +414,6 @@ def _rectangle_footprint(
     }
 
 
-
 def _obstruction_record(
     obstruction_id: str,
     center_east_m: float,
@@ -455,6 +457,7 @@ def _obstruction_record(
         review_required=False,
         footprint_source="OSM",
     )
+
 
 def _local_to_lonlat(east_m: float, north_m: float) -> tuple[float, float]:
     latitude = SITE_LAT + math.degrees(north_m / EARTH_RADIUS_M)

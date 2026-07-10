@@ -125,9 +125,7 @@ class OpenMeteoElevationProvider(DEMProvider):
         timeout_seconds: float = 20.0,
     ) -> None:
         self.base_url = (
-            base_url
-            or os.environ.get(OPEN_METEO_ELEVATION_URL_ENV)
-            or OPEN_METEO_ELEVATION_URL
+            base_url or os.environ.get(OPEN_METEO_ELEVATION_URL_ENV) or OPEN_METEO_ELEVATION_URL
         )
         self.timeout_seconds = timeout_seconds
         self._cache: dict[tuple[float, float], float] = {}
@@ -147,8 +145,7 @@ class OpenMeteoElevationProvider(DEMProvider):
             elevation = _parse_open_meteo_elevation(payload)
         except Exception as exc:
             raise RuntimeError(
-                f"Failed to retrieve Open-Meteo elevation for "
-                f"{latitude},{longitude}: {exc}"
+                f"Failed to retrieve Open-Meteo elevation for {latitude},{longitude}: {exc}"
             ) from exc
         self._cache[key] = elevation
         return elevation
@@ -203,9 +200,7 @@ def configured_dem_provider() -> DEMProvider:
         return SRTMProvider()
     if provider in {"open-meteo", "open_meteo", "openmeteo"}:
         return OpenMeteoElevationProvider()
-    raise ValueError(
-        f"Unsupported {DEM_PROVIDER_ENV}={provider!r}. Use 'srtm' or 'open-meteo'."
-    )
+    raise ValueError(f"Unsupported {DEM_PROVIDER_ENV}={provider!r}. Use 'srtm' or 'open-meteo'.")
 
 
 def dem_provider_label(provider: DEMProvider) -> str:

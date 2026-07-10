@@ -120,8 +120,8 @@ header {
 }
 
 .dashboard-inline-input::placeholder {
-  color: var(--ink);
-  opacity: 0.78;
+  color: #8a94a6;
+  opacity: 1;
 }
 
 .dashboard-inline-input:hover {
@@ -338,11 +338,31 @@ main {
   min-height: calc(100vh - 178px);
 }
 
+.map-workspace[hidden] {
+  display: none;
+}
+
 .map-control-rail {
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+}
+
+.map-control-rail > .panel,
+.map-control-rail > .map-summary-card {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.map-control-rail > .map-summary-card {
+  border-top: 1px solid var(--panel-border);
 }
 
 .assessment-controls {
@@ -404,6 +424,9 @@ main {
   border-radius: var(--radius);
   overflow: hidden;
   background: #ffffff;
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
 }
 
 .workspace-tab {
@@ -430,6 +453,16 @@ main {
   color: var(--ink);
 }
 
+.workspace-tab.is-active {
+  box-shadow: inset 0 -3px 0 var(--engineering-blue);
+}
+
+.workspace-tab:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline-offset: -3px;
+}
+
 .workspace-panel {
   display: none;
 }
@@ -440,6 +473,34 @@ main {
 
 .map-layer-summary {
   margin-bottom: 0;
+}
+
+.raw-results-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.raw-detail-group {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+}
+
+.raw-detail-group > summary {
+  cursor: pointer;
+  padding: 16px;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.raw-detail-group[open] > summary {
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.raw-detail-stack {
+  padding: 14px;
 }
 
 .panel {
@@ -682,6 +743,15 @@ button {
 
 button:hover {
   background: var(--engineering-blue-dark);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.assessment-submit {
+  width: 100%;
 }
 
 button:focus-visible,
@@ -1081,6 +1151,88 @@ iframe {
   background: #ffffff;
 }
 
+
+@media (min-width: 901px) {
+  html,
+  body.dashboard-page {
+    height: 100%;
+  }
+
+  body.dashboard-page {
+    overflow: hidden;
+  }
+
+  body.dashboard-page .dashboard-topbar {
+    position: static;
+  }
+
+  body.dashboard-page .map-first-shell {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+    height: calc(100vh - 92px);
+    padding: 10px 12px 12px;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    overflow: hidden;
+  }
+
+  body.dashboard-page .map-workspace {
+    grid-template-columns: clamp(260px, 22vw, 330px) minmax(0, 1fr);
+    align-items: stretch;
+    height: 100%;
+    min-height: 0;
+  }
+
+  body.dashboard-page .map-control-rail {
+    height: 100%;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 3px;
+  }
+
+  body.dashboard-page .assessment-controls {
+    flex: 0 0 auto;
+    min-height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  body.dashboard-page .map-summary-card {
+    flex: 0 0 auto;
+    max-height: none;
+  }
+
+  body.dashboard-page .primary-control-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body.dashboard-page .primary-control-grid > label:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  body.dashboard-page .map-canvas-panel {
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+    min-height: 0;
+  }
+
+  body.dashboard-page.detail-workspace-active .map-first-shell {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  body.dashboard-page.detail-workspace-active .workspace-panel.is-active {
+    align-self: stretch;
+    height: 100%;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  body.dashboard-page .map-iframe,
+  body.dashboard-page .profile-iframe {
+    min-height: 0;
+  }
+}
 @media (min-width: 681px) and (max-width: 900px) {
   .map-workspace {
     grid-template-columns: 1fr;
@@ -1117,6 +1269,11 @@ iframe {
 
   .workspace-tabs {
     overflow-x: auto;
+  }
+
+  .workspace-tab {
+    flex: 1 0 96px;
+    min-width: 96px;
   }
 }
 

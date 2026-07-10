@@ -34,7 +34,8 @@ The project currently uses public DEM terrain data and conservative rule-based s
 stage, broad qualitative checks are more appropriate than exact engineering targets because:
 
 - public DEM resolution can miss local earthworks, retaining structures, and abrupt terrain changes;
-- the tool does not yet implement code-specific terrain or topographic multipliers;
+- the Clause 4.4 equations are unit tested, but representative locations are not surveyed
+  topographic benchmark cases;
 - representative locations are useful for regression testing but are not calibrated benchmark sites;
 - engineering review is still required before any project use.
 

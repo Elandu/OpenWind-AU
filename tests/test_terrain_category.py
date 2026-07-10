@@ -174,10 +174,7 @@ def test_classify_terrain_category_empty_sources_returns_tc1() -> None:
 
 def test_classify_terrain_category_osm_only_dense_suburban_buildings() -> None:
     site = Point(SITE_LON, SITE_LAT)
-    buildings = [
-        (0, 25 + index * 4, 8, "building", 8.0)
-        for index in range(30)
-    ]
+    buildings = [(0, 25 + index * 4, 8, "building", 8.0) for index in range(30)]
 
     result = classify_terrain_category(
         site,

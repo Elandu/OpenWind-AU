@@ -17,8 +17,12 @@ from openwind_au.models import (
     DirectionMultiplierRow,
     RegionalWindSpeedAssessment,
     SiteLocation,
-    WindDirection,
     WindRegionAssessment,
+)
+from openwind_au.standard_calculations import (
+    DIRECTIONS,
+    regional_wind_speed,
+    table_region_key,
 )
 from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
@@ -26,7 +30,6 @@ VR_TABLE_ENV = "OPENWIND_VR_TABLE_PATH"
 MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
 VR_DATA_FILE = "regional_wind_speeds.json"
 MD_DATA_FILE = "direction_multipliers.json"
-DIRECTIONS: tuple[WindDirection, ...] = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 VERIFIED_LOOKUP_REVIEW_STATUS = "verified_against_standard"
 VR_METADATA_WARNING = "VR lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
 MD_METADATA_WARNING = "Md lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
@@ -50,8 +53,17 @@ def regional_wind_speed_assessment(
         "project standard."
     ]
     warnings.extend(lookup_metadata_warnings(data, VR_METADATA_WARNING))
-    vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
-    vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
+    if os.environ.get(VR_TABLE_ENV):
+        vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
+        vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
+    else:
+        vr_ult = regional_wind_speed(wind_region.wind_region, ari_years)
+        vr_serv = regional_wind_speed(wind_region.wind_region, 25)
+        interpolation = (
+            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
+            "rounded to the nearest 1 m/s."
+        )
+        service_note = None
     if vr_ult is None:
         warnings.append(
             "Regional wind speed table value missing for selected ultimate ARI; "
@@ -299,7 +311,12 @@ def parse_ari_years(value: str) -> int:
             text = text.split(separator)[-1]
             break
     digits = "".join(character for character in text if character.isdigit())
-    return int(digits or "500")
+    if not digits:
+        raise ValueError("Annual exceedance probability must contain a positive ARI in years.")
+    ari_years = int(digits)
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    return ari_years
 
 
 def lookup_vr(
@@ -321,18 +338,6 @@ def lookup_vr(
     ratio = (math.log(ari_years) - math.log(lower)) / (math.log(upper) - math.log(lower))
     value = numeric_table[lower] + (numeric_table[upper] - numeric_table[lower]) * ratio
     return round(value, 1), f"Interpolated between {lower} and {upper} year ARI rows."
-
-
-def table_region_key(region: str, tables: dict[str, Any]) -> str:
-    """Return the most specific available table key for a wind-region label."""
-
-    if region in tables:
-        return region
-    if region.startswith("A") and "A" in tables:
-        return "A"
-    if region.startswith("B") and "B" in tables:
-        return "B"
-    return region
 
 
 def load_vr_tables() -> dict[str, Any]:

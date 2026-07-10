@@ -51,11 +51,11 @@ dataset interpretation, or boundary geometry can change the selected region.
 
 ### Processing Method
 
-OpenWind-AU maps subregions to their base table where required, then selects `VR,ult` from the
-ultimate table for the requested ARI. If the ARI is tabulated, the exact value is returned. If the
-ARI sits between two available table rows, OpenWind-AU uses logarithmic interpolation between
-those tabulated ARIs. Values outside the supported table range return a warning and require manual
-input.
+OpenWind-AU maps Australian subregions to their base regional equation and calculates `VR,ult`
+from AS/NZS 1170.2:2021 Table 3.1(A). The explicit `V1` table value is used for `R = 1`; for
+`R >= 5`, the regional equation is evaluated and rounded to the nearest 1 m/s. Recurrence
+intervals between 1 and 5 are rejected because they are not covered by the regional equation.
+Project-supplied override tables retain exact lookup and logarithmic interpolation behaviour.
 
 The serviceability value currently reported by the app is the 25-year serviceability row where
 available. Lookup metadata is checked so packaged or override JSON must include
@@ -72,8 +72,8 @@ available. Lookup metadata is checked so packaged or override JSON must include
 
 ### Review Requirements
 
-The engineer must confirm the ARI, importance level, table applicability, and any interpolation or
-override source before using the value in design decisions.
+The engineer must confirm the ARI, importance level, table applicability, jurisdictional NCC
+variations, and any override source before using the value in design decisions.
 
 ## Direction Multiplier (Md)
 
@@ -122,6 +122,12 @@ directional obstruction evidence. Built-up density, vegetation evidence, open-te
 obstruction density, height coverage, and confidence scoring are reported by direction.
 
 OpenWind-AU does not assign final terrain categories. It provides evidence only.
+
+For each reviewed or recommended category, the wind workflow evaluates `Mz,cat` from every height
+node in AS/NZS 1170.2:2021 Table 4.1 (`z <= 3 m` through `z = 200 m`). Intermediate heights and
+terrain categories use linear interpolation. Intermediate TC1.5 values are derived between TC1
+and TC2 rather than stored as a separate standard table column. The Region A0 rule uses TC2 for
+`z <= 100 m` and `Mz,cat = 1.24` above 100 m to 200 m.
 
 ### Output Fields
 
@@ -209,6 +215,12 @@ against the subject building height threshold. For included obstructions, it cal
 counts, average shielding height, footprint breadth normal to wind, spacing evidence, and an
 indicative shielding multiplier workflow.
 
+Vegetation is excluded because Clause 4.3 does not permit trees or vegetation to provide
+shielding. For structures higher than 25 m, `Ms` is fixed at 1.0. Where ground levels are
+available, an upwind building on an average ground gradient greater than 0.2 is rejected unless
+its top elevation exceeds the subject building top elevation. Missing ground levels are reported
+for review.
+
 Indicative `Ms` values are not certified design values.
 
 ### Output Fields
@@ -257,12 +269,29 @@ substantial relief or meaningful average upwind slope. This suppresses broad low
 DEM undulations on flat validation sites while preserving stronger topographic evidence for
 engineering review.
 
-OpenWind-AU does not currently produce certified `Mt` values.
+The site wind workflow calculates a preliminary directional hill-shape multiplier using
+AS/NZS 1170.2:2021 Clause 4.4. It uses the DEM-derived `H`, `Lu`, and `x`, together with the
+building reference height `z`. The implementation applies:
+
+- the `H < 10 m` and `H/(2Lu) < 0.05` exclusions;
+- Equation 4.4(3) in the local topographic zone;
+- Equation 4.4(4) in the steep-slope rectangular peak zone;
+- the different downwind length scale for escarpments;
+- the Region A0 adjustment in Equation 4.4(2); and
+- the elevation factor in Equation 4.4(1) for Region A4 sites above 500 m.
+
+No Australian lee zones are identified by the Standard, so `Mlee = 1.0` in the Australian
+workflow. OpenWind-AU calculates `Mt`, but does not certify it: public DEM resolution and automatic
+feature geometry remain inputs requiring engineering review.
+
+If the sampled profile does not extend far enough upwind to resolve the half-height point that
+defines `Lu`, OpenWind-AU leaves directional `Mt` unavailable and blocks the corresponding
+`Vsit,b` calculation until the profile geometry or an engineer-reviewed override is supplied.
 
 ### Review Requirements
 
-The engineer must confirm topographic feature selection, terrain data adequacy, and any final
-topographic multiplier independently.
+The engineer must confirm topographic feature selection, terrain data adequacy, `H`, `Lu`, `x`,
+the building reference height, and the resulting topographic multiplier.
 
 ## Site Wind Workflow
 
@@ -284,7 +313,7 @@ produce certified design wind pressures.
 | Obstruction Inventory | Reviewed footprint data, then Microsoft Building Footprints | OpenStreetMap building footprints | Review required for coverage, duplicates, and height sources |
 | Shielding Evidence | Obstruction inventory records with selected heights and footprints | None for certified design; incomplete data produces warnings | Indicative only, not certified `Ms` |
 | Terrain Evidence | DEM terrain profiles and obstruction evidence | Public DEM and public footprint fallbacks where configured | Evidence only, final terrain category not assigned |
-| Topographic Evidence | DEM terrain profiles | None for certified design; project survey should be reviewed | Screening only, certified `Mt` not assigned |
+| Topographic Evidence | DEM terrain profiles and Clause 4.4 equations | None for certified design; project survey should be reviewed | Preliminary `Mt` calculated; geometry and result require review |
 
 ## Important Limitations
 
@@ -292,6 +321,6 @@ produce certified design wind pressures.
 - OpenWind-AU is not a certification tool.
 - It does not assign final terrain category.
 - It does not assign certified `Ms`.
-- It does not assign certified `Mt`.
+- It does not certify calculated `Mt` without competent engineering review.
 - It does not produce final design pressures.
 - It requires competent engineering review.

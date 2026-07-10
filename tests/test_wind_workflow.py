@@ -75,13 +75,13 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         "Run Assessment",
         "Interactive Wind Map",
         "Map Layers",
-        "Resolved Site and Wind Inputs",
+        "Assessment Summary",
+        "Directional Site Wind Speed, Vsit,b",
         "Regional Wind Speed, VR",
         "Wind Direction Multiplier, Md",
         "Terrain Category / Mz,cat",
         "Shielding Multiplier, Ms",
         "Topographic Multiplier, Mt",
-        "Site Wind Speed, Vsit,b",
         "Report and Diagnostics",
     ]
     assert all(heading in body for heading in headings)
@@ -112,6 +112,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'data-workspace-tab="profile"' in body
     assert 'data-workspace-tab="raw-data"' in body
     assert 'data-workspace-tab="documents"' in body
+    assert 'aria-selected="false" tabindex="-1"' in body
     assert 'data-workspace-panel="profile"' in body
     assert 'data-workspace-panel="raw-data"' in body
     assert 'data-workspace-panel="documents"' in body
@@ -124,7 +125,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
-    assert "20260702-map-workspace-7" in body
+    assert '<script src="/static/wind_workflow.js?v=' in body
+    assert "detail-workspace-active" in script.text
+    assert "setIframeHtml(workflowMapFrame, event.data.map_html)" in script.text
+    assert '"ArrowLeft", "ArrowRight", "Home", "End"' in script.text
     assert "Open Site Wind Assessment Report" in body
     assert "<h2>1." not in body
     assert "<h2>2." not in body
@@ -155,7 +159,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         assert f'<option value="{orientation}"' in body
     assert "Street address" not in body
     assert "Assessment status" not in body
-    assert "Resolved site data, wind-region lookup, and VR." in body
+    assert "Key site and wind inputs. Detailed calculation evidence is collapsed below." in body
+    assert "Detailed calculation inputs and engineering review evidence" in body
+    assert "required" not in body.split('id="dashboard-address"', 1)[1].split("/>", 1)[0]
     assert "User assumptions" not in body
     assert "Structure type" not in body
     assert "Building dimensions" not in body
@@ -193,10 +199,12 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'href="/site-analysis#shielding-evidence"' not in body
     assert 'href="/site-analysis#topographic-evidence"' not in body
     assert 'href="/site-analysis#profiles"' not in body
-    assert "Dataset details" in script.text
+    assert "Wind input details and warnings" in script.text
     assert "setWorkflowProgress" in script.text
     assert "hiddenWindInputWarningPatterns" in script.text
     assert "visibleWarnings" in script.text
+    assert "Clause 4.4 inputs" in script.text
+    assert "Show geometry" in script.text
     assert "activateWorkspaceTab" in script.text
     assert "terrainProfileFrame.hidden" in script.text
     assert "syncDesignBuildingOverlay" in script.text
@@ -219,6 +227,11 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "nearestOrientationOption" in script.text
     assert "openwind-design-building-change" in script.text
     assert "adjustedLocationFromDesignState" in script.text
+    assert script.text.index("const requestPayload = workflowPayload()") < script.text.index(
+        "resetWorkflowSections();"
+    )
+    for step in range(1, 10):
+        assert f'data-step="{step}"' in body
     assert "/api/plots/profile" in script.text
     assert "ctrlKey" in script.text
     assert "aria-selected" in script.text
@@ -236,6 +249,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Governing Md" not in script.text
     assert "inlineFinalValueCell" in script.text
     assert "tableCalculationSummary" in script.text
+    assert "<th>Source Reference</th>" not in script.text
+    assert "Calculation provenance and warnings" in script.text
     assert "Override Value" not in script.text
     assert "Show calculation" not in script.text
     assert "Show details" not in script.text
@@ -306,7 +321,7 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Mz,cat sectors" in body
     assert "Shielding sectors" in body
     assert "Shielding obstruction polygons" in body
-    assert "Topographic feature candidates" in body
+    assert r"Terrain profiles \u0026 topographic candidates" in body
     assert "Nearby obstructions" in body
     assert "openWindNearbyObstructionFootprintLayer" in body
     assert "Design building" in body
@@ -321,7 +336,7 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "applyOrientationFromLatLng" in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
-    assert "Building footprints" in body
+    assert "Building footprints (source context)" not in body
     assert "Microsoft building footprints" not in body
     assert "OSM fallback and matched attributes" not in body
     assert "Vegetation polygons" not in body
@@ -472,7 +487,7 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
         item for item in body["variables"] if item["variable"] == "Mt" and item["direction"] == "N"
     )
 
-    assert mzcat_north["final_value"] == 0.91
+    assert mzcat_north["final_value"] == 0.83
     assert ms_north["final_value"] == 0.85
     assert mt_north["final_value"] == 1.08
     assert "Reviewed TC TC3" in mzcat_north["recommended_label"]
@@ -481,7 +496,7 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert any("Reference calculation classes" in item for item in mzcat_north["detail_items"])
     assert any("class override" in warning for warning in ms_north["warnings"])
     north = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
-    assert north["mzcat"] == 0.91
+    assert north["mzcat"] == 0.83
     assert north["ms"] == 0.85
     assert north["mt"] == 1.08
     assert north["final_vsitb"] is not None
@@ -539,6 +554,10 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
         "Mt",
         "Vsitb",
     }
+    for row in body["directional_vsitb"]:
+        expected = round(row["vr"] * row["md"] * row["mzcat"] * row["ms"] * row["mt"], 3)
+        assert row["recommended_vsitb"] == expected
+        assert row["final_vsitb"] == expected
 
 
 def test_legacy_variable_reviews_do_not_gate_or_override_vsitb(monkeypatch) -> None:

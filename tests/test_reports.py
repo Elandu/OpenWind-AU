@@ -15,6 +15,7 @@ from openwind_au.reports import (
     obstruction_map_html,
     profile_plot_html,
     render_html_report,
+    render_pdf_report,
     result_to_json,
     terrain_category_map_html,
 )
@@ -55,9 +56,29 @@ def test_report_helpers_render_outputs() -> None:
     assert "competent engineer" in html
     assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
     assert "plotly" in plot.lower()
+    assert "Plotly.newPlot" in plot
+    assert 'src="/vendor/plotly.min.js"' in plot
     assert "site" in plot
     assert "leaflet" in fmap.lower()
     assert "Analysis radius" in fmap
+
+
+def test_pdf_report_renders_in_memory() -> None:
+    result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=10,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+
+    pdf = render_pdf_report(result)
+
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 1_000
 
 
 def microsoft_footprint(index: int, north: int, east: int, height: float = 12.0) -> dict:
@@ -175,8 +196,11 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
 
     assert "Shielding sectors" in html
     assert "Shielding obstruction polygons" in html
-    assert "Topographic feature candidates" in html
+    assert r"Terrain profiles \u0026 topographic candidates" in html
     assert "Nearby obstructions" in html
+    assert "Nearby obstructions (selected)" in html
+    assert 'color: "#ea580c"' in html
+    assert 'dashArray: "6 3"' in html
     assert "window.openWindNearbyObstructionFootprintLayer" in html
     assert "Topographic circles" not in html
     assert "Raw OSM building polygons before filtering" not in html
@@ -184,21 +208,23 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Design building" in html
     assert "openWindDesignBuilding" in html
     assert "orientation_options" in html
-    assert "Building footprints" in html
+    assert "Building footprints (source context)" not in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html
     assert "Shielding candidates" not in html
     shielding_layer = re.search(r'"Shielding sectors" : (feature_group_[a-f0-9]+)', html)
     assert shielding_layer
     assert f"{shielding_layer.group(1)}.addTo(map_" in html
-    footprint_layer = re.search(
-        r'"Building footprints" : (feature_group_[a-f0-9]+)',
-        html,
-    )
-    assert footprint_layer
-    assert f"{footprint_layer.group(1)}.addTo(map_" in html
-    assert "window.openWindMicrosoftFootprintLayer" in html
     assert "explicit_leaflet_geojson" in html
+    assert "openWindAttachNearbyFootprints" in html
+    assert "openWindAttachShieldingFootprints" in html
+    assert "window.setTimeout(openWindAttachNearbyFootprints" in html
+    assert "OpenWind-AU map dependency failed" in html
+    assert "Leaflet failed to load from the local static assets" in html
+    assert "/static/vendor/leaflet/leaflet.js" in html
+    assert "/static/vendor/jquery/jquery-3.7.1.min.js" in html
+    assert "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js" not in html
+    assert "https://code.jquery.com/jquery-3.7.1.min.js" not in html
 
 
 def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
@@ -233,13 +259,13 @@ def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
     assert shielding_polygon_layer
     assert f"{shielding_polygon_layer.group(1)}.addTo(map_" in html
     assert "window.openWindShieldingFootprintLayer" in html
-    assert diagnostics["plotted_polygons"] == 6
-    assert diagnostics["plotted_microsoft_polygons"] == 3
+    assert diagnostics["plotted_polygons"] == 3
+    assert diagnostics["plotted_microsoft_polygons"] == 0
     assert diagnostics["plotted_shielding_polygons"] == 3
     assert diagnostics["total_geojson_payload_size"] > 0
     assert "Shielding polygon display limited to 3" in html
-    assert "Building footprint display limited to 3" in html
-    assert "window.openWindMicrosoftFootprintLayer" in html
+    assert "Building footprint display limited to 3" not in html
+    assert "window.openWindMicrosoftFootprintLayer" not in html
     assert "window.openWindShieldingFootprintLayer" in html
 
 

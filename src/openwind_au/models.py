@@ -88,6 +88,7 @@ class TopographicFeature(BaseModel):
     base_x_m: float
     crest_x_m: float
     average_upwind_slope: float
+    mt_geometry_resolved: bool = False
     confidence: Literal["none", "low", "medium", "high"]
     notes: list[str]
 

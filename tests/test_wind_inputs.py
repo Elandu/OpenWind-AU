@@ -14,6 +14,7 @@ from openwind_au.wind_inputs import (
     direction_multiplier_assessment,
     lookup_vr,
     parse_ari_years,
+    regional_wind_speed,
     regional_wind_speed_assessment,
     wind_region_map_html,
 )
@@ -218,6 +219,36 @@ def test_vr_lookup_from_editable_data(monkeypatch) -> None:
     assert parse_ari_years("1:1000") == 1000
     assert interpolated == pytest.approx(43.2, abs=0.1)
     assert "Interpolated" in note
+
+
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("A0", [30, 32, 34, 37, 37, 39, 41, 43, 43, 45, 46, 48, 48, 50, 51]),
+        ("B2", [26, 28, 33, 38, 39, 44, 48, 52, 53, 57, 60, 63, 64, 67, 69]),
+        ("C", [23, 33, 39, 45, 47, 52, 56, 61, 62, 66, 70, 73, 74, 78, 81]),
+        ("D", [23, 35, 43, 51, 53, 60, 66, 72, 74, 80, 85, 90, 91, 95, 99]),
+    ],
+)
+def test_regional_equations_match_every_table_3_1_a_recurrence_row(
+    region: str,
+    expected: list[float],
+) -> None:
+    recurrence_intervals = [1, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000]
+
+    actual = [regional_wind_speed(region, years) for years in recurrence_intervals]
+
+    assert actual == expected
+
+
+def test_regional_equation_rejects_undefined_short_recurrence_interval() -> None:
+    with pytest.raises(ValueError, match="R must be 1 or at least 5"):
+        regional_wind_speed("A2", 2)
+
+
+def test_parse_ari_rejects_missing_years() -> None:
+    with pytest.raises(ValueError, match="positive ARI"):
+        parse_ari_years("not selected")
 
 
 def test_missing_vr_table_value_warns(monkeypatch, tmp_path) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from plotly.offline import get_plotlyjs
 
 from openwind_au.analysis import run_site_analysis
 from openwind_au.calculation_validation import (
@@ -51,11 +52,11 @@ from openwind_au.reports import (
     profile_plot_html,
     render_html_report,
     render_obstruction_report_html,
+    render_pdf_report,
     render_terrain_category_report_html,
     render_wind_workflow_report_html,
     result_to_json,
     terrain_category_map_html,
-    write_pdf_report,
 )
 from openwind_au.terrain_category import run_terrain_category_evidence
 from openwind_au.terrain_category_validation import (
@@ -116,6 +117,14 @@ def create_app() -> FastAPI:
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/vendor/plotly.min.js", include_in_schema=False)
+    def plotly_javascript() -> Response:
+        return Response(
+            content=get_plotlyjs(),
+            media_type="application/javascript",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     @app.get("/api/geocode/suggest")
     def geocode_suggest(
@@ -272,13 +281,12 @@ def create_app() -> FastAPI:
     @app.post("/api/report/pdf")
     def report_pdf(request: SiteAnalysisRequest) -> Response:
         result = analyse(request)
-        report_path = Path("reports") / "openwind-au-report.pdf"
         try:
-            write_pdf_report(result, report_path)
+            content = render_pdf_report(result)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {exc}") from exc
         return Response(
-            content=report_path.read_bytes(),
+            content=content,
             media_type="application/pdf",
             headers={"Content-Disposition": 'attachment; filename="openwind-au-report.pdf"'},
         )
@@ -492,9 +500,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/reference-validation/7989")
     def reference_calc_7989_validation(apply_reference_overrides: bool = False) -> Response:
-        class_overrides = (
-            reference_calc_7989_class_overrides() if apply_reference_overrides else []
-        )
+        class_overrides = reference_calc_7989_class_overrides() if apply_reference_overrides else []
         request = WindWorkflowRequest(
             latitude=-27.520503,
             longitude=152.936814,
@@ -654,9 +660,7 @@ def _dem_provider():
         return SRTMProvider()
     if provider in {"open-meteo", "open_meteo", "openmeteo"}:
         return OpenMeteoElevationProvider()
-    raise ValueError(
-        f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'."
-    )
+    raise ValueError(f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'.")
 
 
 def _obstruction_request_from_combined(

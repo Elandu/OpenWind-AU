@@ -60,6 +60,7 @@ const hiddenWindInputWarningPatterns = [
 ];
 
 let currentWorkflow = null;
+let activeWorkflowPayload = null;
 let workflowOverrides = [];
 let addressSuggestionTimer = null;
 let addressSuggestionController = null;
@@ -83,8 +84,25 @@ try {
   // Local storage can be unavailable in restrictive browser modes.
 }
 
-document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
+const workspaceTabs = Array.from(document.querySelectorAll("[data-workspace-tab]"));
+const mapWorkspace = document.querySelector(".map-workspace");
+
+workspaceTabs.forEach((button) => {
   button.addEventListener("click", () => activateWorkspaceTab(button.dataset.workspaceTab));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = workspaceTabs.indexOf(button);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? workspaceTabs.length - 1
+        : (currentIndex + (event.key === "ArrowRight" ? 1 : -1) + workspaceTabs.length)
+          % workspaceTabs.length;
+    const nextTab = workspaceTabs[nextIndex];
+    activateWorkspaceTab(nextTab.dataset.workspaceTab);
+    nextTab.focus();
+  });
 });
 
 window.addEventListener("message", (event) => {
@@ -156,21 +174,23 @@ workflowReport?.addEventListener("click", async () => {
 });
 
 async function runWorkflow() {
+  const requestPayload = workflowPayload();
+  activeWorkflowPayload = requestPayload;
   setWorkflowProgress(4, "Resolving site location and elevation", "running");
   workflowSummary.textContent = "Resolving site location and elevation...";
   resetWorkflowSections();
   try {
-    await runWorkflowStream();
+    await runWorkflowStream(requestPayload);
   } catch (error) {
-    await runWorkflowFallback(error);
+    await runWorkflowFallback(error, requestPayload);
   }
 }
 
-async function runWorkflowStream() {
+async function runWorkflowStream(requestPayload) {
   const response = await fetch("/api/wind-workflow/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(workflowPayload()),
+    body: JSON.stringify(requestPayload),
   });
   if (!response.ok || !response.body) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -219,25 +239,25 @@ function handleWorkflowStreamEvent(event) {
     renderWorkflow(currentWorkflow);
   }
   if (event.data?.map_html && workflowMapFrame) {
-    workflowMapFrame.srcdoc = event.data.map_html;
+    setIframeHtml(workflowMapFrame, event.data.map_html);
     setTimeout(syncDesignBuildingOverlay, 80);
-    renderTerrainProfileGraph();
+    renderTerrainProfileGraph(activeWorkflowPayload);
   }
   if (event.stage === "complete") {
     setWorkflowProgress(100, event.label, "complete");
   }
 }
 
-async function runWorkflowFallback(originalError) {
+async function runWorkflowFallback(originalError, requestPayload) {
   try {
     const reason = originalError?.message ? ` (${originalError.message})` : "";
     setWorkflowProgress(32, `Live progress unavailable${reason}; calculating full workflow`, "running");
-    const response = await postJson("/api/wind-workflow", workflowPayload());
+    const response = await postJson("/api/wind-workflow", requestPayload);
     currentWorkflow = await response.json();
     renderWorkflow(currentWorkflow);
     setWorkflowProgress(78, "Rendering combined map layers", "running");
-    await renderWorkflowMap();
-    await renderTerrainProfileGraph();
+    await renderWorkflowMap(requestPayload);
+    await renderTerrainProfileGraph(requestPayload);
     setWorkflowProgress(100, "Assessment complete", "complete");
   } catch (fallbackError) {
     setWorkflowProgress(100, "Assessment failed", "error");
@@ -345,35 +365,54 @@ function renderDashboardHeader(workflow) {
   }
 }
 
-async function renderWorkflowMap() {
+async function renderWorkflowMap(requestPayload = activeWorkflowPayload || workflowPayload()) {
   if (!workflowMapFrame) return;
   renderInitialMapFrame("Rendering project site map...");
   try {
-    const response = await postJson("/api/wind-workflow/map", workflowPayload());
-    workflowMapFrame.srcdoc = await response.text();
+    const response = await postJson("/api/wind-workflow/map", requestPayload);
+    setIframeHtml(workflowMapFrame, await response.text());
     setTimeout(syncDesignBuildingOverlay, 80);
     setTimeout(invalidateWorkflowMap, 140);
   } catch (error) {
-    workflowMapFrame.srcdoc = `<p>Combined map failed: ${escapeHtml(error.message)}</p>`;
+    setIframeHtml(workflowMapFrame, `<p>Combined map failed: ${escapeHtml(error.message)}</p>`);
     throw error;
   }
 }
 
-async function renderTerrainProfileGraph() {
+async function renderTerrainProfileGraph(requestPayload = activeWorkflowPayload || workflowPayload()) {
   if (!terrainProfileFrame) return;
-  terrainProfileFrame.srcdoc = "<p>Rendering terrain profile graph...</p>";
+  setIframeHtml(terrainProfileFrame, "<p>Rendering terrain profile graph...</p>");
   try {
-    const response = await postJson("/api/plots/profile", workflowPayload());
-    terrainProfileFrame.srcdoc = await response.text();
+    const response = await postJson("/api/plots/profile", requestPayload);
+    setIframeHtml(terrainProfileFrame, await response.text());
   } catch (error) {
-    terrainProfileFrame.srcdoc = `<p>Terrain profile graph failed: ${escapeHtml(error.message)}</p>`;
+    setIframeHtml(terrainProfileFrame, `<p>Terrain profile graph failed: ${escapeHtml(error.message)}</p>`);
   }
 }
 
 function renderInitialMapFrame(message, options = {}) {
   if (!workflowMapFrame) return;
-  if (workflowMapFrame.srcdoc && !options.force) return;
-  workflowMapFrame.srcdoc = initialMapHtml(message);
+  if ((workflowMapFrame.src || workflowMapFrame.srcdoc) && !options.force) return;
+  setIframeHtml(workflowMapFrame, initialMapHtml(message));
+}
+
+function clearIframeHtml(frame) {
+  if (!frame) return;
+  frame.removeAttribute("src");
+  frame.removeAttribute("srcdoc");
+}
+
+function setIframeHtml(frame, html) {
+  if (!frame) return;
+  clearIframeHtml(frame);
+  frame.srcdoc = iframeHtml(html);
+}
+
+function iframeHtml(html) {
+  const base = `<base href="${window.location.origin}/">`;
+  if (!html || html.includes("<base ")) return html;
+  if (html.includes("<head>")) return html.replace("<head>", `<head>${base}`);
+  return `${base}${html}`;
 }
 
 function initialMapHtml(message) {
@@ -384,9 +423,10 @@ function initialMapHtml(message) {
   return `<!doctype html>
 <html lang="en">
 <head>
+  <base href="${window.location.origin}/">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
   <style>
     html,
     body,
@@ -415,14 +455,27 @@ function initialMapHtml(message) {
       font-weight: 700;
       line-height: 1.35;
     }
+    .map-status-error {
+      background: #fff7ed;
+      border-color: #fdba74;
+      color: #7c2d12;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div class="map-status">${safeMessage}</div>
-  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+  <div id="map-status" class="map-status">${safeMessage}</div>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
   <script>
     (function () {
+      const statusEl = document.getElementById("map-status");
+      if (!window.L) {
+        if (statusEl) {
+          statusEl.classList.add("map-status-error");
+          statusEl.textContent = "Map library failed to load. Check internet/CDN access, then reload the app.";
+        }
+        return;
+      }
       const state = {
         latitude: ${JSON.stringify(currentMapSite.latitude)},
         longitude: ${JSON.stringify(currentMapSite.longitude)},
@@ -593,10 +646,11 @@ function initialMapHtml(message) {
         const corners = footprintCorners();
         if (!footprint) {
           footprint = L.polygon(corners, {
-            color: "#155eef",
-            weight: 3,
-            fillColor: "#3b82f6",
-            fillOpacity: 0.28
+            color: "#ea580c",
+            weight: 4,
+            dashArray: "10 5",
+            fillColor: "#fb923c",
+            fillOpacity: 0.22
           }).addTo(designLayer);
           enableCtrlDrag(footprint);
         } else {
@@ -609,8 +663,8 @@ function initialMapHtml(message) {
         const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
         if (!bearingLine) {
           bearingLine = L.polyline(line, {
-            color: "#155eef",
-            weight: 2,
+            color: "#ea580c",
+            weight: 3,
             dashArray: "4 4"
           }).addTo(designLayer);
         } else {
@@ -735,10 +789,14 @@ function setWorkflowProgress(percent, label, state = "running") {
 function activateWorkspaceTab(tabName) {
   if (!tabName) return;
   const canvasTab = tabName === "profile" ? "profile" : "map";
+  const showsCanvas = tabName === "map" || tabName === "profile";
+  document.body.classList.toggle("detail-workspace-active", !showsCanvas);
+  if (mapWorkspace) mapWorkspace.hidden = !showsCanvas;
   document.querySelectorAll("[data-workspace-tab]").forEach((button) => {
     const isActive = button.dataset.workspaceTab === tabName;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-selected", String(isActive));
+    button.tabIndex = isActive ? 0 : -1;
   });
   document.querySelectorAll("[data-workspace-panel]").forEach((panel) => {
     const isActive = panel.dataset.workspacePanel === tabName;
@@ -1136,42 +1194,22 @@ function renderWindInputs(workflow) {
         <span class="muted">${escapeHtml(region.dataset_name || "dataset not configured")}</span>
       </div>
     </div>
-    ${warningListHtml(warnings)}
-    <div class="table-wrap">
-      <table>
-        <tbody>
-          <tr><th>Wind Region</th><td>${escapeHtml(region.wind_region)}${region.region_subclassification ? ` (${escapeHtml(region.region_subclassification)})` : ""}</td></tr>
-          <tr><th>Confidence</th><td>${badge(region.confidence, region.confidence)}</td></tr>
-          <tr><th>Importance Level</th><td>${escapeHtml(speed.importance_level || "not supplied")}</td></tr>
-          <tr><th>ARI</th><td>${Number(speed.ari_years)} years</td></tr>
-          <tr><th>VR,ult</th><td>${formatNullableNumber(speed.vr_ult, 1, "m/s")}</td></tr>
-          <tr><th>VR,serv</th><td>${formatNullableNumber(speed.vr_serv, 1, "m/s")}</td></tr>
-        </tbody>
-      </table>
-    </div>
     <details class="diagnostic-details">
-      <summary>Dataset details</summary>
+      <summary>Wind input details and warnings</summary>
+      ${warningListHtml(warnings)}
       <div class="table-wrap">
         <table>
           <tbody>
-            <tr><th>Dataset name</th><td>${escapeHtml(region.dataset_name || "not configured")}</td></tr>
-            <tr><th>Dataset path</th><td class="code-cell">${escapeHtml(region.dataset_path || "not configured")}</td></tr>
-            <tr><th>Polygon count</th><td>${escapeHtml(region.polygon_count ?? "not available")}</td></tr>
-            <tr><th>Available regions</th><td>${escapeHtml((region.available_region_names || []).join(", ") || "not available")}</td></tr>
-            <tr><th>Source</th><td>${escapeHtml(region.source)}</td></tr>
-            <tr><th>Map status</th><td>${region.near_boundary ? "near boundary" : "matched GIS polygon"}</td></tr>
+            <tr><th>Importance level</th><td>${escapeHtml(speed.importance_level || "not supplied")}</td></tr>
+            <tr><th>ARI</th><td>${Number(speed.ari_years)} years</td></tr>
+            <tr><th>VR,serv</th><td>${formatNullableNumber(speed.vr_serv, 1, "m/s")}</td></tr>
+            <tr><th>Wind-region data</th><td>${escapeHtml(region.dataset_name || "not configured")}</td></tr>
           </tbody>
         </table>
       </div>
-    </details>
-    <details class="diagnostic-details">
-      <summary>Lookup sources</summary>
       <div class="calc-panel">
-        <p><strong>Wind region source:</strong> ${escapeHtml(region.source)}</p>
-        <p><strong>VR source:</strong> ${escapeHtml(speed.selected_table)}</p>
-        <ul>
-          ${(speed.lookup_values || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
-        </ul>
+        <p><strong>Provenance:</strong> ${escapeHtml(region.source)}</p>
+        <p><strong>VR lookup:</strong> ${escapeHtml(speed.selected_table)}</p>
       </div>
     </details>
   `;
@@ -1180,7 +1218,7 @@ function renderWindInputs(workflow) {
 function resetWorkflowSections() {
   currentWorkflow = null;
   if (terrainProfileFrame) {
-    terrainProfileFrame.srcdoc = "<p>Run the assessment to display terrain profiles.</p>";
+    setIframeHtml(terrainProfileFrame, "<p>Run the assessment to display terrain profiles.</p>");
   }
   if (siteInputSummary) {
     siteInputSummary.innerHTML = "<p class=\"note\">Resolving site location and elevation...</p>";
@@ -1189,7 +1227,7 @@ function resetWorkflowSections() {
     windInputsSummary.innerHTML = "<p class=\"note\">Waiting for wind-region and regional wind speed lookup...</p>";
   }
   if (workflowMapFrame) {
-    workflowMapFrame.srcdoc = "";
+    clearIframeHtml(workflowMapFrame);
     renderInitialMapFrame("Assessment running. The project map will replace this view.");
   }
   if (dashboardRegion) dashboardRegion.textContent = "-";
@@ -1256,8 +1294,6 @@ function workflowTable(rows) {
             <th>Calculated</th>
             <th>Confidence</th>
             <th>Final</th>
-            <th>Source Reference</th>
-            <th>Warnings</th>
           </tr>
         </thead>
         <tbody>
@@ -1280,7 +1316,6 @@ function sourceWorkflowTable(rows) {
             <th>Calculated</th>
             <th>Confidence</th>
             <th>Final</th>
-            <th>Warnings</th>
           </tr>
         </thead>
         <tbody>
@@ -1346,7 +1381,6 @@ function compactVariableRow(row) {
       <td>${recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
       <td>${finalValueCell(row)}</td>
-      <td>${warningsCell(row)}</td>
     </tr>
   `;
 }
@@ -1358,36 +1392,48 @@ function variableRow(row) {
       <td>${recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
       <td>${inlineFinalValueCell(row)}</td>
-      <td>${escapeHtml(row.source_reference || "Engineer review required.")}</td>
-      <td>${warningsCell(row)}</td>
     </tr>
   `;
 }
 
 function tableCalculationSummary(rows) {
   const sourceReferences = [...new Set(rows.map((row) => row.source_reference).filter(Boolean))];
+  const warnings = [...new Set(rows.flatMap((row) => visibleWarnings(row.warnings || [])))];
   const first = rows[0];
   return `
-    <div class="table-summary calc-panel">
-      <p><strong>Source:</strong> ${escapeHtml(sourceReferences.join(" ") || "Engineer review required.")}</p>
-      <p><strong>Basis:</strong> ${escapeHtml(first?.formula_basis || "Calculation basis unavailable.")}</p>
+    <details class="diagnostic-details source-details">
+      <summary>Calculation provenance and warnings</summary>
+      <div class="calc-panel">
+      <p><strong>Provenance:</strong> ${escapeHtml(sourceReferences.join(" ") || "Engineer review required.")}</p>
+      <p><strong>Method:</strong> ${escapeHtml(first?.formula_basis || "Calculation basis unavailable.")}</p>
+      ${warningListHtml(warnings)}
       <div class="table-wrap compact-table">
         <table>
           <thead>
-            <tr><th>Direction</th><th>Source details</th><th>Calculation result</th></tr>
+            <tr>
+              <th>Direction</th>
+              <th>Calculation result</th>
+              ${first?.variable === "Mt" ? "<th>Clause 4.4 inputs</th>" : ""}
+            </tr>
           </thead>
           <tbody>
             ${rows.map((row) => `
               <tr>
                 <td>${escapeHtml(row.direction || "all")}</td>
-                <td>${summaryItems(row)}</td>
                 <td>${escapeHtml(row.calculation_result || "not available")}</td>
+                ${first?.variable === "Mt" ? `<td>
+                  <details class="direction-calculation-details">
+                    <summary>Show geometry</summary>
+                    ${summaryItems(row)}
+                  </details>
+                </td>` : ""}
               </tr>
             `).join("")}
           </tbody>
         </table>
       </div>
-    </div>
+      </div>
+    </details>
   `;
 }
 
@@ -1395,14 +1441,14 @@ function sharedSourceDetails(rows) {
   const first = rows[0];
   if (!first) return "";
   const sourceReferences = [...new Set(rows.map((row) => row.source_reference).filter(Boolean))];
-  const detailItems = [...new Set(rows.flatMap((row) => row.detail_items || []))];
+  const warnings = [...new Set(rows.flatMap((row) => visibleWarnings(row.warnings || [])))];
   return `
     <details class="diagnostic-details source-details">
-      <summary>Source and calculation basis</summary>
+      <summary>Provenance and warnings</summary>
       <div class="calc-panel">
-        <p><strong>Source:</strong> ${escapeHtml(sourceReferences.join(" ") || "Engineer review required.")}</p>
-        <p><strong>Basis:</strong> ${escapeHtml(first.formula_basis || "Calculation basis unavailable.")}</p>
-        ${detailItems.length ? `<ul>${detailItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+        <p><strong>Provenance:</strong> ${escapeHtml(sourceReferences.join(" ") || "Engineer review required.")}</p>
+        <p><strong>Method:</strong> ${escapeHtml(first.formula_basis || "Calculation basis unavailable.")}</p>
+        ${warningListHtml(warnings)}
       </div>
     </details>
   `;
@@ -1543,7 +1589,7 @@ function overrideKey(variable, direction) {
 function summaryItems(row) {
   const items = [...(row.detail_items || []), ...(row.calculation_inputs || [])];
   if (!items.length) return "<span class=\"muted\">No source details generated.</span>";
-  return `<ul>${items.slice(0, 8).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  return `<ul>${items.slice(0, 12).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
 }
 
 function formatWorkflowValue(value, unit) {

@@ -125,6 +125,25 @@ function terrainCategoryReportPayload() {
   };
 }
 
+function clearIframeHtml(frame) {
+  if (!frame) return;
+  frame.removeAttribute("src");
+  frame.removeAttribute("srcdoc");
+}
+
+function setIframeHtml(frame, html) {
+  if (!frame) return;
+  clearIframeHtml(frame);
+  frame.srcdoc = iframeHtml(html);
+}
+
+function iframeHtml(html) {
+  const base = `<base href="${window.location.origin}/">`;
+  if (!html || html.includes("<base ")) return html;
+  if (html.includes("<head>")) return html.replace("<head>", `<head>${base}`);
+  return `${base}${html}`;
+}
+
 async function postJson(url, payload) {
   const response = await fetch(url, {
     method: "POST",
@@ -142,9 +161,9 @@ form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const mapPayload = combinedMapPayload();
   summary.textContent = "Running analysis...";
-  profileFrame.removeAttribute("srcdoc");
-  mapFrame.removeAttribute("srcdoc");
-  terrainCategoryFrame.removeAttribute("srcdoc");
+  clearIframeHtml(profileFrame);
+  clearIframeHtml(mapFrame);
+  clearIframeHtml(terrainCategoryFrame);
   profileSummary.innerHTML = "<p>Running terrain profile analysis...</p>";
   topographySummary.innerHTML = "<tr><td colspan=\"10\">Running topographic screening...</td></tr>";
   obstructionTable.innerHTML = "<tr><td colspan=\"10\">Querying obstruction footprints...</td></tr>";
@@ -177,9 +196,9 @@ form.addEventListener("submit", async (event) => {
     renderObstructionInventory(inventory);
     currentTerrainCategoryEvidence = evidence;
     renderTerrainCategoryEvidence(evidence);
-    profileFrame.srcdoc = fullResult.profile_plot_html;
-    terrainCategoryFrame.srcdoc = fullResult.terrain_category_map_html;
-    mapFrame.srcdoc = fullResult.combined_map_html;
+    setIframeHtml(profileFrame, fullResult.profile_plot_html);
+    setIframeHtml(terrainCategoryFrame, fullResult.terrain_category_map_html);
+    setIframeHtml(mapFrame, fullResult.combined_map_html);
   } catch (error) {
     summary.textContent = `Analysis failed: ${error.message}`;
     profileSummary.innerHTML = "<p>Analysis failed.</p>";
@@ -240,7 +259,7 @@ async function runTerrainCategoryEvidence(payload) {
   renderTerrainCategoryEvidence(evidence);
 
   const mapResponse = await postJson("/api/terrain-category/map", payload);
-  terrainCategoryFrame.srcdoc = await mapResponse.text();
+  setIframeHtml(terrainCategoryFrame, await mapResponse.text());
 }
 
 function renderObstructionInventory(inventory) {
@@ -1004,9 +1023,9 @@ msExplanationSector?.addEventListener("change", () => {
 
 mapDisplayMode?.addEventListener("change", async () => {
   if (!currentObstructionInventory?.site) return;
-  mapFrame.removeAttribute("srcdoc");
+  clearIframeHtml(mapFrame);
   const mapResponse = await postJson("/api/map/combined", combinedMapPayload());
-  mapFrame.srcdoc = await mapResponse.text();
+  setIframeHtml(mapFrame, await mapResponse.text());
 });
 
 terrainReportButton?.addEventListener("click", async () => {

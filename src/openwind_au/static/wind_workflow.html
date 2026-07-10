@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260702-map-workspace-4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260710-ux-cleanup-2" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -39,7 +39,6 @@
               list="dashboard-address-suggestions"
               placeholder="1 Macquarie Street, Sydney NSW"
               autocomplete="street-address"
-              required
             />
             <datalist id="dashboard-address-suggestions"></datalist>
           </label>
@@ -191,7 +190,7 @@
             </label>
             </div>
           </details>
-          <button type="submit">Run Site Wind Assessment</button>
+          <button class="assessment-submit" type="submit">Run assessment</button>
             </form>
             <p class="disclaimer">
               Preliminary workflow only. The app does not calculate final design pressures and does
@@ -224,10 +223,10 @@
       </section>
 
       <nav class="workspace-tabs" role="tablist" aria-label="Assessment views">
-        <button class="workspace-tab is-active" type="button" role="tab" aria-selected="true" data-workspace-tab="map">Map</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="profile">Profile</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="raw-data">Raw Data</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" data-workspace-tab="documents">Documents</button>
+        <button class="workspace-tab is-active" type="button" role="tab" aria-selected="true" tabindex="0" data-workspace-tab="map">Map</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="profile">Profile</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="raw-data">Raw Data</button>
+        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="documents">Documents</button>
       </nav>
 
       <section class="workspace-panel is-active" role="tabpanel" data-workspace-panel="map">
@@ -245,45 +244,20 @@
       </section>
 
       <section class="workspace-panel" role="tabpanel" data-workspace-panel="raw-data" hidden>
-      <div class="workflow-column">
+      <div class="workflow-column raw-results-layout">
 
       <section id="resolved-wind-inputs" class="panel workflow-step" data-step="2">
-        <h2>Resolved Site and Wind Inputs</h2>
-        <p class="note">Resolved site data, wind-region lookup, and VR.</p>
+        <h2>Assessment Summary</h2>
+        <p class="note">Key site and wind inputs. Detailed calculation evidence is collapsed below.</p>
         <div id="wind-inputs-summary" class="workflow-card">
           <h3>Wind Inputs Summary</h3>
           <p class="note">Run the assessment to display wind region and VR.</p>
         </div>
       </section>
 
-      <section id="wind-region-vr" class="panel workflow-anchor workflow-step" data-step="3">
-        <h2>Regional Wind Speed, VR</h2>
-        <p class="note">Displays ARI / importance level, source reference, and VR.</p>
-      </section>
-
-      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="4">
-        <h2>Wind Direction Multiplier, Md</h2>
-        <p class="note">Table-derived direction multipliers for the assessed wind region.</p>
-      </section>
-
-      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="5">
-        <h2>Terrain Category / Mz,cat</h2>
-        <p class="note">Displays Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat.</p>
-      </section>
-
-      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="6">
-        <h2>Shielding Multiplier, Ms</h2>
-        <p class="note">Displays Recommended Ms, Final Ms, and shielding calculation details.</p>
-      </section>
-
-      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="7">
-        <h2>Topographic Multiplier, Mt</h2>
-        <p class="note">Displays Recommended Mt, Final Mt, and topographic assessment details.</p>
-      </section>
-
-      <section id="vsitb-summary" class="panel workflow-step" data-step="8">
-        <h2>Site Wind Speed, Vsit,b</h2>
-        <p class="note">Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
+      <section id="vsitb-summary" class="panel workflow-step" data-step="3">
+        <h2>Directional Site Wind Speed, Vsit,b</h2>
+        <p class="note">Final directional summary: VR x Md x Mz,cat x Ms x Mt.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -304,6 +278,36 @@
         </div>
       </section>
 
+      <details class="raw-detail-group">
+        <summary>Detailed calculation inputs and engineering review evidence</summary>
+        <div class="raw-detail-stack">
+      <section id="wind-region-vr" class="panel workflow-anchor workflow-step" data-step="4">
+        <h2>Regional Wind Speed, VR</h2>
+        <p class="note">Displays ARI / importance level, source reference, and VR.</p>
+      </section>
+
+      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="5">
+        <h2>Wind Direction Multiplier, Md</h2>
+        <p class="note">Table-derived direction multipliers for the assessed wind region.</p>
+      </section>
+
+      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="6">
+        <h2>Terrain Category / Mz,cat</h2>
+        <p class="note">Displays Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat.</p>
+      </section>
+
+      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="7">
+        <h2>Shielding Multiplier, Ms</h2>
+        <p class="note">Displays Recommended Ms, Final Ms, and shielding calculation details.</p>
+      </section>
+
+      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="8">
+        <h2>Topographic Multiplier, Mt</h2>
+        <p class="note">Displays Recommended Mt, Final Mt, and optional review evidence for candidate terrain features.</p>
+      </section>
+        </div>
+      </details>
+
       </div>
       </section>
 
@@ -319,6 +323,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260702-map-workspace-7"></script>
+    <script src="/static/wind_workflow.js?v=20260710-ux-cleanup-3"></script>
   </body>
 </html>

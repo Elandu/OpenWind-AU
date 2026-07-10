@@ -37,20 +37,24 @@ contribution, and regression testing. It is not a certified design tool.
   datasets are available.
 - Tracks height provenance and confidence from manual verified, DSM-DTM, OSM explicit height,
   OSM levels, low-confidence class assumptions, or unknown sources.
-- Includes building and vegetation polygons as potential shielding obstructions.
+- Includes vegetation polygons as context, but excludes them from calculated shielding in
+  accordance with AS/NZS 1170.2:2021 Clause 4.3.
 - Uses a separate obstruction inventory radius so terrain/profile sampling can extend farther than
   the building footprint dataset used for shielding review.
 - Provides preliminary shielding sector analysis from reviewed obstruction data.
+- Calculates preliminary directional `Mt` values from DEM-derived topographic geometry using
+  AS/NZS 1170.2:2021 Clause 4.4 equations, including Australian A0 and A4 adjustments.
 - Generates directional terrain category evidence for engineer review, including built-up,
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
+- Exposes traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
 
 ## What It Does Not Do
 
-OpenWind-AU does not calculate:
+OpenWind-AU does not produce:
 
-- AS/NZS 1170.2 topographic multipliers;
+- certified topographic multipliers without review of the DEM-derived feature geometry;
 - final terrain category assignments;
 - final `Mz,cat` design values;
 - design wind pressures;
@@ -162,6 +166,7 @@ a production wind-region map.
 - [Calculation basis and data lineage](docs/calculation-basis.md)
 - [Reviewer checklist](docs/reviewer-checklist.md)
 - [API usage](docs/api.md)
+- [MCP server](docs/mcp.md)
 - [Report exports](docs/reports.md)
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)

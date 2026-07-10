@@ -36,12 +36,18 @@ retaining walls, cuts, fills, or drainage features matter.
 ## 3. Topographic Screening
 
 The topographic screening table flags broad candidate terrain forms such as ridge, hill,
-escarpment, valley, or no significant feature. These are rule-based indicators only.
+escarpment, valley, or no significant feature. These are rule-based indicators derived from the
+directional DEM profiles.
 Broad low-gradient DEM undulations are screened out unless they show substantial relief or a
 meaningful average upwind slope.
 
-Use the output to decide where engineering review should focus. Do not treat it as a final
-topographic multiplier calculation.
+The site wind workflow uses the candidate geometry to calculate preliminary directional `Mt`
+values with the Clause 4.4 equations. Expand the calculation provenance to review `H`, `Lu`, `x`,
+`z`, `L1`, `L2`, `Mh`, and the regional adjustment. Do not treat the result as certified until the
+feature geometry and DEM suitability have been reviewed.
+If the upwind half-height point defining `Lu` is outside or unresolved by the sampled profile, the
+workflow leaves `Mt` unavailable instead of assuming `1.0`; extend/review the terrain profile or
+provide a reasoned engineer override.
 
 ## 4. Obstruction Inventory
 

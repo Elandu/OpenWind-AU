@@ -234,7 +234,7 @@ def test_selected_estimated_height_is_usable_for_preliminary_shielding() -> None
     assert any("Estimated or DSM-DTM heights" in warning for warning in north.warnings)
 
 
-def test_vegetation_with_usable_height_is_potential_shielding_with_warning() -> None:
+def test_vegetation_is_not_permitted_to_provide_shielding() -> None:
     records = build_obstruction_records(
         [rectangle_footprint("tree-row", 0, 100, 30, 10, 12)],
         site_latitude=SITE_LAT,
@@ -254,9 +254,42 @@ def test_vegetation_with_usable_height_is_potential_shielding_with_warning() -> 
     sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
     north = next(sector for sector in sectors if sector.direction == "N")
 
-    assert north.ns == 1
-    assert north.included_obstruction_ids == ["tree-row"]
-    assert any("Vegetation appears as potential shielding" in warning for warning in north.warnings)
+    assert north.ns == 0
+    assert north.indicative_ms == 1.0
+    assert north.included_obstruction_ids == []
+    assert north.rejection_reason_counts == {"vegetation_not_permitted": 1}
+
+
+def test_structure_over_25_m_has_no_shielding_reduction() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("tower", 0, 100, 30, 20, 40)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=600,
+    )
+
+    sectors = run_shielding_sector_analysis(site(), records, subject_height_m=26)
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.ns == 0
+    assert north.indicative_ms == 1.0
+    assert any("greater than 25 m" in warning for warning in north.warnings)
+
+
+def test_steep_slope_building_below_subject_top_is_rejected() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("steep-low", 0, 40, 20, 10, 10)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=300,
+    )
+    records[0] = records[0].model_copy(update={"ground_rl_m": -10.0})
+
+    sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.ns == 0
+    assert north.rejection_reason_counts == {"steep_slope_below_subject": 1}
 
 
 def test_missing_height_rejection_is_reported() -> None:

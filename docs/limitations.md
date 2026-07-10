@@ -4,7 +4,8 @@ OpenWind-AU is an early-stage, preliminary terrain analysis tool.
 
 It does not:
 
-- calculate AS/NZS 1170.2 topographic multipliers;
+- certify its preliminary Clause 4.4 `Mt` calculations without engineer review of the
+  DEM-derived `H`, `Lu`, `x`, feature type, and reference height;
 - assign a final terrain category;
 - calculate final `Mz,cat` design values;
 - calculate certified shielding multipliers;
@@ -44,6 +45,8 @@ Outputs should be treated as screening information only. A competent engineer sh
 - DEM suitability and resolution;
 - terrain profile directions and radius;
 - candidate topographic screening results;
+- directional Clause 4.4 calculation inputs, local topographic-zone selection, and regional
+  adjustment;
 - preliminary shielding sectors and any obstruction heights used for indicative `Ms`;
 - terrain category evidence ranges, scoring components, and confidence warnings;
 - height-source summaries, confidence flags, and review-required obstruction records;

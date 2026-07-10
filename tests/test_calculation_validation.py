@@ -33,7 +33,10 @@ def test_calculation_validation_includes_reference_formula_checks() -> None:
 
     ridge = by_id["topography-ridge-reference"]
     assert any(check.field == "H" and check.actual == 25.0 for check in ridge.checks)
-    assert any(check.field == "Lu" and check.actual == 200.0 for check in ridge.checks)
+    assert any(check.field == "Lu" and check.actual == 62.5 for check in ridge.checks)
+    assert any(
+        check.field == "Mt geometry resolved" and check.actual is True for check in ridge.checks
+    )
 
 
 def test_calculation_validation_api() -> None:

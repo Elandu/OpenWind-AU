@@ -2,6 +2,23 @@
 
 All notable project milestones are documented here.
 
+## Unreleased - AS/NZS Calculation Audit And MCP API
+
+- Replaced sparse packaged-table interpolation for Australian `VR` with the Table 3.1(A)
+  regional equations and prescribed nearest-1-m/s rounding.
+- Expanded regional wind-speed regression data across all published recurrence rows from 1 to
+  10,000 years.
+- Added current Table 4.1 `Mz,cat` interpolation, A0 handling, and Clause 4.4 `Mt` calculations
+  with traceable intermediate values.
+- Enforced the Clause 4.3 shielding exclusions for vegetation, structures higher than 25 m, and
+  qualifying steep-slope cases.
+- Added stable-v1 MCP tools for `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b`, available over
+  stdio or Streamable HTTP.
+- Added deterministic calculation, MCP registration, and end-to-end variable-product tests.
+
+These calculations remain engineering-review outputs. Automated GIS classification, public DEM
+geometry, obstruction data, jurisdictional variations, and final compliance are not certified.
+
 ## v0.6.0 - Terrain Category Evidence Engine
 
 - Added directional terrain category evidence for N, NE, E, SE, S, SW, W, and NW.

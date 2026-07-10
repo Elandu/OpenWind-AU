@@ -4,6 +4,9 @@ The API exposes preliminary terrain, topographic screening, obstruction inventor
 shielding-sector workflows. It does not calculate certified AS/NZS 1170.2 multipliers or design
 wind pressures.
 
+For MCP clients, use the separate stdio or Streamable HTTP server documented in
+[`mcp.md`](mcp.md).
+
 ## Analyse A Site
 
 ```bash

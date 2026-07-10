@@ -33,6 +33,14 @@ class _Candidate:
     notes: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _ClauseGeometry:
+    base_index: int
+    h_m: float
+    lu_m: float
+    slope_parameter: float
+
+
 def analyse_topography(
     profiles: list[TerrainProfile],
     site_rl_m: float,
@@ -72,23 +80,110 @@ def analyse_profile_topography(
         return _no_significant_feature(profile, site_rl_m)
 
     candidate = max(screened_candidates, key=lambda item: item.score)
-    confidence = _confidence(candidate.h_m, candidate.slope)
+    clause_geometry = _clause_4_4_geometry(distances, elevations, candidate)
+    if clause_geometry is None:
+        base_index = candidate.base_index
+        h_m = candidate.h_m
+        lu_m = candidate.lu_m
+        slope = candidate.slope
+        geometry_notes = (
+            "The upwind half-height point required for Clause 4.4 Lu was not resolved "
+            "within this profile; automatic Mt is unavailable.",
+        )
+    else:
+        base_index = clause_geometry.base_index
+        h_m = clause_geometry.h_m
+        lu_m = clause_geometry.lu_m
+        slope = clause_geometry.slope_parameter
+        geometry_notes = (
+            "H and Lu resolve the upwind half-height geometry required by Clause 4.4.",
+        )
+    confidence = _confidence(h_m, slope)
     return TopographicFeature(
         direction=profile.direction,
         azimuth_deg=profile.azimuth_deg,
         feature_type=candidate.feature_type,
         site_rl_m=site_rl_m,
         crest_rl_m=float(elevations[candidate.crest_index]),
-        base_rl_m=float(elevations[candidate.base_index]),
-        h_m=candidate.h_m,
-        lu_m=candidate.lu_m,
+        base_rl_m=float(elevations[base_index]),
+        h_m=h_m,
+        lu_m=lu_m,
         x_m=float(distances[candidate.x_index]),
-        base_x_m=float(distances[candidate.base_index]),
+        base_x_m=float(distances[base_index]),
         crest_x_m=float(distances[candidate.crest_index]),
-        average_upwind_slope=candidate.slope,
+        average_upwind_slope=slope,
+        mt_geometry_resolved=clause_geometry is not None,
         confidence=confidence,
-        notes=[*candidate.notes, REVIEW_NOTE],
+        notes=[*candidate.notes, *geometry_notes, REVIEW_NOTE],
     )
+
+
+def _clause_4_4_geometry(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    candidate: _Candidate,
+) -> _ClauseGeometry | None:
+    """Resolve H and Lu on the upwind side of a candidate crest.
+
+    Profile distance increases away from the site into the named wind direction,
+    so increasing distance is upwind. Clause 4.4 Lu terminates where the upwind
+    terrain first reaches half the feature height below the crest.
+    """
+
+    if candidate.feature_type not in {"ridge", "hill", "escarpment"}:
+        return None
+    crest_index = candidate.crest_index
+    if crest_index >= len(elevations) - 1:
+        return None
+    upwind_elevations = elevations[crest_index:]
+    relative_base_index = int(np.argmin(upwind_elevations))
+    base_index = crest_index + relative_base_index
+    if base_index <= crest_index:
+        return None
+    crest_elevation = float(elevations[crest_index])
+    h_m = crest_elevation - float(elevations[base_index])
+    if h_m <= 0:
+        return None
+    half_height_elevation = crest_elevation - h_m / 2.0
+    half_height_x_m = _first_upwind_crossing(
+        distances,
+        elevations,
+        crest_index,
+        base_index,
+        half_height_elevation,
+    )
+    if half_height_x_m is None:
+        return None
+    lu_m = half_height_x_m - float(distances[crest_index])
+    if lu_m <= 0:
+        return None
+    return _ClauseGeometry(
+        base_index=base_index,
+        h_m=h_m,
+        lu_m=lu_m,
+        slope_parameter=h_m / (2.0 * lu_m),
+    )
+
+
+def _first_upwind_crossing(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    crest_index: int,
+    base_index: int,
+    target_elevation: float,
+) -> float | None:
+    for lower_index in range(crest_index, base_index):
+        upper_index = lower_index + 1
+        elevation_0 = float(elevations[lower_index])
+        elevation_1 = float(elevations[upper_index])
+        if elevation_0 >= target_elevation >= elevation_1:
+            if elevation_0 == elevation_1:
+                return float(distances[upper_index])
+            ratio = (elevation_0 - target_elevation) / (elevation_0 - elevation_1)
+            distance_0 = float(distances[lower_index])
+            distance_1 = float(distances[upper_index])
+            return distance_0 + ratio * (distance_1 - distance_0)
+    return None
 
 
 def _ridge_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_Candidate]:
@@ -263,6 +358,7 @@ def _no_significant_feature(profile: TerrainProfile, site_rl_m: float) -> Topogr
         base_x_m=0.0,
         crest_x_m=0.0,
         average_upwind_slope=0.0,
+        mt_geometry_resolved=False,
         confidence="none",
         notes=[
             "No ridge, hill, escarpment, or valley candidate met the conservative "

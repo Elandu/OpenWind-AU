@@ -12,15 +12,25 @@ from openwind_au.models import (
 
 SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = ("TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4")
 
-# Transparent screening reference values, not a replacement for the project standard.
-# Rows are assessment height in metres; columns are terrain category labels.
+# AS/NZS 1170.2:2021 Table 4.1 values for fully developed terrain in all
+# Australian wind regions except A0. Intermediate heights and terrain
+# categories are linearly interpolated as required by Clause 4.2.2.
 INDICATIVE_MZCAT_REFERENCE: dict[float, dict[str, float]] = {
-    5.0: {"TC1": 0.99, "TC1.5": 0.97, "TC2": 0.95, "TC2.5": 0.88, "TC3": 0.78, "TC4": 0.67},
-    10.0: {"TC1": 1.05, "TC1.5": 1.02, "TC2": 1.00, "TC2.5": 0.96, "TC3": 0.91, "TC4": 0.83},
-    20.0: {"TC1": 1.10, "TC1.5": 1.07, "TC2": 1.05, "TC2.5": 1.02, "TC3": 0.98, "TC4": 0.91},
-    40.0: {"TC1": 1.14, "TC1.5": 1.12, "TC2": 1.10, "TC2.5": 1.07, "TC3": 1.04, "TC4": 0.98},
-    80.0: {"TC1": 1.18, "TC1.5": 1.16, "TC2": 1.14, "TC2.5": 1.12, "TC3": 1.09, "TC4": 1.05},
+    3.0: {"TC1": 0.97, "TC2": 0.91, "TC2.5": 0.87, "TC3": 0.83, "TC4": 0.75},
+    5.0: {"TC1": 1.01, "TC2": 0.91, "TC2.5": 0.87, "TC3": 0.83, "TC4": 0.75},
+    10.0: {"TC1": 1.08, "TC2": 1.00, "TC2.5": 0.92, "TC3": 0.83, "TC4": 0.75},
+    15.0: {"TC1": 1.12, "TC2": 1.05, "TC2.5": 0.97, "TC3": 0.89, "TC4": 0.75},
+    20.0: {"TC1": 1.14, "TC2": 1.08, "TC2.5": 1.01, "TC3": 0.94, "TC4": 0.75},
+    30.0: {"TC1": 1.18, "TC2": 1.12, "TC2.5": 1.06, "TC3": 1.00, "TC4": 0.80},
+    40.0: {"TC1": 1.21, "TC2": 1.16, "TC2.5": 1.10, "TC3": 1.04, "TC4": 0.85},
+    50.0: {"TC1": 1.23, "TC2": 1.18, "TC2.5": 1.13, "TC3": 1.07, "TC4": 0.90},
+    75.0: {"TC1": 1.27, "TC2": 1.22, "TC2.5": 1.17, "TC3": 1.12, "TC4": 0.98},
+    100.0: {"TC1": 1.31, "TC2": 1.24, "TC2.5": 1.20, "TC3": 1.16, "TC4": 1.03},
+    150.0: {"TC1": 1.36, "TC2": 1.27, "TC2.5": 1.24, "TC3": 1.21, "TC4": 1.11},
+    200.0: {"TC1": 1.39, "TC2": 1.29, "TC2.5": 1.27, "TC3": 1.24, "TC4": 1.16},
 }
+
+TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
 
 
 def run_mzcat_assessment(
@@ -179,22 +189,56 @@ def nearest_supported_category(category: str) -> str:
     return "TC2"
 
 
-def indicative_mzcat(category: str, assessment_height_m: float) -> float:
-    """Interpolate indicative Mz,cat for a terrain category and assessment height."""
+def indicative_mzcat(
+    category: str,
+    assessment_height_m: float,
+    *,
+    wind_region: str | None = None,
+) -> float:
+    """Return Table 4.1 Mz,cat using linear height/category interpolation."""
 
-    height = max(5.0, min(80.0, assessment_height_m))
+    height = max(3.0, min(200.0, assessment_height_m))
+    if wind_region == "A0":
+        if height > 100.0:
+            return 1.24
+        category = "TC2"
     heights = sorted(INDICATIVE_MZCAT_REFERENCE)
     if height <= heights[0]:
-        return INDICATIVE_MZCAT_REFERENCE[heights[0]][category]
+        return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[heights[0]], category)
     if height >= heights[-1]:
-        return INDICATIVE_MZCAT_REFERENCE[heights[-1]][category]
+        return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[heights[-1]], category)
     for lower_height, upper_height in zip(heights, heights[1:], strict=True):
         if lower_height <= height <= upper_height:
-            lower_value = INDICATIVE_MZCAT_REFERENCE[lower_height][category]
-            upper_value = INDICATIVE_MZCAT_REFERENCE[upper_height][category]
+            lower_value = _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[lower_height], category)
+            upper_value = _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[upper_height], category)
             ratio = (height - lower_height) / (upper_height - lower_height)
             return lower_value + (upper_value - lower_value) * ratio
-    return INDICATIVE_MZCAT_REFERENCE[10.0][category]
+    return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[10.0], category)
+
+
+def _mzcat_for_category(row: dict[str, float], category: str) -> float:
+    """Linearly interpolate a Table 4.1 row for an intermediate category."""
+
+    try:
+        category_number = float(category.removeprefix("TC"))
+    except ValueError as exc:
+        raise ValueError(f"Unsupported terrain category: {category}") from exc
+    if not TABLE_TERRAIN_CATEGORIES[0] <= category_number <= TABLE_TERRAIN_CATEGORIES[-1]:
+        raise ValueError(f"Unsupported terrain category: {category}")
+    exact_key = f"TC{category_number:g}"
+    if exact_key in row:
+        return row[exact_key]
+    for lower_category, upper_category in zip(
+        TABLE_TERRAIN_CATEGORIES,
+        TABLE_TERRAIN_CATEGORIES[1:],
+        strict=True,
+    ):
+        if lower_category <= category_number <= upper_category:
+            lower_value = row[f"TC{lower_category:g}"]
+            upper_value = row[f"TC{upper_category:g}"]
+            ratio = (category_number - lower_category) / (upper_category - lower_category)
+            return lower_value + (upper_value - lower_value) * ratio
+    raise ValueError(f"Unsupported terrain category: {category}")
 
 
 def mzcat_confidence(

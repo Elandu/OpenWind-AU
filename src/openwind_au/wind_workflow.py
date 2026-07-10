@@ -20,6 +20,7 @@ from openwind_au.models import (
 )
 from openwind_au.mzcat import indicative_mzcat
 from openwind_au.shielding import DIRECTION_AZIMUTHS
+from openwind_au.topographic_multiplier import calculate_topographic_multiplier
 from openwind_au.wind_inputs import direction_multiplier_assessment, regional_wind_speed_assessment
 from openwind_au.wind_region import assess_wind_region
 
@@ -51,9 +52,25 @@ def run_wind_workflow(
     vr = vr_assessment(request, regional_speed, overrides)
     variables.append(vr)
     variables.extend(md_assessments(direction_multipliers, overrides))
-    variables.extend(mzcat_assessments(request, terrain_result, overrides, class_overrides))
+    variables.extend(
+        mzcat_assessments(
+            request,
+            terrain_result,
+            wind_region,
+            overrides,
+            class_overrides,
+        )
+    )
     variables.extend(ms_assessments(obstruction_result, overrides, class_overrides))
-    variables.extend(mt_assessments(site_result, overrides, class_overrides))
+    variables.extend(
+        mt_assessments(
+            request,
+            site_result,
+            wind_region,
+            overrides,
+            class_overrides,
+        )
+    )
     vsitb_rows = vsitb_directional_rows(variables)
     vsitb_rows = mark_governing_vsitb(vsitb_rows)
     variables.extend(vsitb_assessments(vsitb_rows, overrides))
@@ -236,6 +253,7 @@ def md_assessments(
 def mzcat_assessments(
     request: WindWorkflowRequest,
     terrain_result: TerrainCategoryEvidenceResult,
+    wind_region: WindRegionAssessment,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
     class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
@@ -243,7 +261,15 @@ def mzcat_assessments(
     for item in terrain_result.mzcat_assessment:
         class_override = class_overrides.get(item.direction)
         warnings = list(item.warnings)
-        value = item.recommended_mzcat
+        value = (
+            indicative_mzcat(
+                item.recommended_terrain_category,
+                request.building_height_m,
+                wind_region=wind_region.wind_region,
+            )
+            if item.recommended_terrain_category
+            else None
+        )
         final_label = (
             f"Calculated TC {item.recommended_terrain_category}"
             if item.recommended_mzcat is not None
@@ -251,12 +277,13 @@ def mzcat_assessments(
         )
         class_inputs: list[str] = []
         class_details: list[str] = []
-        source_reference = "Terrain category inputs and Mz,cat recommendation."
+        source_reference = "AS/NZS 1170.2:2021 Table 4.1 and directional terrain-category inputs."
         confidence = item.recommendation_confidence
         if class_override and class_override.terrain_category:
             value = class_override.mzcat or indicative_mzcat(
                 class_override.terrain_category,
                 request.building_height_m,
+                wind_region=wind_region.wind_region,
             )
             final_label = f"Reviewed TC {class_override.terrain_category}"
             confidence = "high" if class_override.mzcat else "medium"
@@ -284,9 +311,9 @@ def mzcat_assessments(
                 if class_override and class_override.terrain_category and value is not None
                 else (
                     f"Recommended TC {item.recommended_terrain_category}; "
-                    f"Recommended Mz,cat {item.recommended_mzcat:.3f}"
+                    f"Recommended Mz,cat {value:.3f}"
                 )
-                if item.recommended_mzcat is not None
+                if value is not None
                 else "Recommended TC review required; Recommended Mz,cat review required"
             ),
             confidence=confidence,
@@ -307,6 +334,7 @@ def mzcat_assessments(
                 f"Confidence: {item.confidence}",
                 f"Suggested terrain category range: {item.suggested_terrain_category_range}",
                 f"Assessment height: {item.assessment_height_m:.3f} m",
+                f"Wind region: {wind_region.wind_region}",
                 (
                     "Interpolation details: "
                     f"{item.lower_category_bound}-{item.upper_category_bound} at "
@@ -431,7 +459,9 @@ def ms_assessments(
 
 
 def mt_assessments(
+    request: WindWorkflowRequest,
     site_result: SiteAnalysisResult,
+    wind_region: WindRegionAssessment,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
     class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
@@ -439,19 +469,38 @@ def mt_assessments(
     for feature in site_result.features:
         class_override = class_overrides.get(feature.direction)
         no_significant_feature = feature.feature_type == "no significant feature"
-        warnings = []
-        if not no_significant_feature:
-            warnings.append("Candidate topographic feature requires engineer-selected Mt.")
-        value = 1.0
+        unresolved_geometry = (
+            feature.feature_type in {"hill", "ridge", "escarpment"}
+            and not feature.mt_geometry_resolved
+        )
+        reference_height_m = request.average_height_m or request.building_height_m
+        calculation = calculate_topographic_multiplier(
+            feature_type=feature.feature_type,
+            h_m=feature.h_m,
+            lu_m=feature.lu_m,
+            x_m=feature.x_m,
+            z_m=reference_height_m,
+            wind_region=wind_region.wind_region,
+            site_elevation_m=site_result.site.ground_elevation_m,
+        )
+        warnings = list(calculation.warnings)
+        if unresolved_geometry:
+            warnings.append(
+                "Mt is unavailable because the upwind half-height point defining Lu "
+                "was not resolved by the DEM profile."
+            )
+        elif not no_significant_feature:
+            warnings.append(
+                "Mt is calculated from public DEM geometry and requires engineering review."
+            )
+        value = None if unresolved_geometry else round(calculation.mt, 3)
         confidence = "medium" if no_significant_feature else "low"
-        final_label = "Calculated Mt"
-        source_reference = "Topographic screening details for engineer-selected Mt."
+        final_label = None if unresolved_geometry else "Calculated Mt from terrain profile"
+        source_reference = "AS/NZS 1170.2:2021 Clause 4.4 and sampled DEM terrain profile."
         class_inputs: list[str] = []
         class_details: list[str] = []
         if class_override and class_override.topographic_class:
-            value = class_override.mt or mt_from_topographic_class(
-                class_override.topographic_class
-            )
+            value = class_override.mt or mt_from_topographic_class(class_override.topographic_class)
             confidence = "high" if class_override.mt else "medium"
             final_label = f"Reviewed topographic class {class_override.topographic_class}"
             source_reference = class_override.source_reference or source_reference
@@ -470,8 +519,12 @@ def mt_assessments(
             recommended_value=value,
             recommended_label=(
                 f"Reviewed {class_override.topographic_class}; Mt {value:.3f}"
-                if class_override and class_override.topographic_class
-                else f"Recommended Mt {value:.3f}"
+                if class_override and class_override.topographic_class and value is not None
+                else (
+                    f"Calculated Mt {value:.3f}"
+                    if value is not None
+                    else "Mt unavailable; resolve Clause 4.4 upwind geometry"
+                )
             ),
             confidence=confidence,
             calculated_value=value,
@@ -481,28 +534,50 @@ def mt_assessments(
             evidence_link="#topographic-mt",
             source_reference=source_reference,
             detail_label="Show details",
-            formula_basis="Topographic multiplier reviewed from topographic screening details.",
+            formula_basis=(
+                "Clause 4.4 calculation blocked because the DEM profile does not resolve Lu."
+                if unresolved_geometry and not (class_override and class_override.topographic_class)
+                else calculation.equation
+            ),
             calculation_inputs=[
                 *class_inputs,
+                f"Wind region: {wind_region.wind_region}",
+                f"Site elevation E: {site_result.site.ground_elevation_m:.3f} m",
+                f"Reference height z: {reference_height_m:.3f} m",
                 f"Feature: {feature.feature_type}",
+                f"Clause 4.4 geometry resolved: {feature.mt_geometry_resolved}",
                 f"H: {feature.h_m:.3f} m",
                 f"Lu: {feature.lu_m:.3f} m",
                 f"x: {feature.x_m:.3f} m",
-                f"Average upwind slope: {feature.average_upwind_slope:.3f}",
+                f"H/(2Lu): {calculation.slope_parameter:.3f}",
+                f"L1: {_format_value(None if unresolved_geometry else calculation.l1_m)}",
+                f"L2: {_format_value(None if unresolved_geometry else calculation.l2_m)}",
+                ("Mh: not calculated" if unresolved_geometry else f"Mh: {calculation.mh:.3f}"),
+                f"Mlee: {calculation.mlee:.3f}",
+                f"Elevation factor: {calculation.elevation_factor:.3f}",
                 f"Confidence: {feature.confidence}",
             ],
             detail_items=[
                 *class_details,
                 f"Feature type: {feature.feature_type}",
+                f"Clause 4.4 geometry resolved: {feature.mt_geometry_resolved}",
                 f"H: {feature.h_m:.3f} m",
                 f"Lu: {feature.lu_m:.3f} m",
                 f"x: {feature.x_m:.3f} m",
-                f"Slope: {feature.average_upwind_slope:.3f}",
+                f"H/(2Lu): {calculation.slope_parameter:.3f}",
+                f"L1: {_format_value(None if unresolved_geometry else calculation.l1_m)}",
+                f"L2: {_format_value(None if unresolved_geometry else calculation.l2_m)}",
+                ("Mh: not calculated" if unresolved_geometry else f"Mh: {calculation.mh:.3f}"),
+                f"Mlee: {calculation.mlee:.3f}",
                 f"Confidence: {feature.confidence}",
                 *feature.notes,
                 *warnings,
             ],
-            calculation_result=f"Mt = {value:.3f}",
+            calculation_result=(
+                f"Mt = {value:.3f}"
+                if value is not None
+                else "Mt unavailable because Clause 4.4 geometry is unresolved."
+            ),
         )
         assessments.append(apply_override(assessment, overrides))
     return assessments

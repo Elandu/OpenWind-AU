@@ -11,7 +11,12 @@ from openwind_au.models import (
     TerrainCategoryDirectionEvidence,
     TerrainCategoryScoreComponents,
 )
-from openwind_au.mzcat import category_bounds, direction_mzcat_assessment, indicative_mzcat
+from openwind_au.mzcat import (
+    INDICATIVE_MZCAT_REFERENCE,
+    category_bounds,
+    direction_mzcat_assessment,
+    indicative_mzcat,
+)
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import render_terrain_category_report_html
 from openwind_au.terrain_category import run_terrain_category_evidence
@@ -62,14 +67,14 @@ def evidence(
 def test_category_range_mapping_and_indicative_values() -> None:
     assert category_bounds("TC2.5-TC3") == ("TC2.5", "TC3")
     assert category_bounds("TC3.5-TC4") == ("TC4", "TC4")
-    assert indicative_mzcat("TC2.5", 10) == pytest.approx(0.96)
-    assert indicative_mzcat("TC3", 10) == pytest.approx(0.91)
+    assert indicative_mzcat("TC2.5", 10) == pytest.approx(0.92)
+    assert indicative_mzcat("TC3", 10) == pytest.approx(0.83)
 
     assessment = direction_mzcat_assessment(evidence(), 10)
 
     assert assessment.controlling_category_range == "TC2.5-TC3"
-    assert assessment.lower_indicative_mzcat == pytest.approx(0.91)
-    assert assessment.upper_indicative_mzcat == pytest.approx(0.96)
+    assert assessment.lower_indicative_mzcat == pytest.approx(0.83)
+    assert assessment.upper_indicative_mzcat == pytest.approx(0.92)
     assert assessment.confidence == "medium"
     assert "Engineer review required." in assessment.warnings
     assert "built-up coverage 42.0%" in assessment.reasoning
@@ -107,7 +112,42 @@ def test_best_estimate_mode_selects_upper_category_bound() -> None:
 
     assert assessment.recommendation_mode == "best_estimate"
     assert assessment.recommended_terrain_category == "TC2.5"
-    assert assessment.recommended_mzcat == pytest.approx(0.96)
+    assert assessment.recommended_mzcat == pytest.approx(0.92)
+
+
+@pytest.mark.parametrize(
+    ("height_m", "category", "expected"),
+    [
+        (height_m, category, expected)
+        for height_m, row in INDICATIVE_MZCAT_REFERENCE.items()
+        for category, expected in row.items()
+    ],
+)
+def test_mzcat_matches_every_table_4_1_node(
+    height_m: float,
+    category: str,
+    expected: float,
+) -> None:
+    assert indicative_mzcat(category, height_m) == pytest.approx(expected)
+
+
+def test_mzcat_uses_linear_height_interpolation() -> None:
+    assert indicative_mzcat("TC3", 12.5) == pytest.approx(0.86)
+
+
+def test_mzcat_uses_linear_category_interpolation() -> None:
+    assert indicative_mzcat("TC1.5", 10) == pytest.approx(1.04)
+
+
+def test_mzcat_clamps_to_table_height_limits() -> None:
+    assert indicative_mzcat("TC4", 1) == pytest.approx(0.75)
+    assert indicative_mzcat("TC4", 250) == pytest.approx(1.16)
+
+
+def test_region_a0_uses_tc2_to_100_m_and_1_24_above() -> None:
+    assert indicative_mzcat("TC4", 10, wind_region="A0") == pytest.approx(1.00)
+    assert indicative_mzcat("TC1", 100, wind_region="A0") == pytest.approx(1.24)
+    assert indicative_mzcat("TC1", 150, wind_region="A0") == pytest.approx(1.24)
 
 
 def test_medium_confidence_gets_auto_recommendation_without_final_review_fields() -> None:

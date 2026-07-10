@@ -78,6 +78,49 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert "not a certified" in body["disclaimer"]
 
 
+def test_pdf_report_endpoint_returns_in_memory_download(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/report/pdf",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+            "sample_interval_m": 100,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
+    assert not (tmp_path / "reports").exists()
+
+
+def test_vendored_map_assets_are_served() -> None:
+    client = TestClient(api_module.create_app())
+
+    for path in (
+        "/static/vendor/leaflet/leaflet.js",
+        "/static/vendor/leaflet/leaflet.css",
+        "/static/vendor/jquery/jquery-3.7.1.min.js",
+        "/static/vendor/bootstrap/bootstrap.bundle.min.js",
+        "/static/vendor/fontawesome/all.min.css",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.content
+
+    plotly = client.get("/vendor/plotly.min.js")
+    assert plotly.status_code == 200
+    assert plotly.headers["content-type"].startswith("application/javascript")
+    assert plotly.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert b"plotly.js" in plotly.content[:500]
+
+
 def test_geocode_suggest_endpoint(monkeypatch) -> None:
     def fake_suggestions(query, limit=5):
         assert query == "macquarie"
@@ -425,7 +468,7 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert "openWindMapDiagnostics" in body["terrain_category_map_html"]
     assert "openWindMapDiagnostics" in body["combined_map_html"]
     assert "Shielding sectors" in body["combined_map_html"]
-    assert "Topographic feature candidates" in body["combined_map_html"]
+    assert r"Terrain profiles \u0026 topographic candidates" in body["combined_map_html"]
 
 
 def test_terrain_category_report_accepts_engineer_mzcat_reviews(monkeypatch) -> None:

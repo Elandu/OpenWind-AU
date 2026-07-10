@@ -117,9 +117,7 @@ def classify_terrain_category(
     site_local = shapely_transform(to_local.transform, site_point)
     buffer = site_local.buffer(radius_m)
     sector_area_m2 = math.pi * radius_m * radius_m / direction_count
-    sectors = {
-        direction: _SectorStats(area_m2=sector_area_m2) for direction in COMPASS_DIRECTIONS
-    }
+    sectors = {direction: _SectorStats(area_m2=sector_area_m2) for direction in COMPASS_DIRECTIONS}
 
     osm_local = _project_osm_obstructions(osm_obstructions, local_crs)
     osm_clipped = _clip_osm_to_buffer(osm_local, buffer)

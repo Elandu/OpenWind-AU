@@ -7,6 +7,7 @@ from typing import Any
 
 from openwind_au.geo import EARTH_RADIUS_M, destination_point
 from openwind_au.models import ObstructionRecord, ShieldingSectorResult, SiteLocation
+from openwind_au.standard_calculations import ms_from_shielding_parameter
 
 DIRECTION_AZIMUTHS: tuple[tuple[str, float], ...] = (
     ("N", 0.0),
@@ -58,11 +59,42 @@ def shielding_sector_result(
         for obstruction in obstructions
         if _is_in_sector(obstruction, wind_direction_deg, sector_radius_m, half_width)
     ]
+    if subject_height_m > 25.0:
+        warning = (
+            "AS/NZS 1170.2:2021 Clause 4.3.1 requires Ms = 1.0 for structures "
+            "greater than 25 m high."
+        )
+        return ShieldingSectorResult(
+            direction=direction,  # type: ignore[arg-type]
+            wind_direction_deg=wind_direction_deg,
+            sector_start_deg=_normalise_bearing(wind_direction_deg - half_width),
+            sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
+            sector_radius_m=sector_radius_m,
+            subject_height_m=subject_height_m,
+            total_obstructions_in_sector=len(sector_candidates),
+            ns=0,
+            indicative_ms=1.0,
+            overall_confidence="high",
+            notes=[warning],
+            warnings=[warning],
+        )
     included: list[ObstructionRecord] = []
     rejected: list[dict[str, Any]] = []
     rejection_reason_counts: dict[str, int] = {}
     usable_height_count = 0
+    ground_gradient_unchecked: list[str] = []
     for obstruction in sector_candidates:
+        if (
+            obstruction.obstruction_source_type == "vegetation"
+            or obstruction.classification == "vegetation"
+        ):
+            _record_rejection(
+                rejected,
+                rejection_reason_counts,
+                obstruction,
+                "vegetation_not_permitted",
+            )
+            continue
         height = shielding_height_m(obstruction)
         if height is None:
             _record_rejection(
@@ -82,6 +114,23 @@ def shielding_sector_result(
                 height,
             )
             continue
+        if obstruction.ground_rl_m is None:
+            ground_gradient_unchecked.append(obstruction.obstruction_id)
+        elif obstruction.distance_m > 0:
+            average_ground_gradient = (
+                abs(obstruction.ground_rl_m - site.ground_elevation_m) / obstruction.distance_m
+            )
+            obstruction_top_rl = obstruction.ground_rl_m + height
+            subject_top_rl = site.ground_elevation_m + subject_height_m
+            if average_ground_gradient > 0.2 and obstruction_top_rl <= subject_top_rl:
+                _record_rejection(
+                    rejected,
+                    rejection_reason_counts,
+                    obstruction,
+                    "steep_slope_below_subject",
+                    height,
+                )
+                continue
         included.append(obstruction)
     ns = len(included)
     unknown_height_count = rejection_reason_counts.get("height_missing", 0)
@@ -189,6 +238,11 @@ def shielding_sector_result(
             "Vegetation appears as potential shielding and requires engineer review: "
             + ", ".join(vegetation)
         )
+    if ground_gradient_unchecked:
+        warnings.append(
+            "Average upwind ground gradient could not be checked for shielding buildings: "
+            + ", ".join(ground_gradient_unchecked)
+        )
     warnings.extend(_sector_confidence_warnings(included, unknown_height_count))
     overall_confidence = _overall_shielding_confidence(included, unknown_height_count)
 
@@ -224,21 +278,6 @@ def shielding_sector_result(
         notes=notes,
         warnings=warnings,
     )
-
-
-def ms_from_shielding_parameter(s: float) -> float:
-    """Return indicative Ms by linear interpolation from public table thresholds."""
-
-    if s <= 1.5:
-        return 0.7
-    if s >= 12.0:
-        return 1.0
-    points = [(1.5, 0.7), (3.0, 0.8), (6.0, 0.9), (12.0, 1.0)]
-    for (s0, ms0), (s1, ms1) in zip(points, points[1:], strict=True):
-        if s <= s1:
-            ratio = (s - s0) / (s1 - s0)
-            return ms0 + ratio * (ms1 - ms0)
-    return 1.0
 
 
 def footprint_breadth_normal_to_wind(

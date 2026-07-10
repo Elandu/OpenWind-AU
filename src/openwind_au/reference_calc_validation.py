@@ -133,9 +133,7 @@ def compare_reference_calc_7989(
 ) -> ReferenceCalc7989ComparisonReport:
     """Compare OpenWind directional classes against the reference calculation 7989 reference."""
 
-    overrides_by_direction = {
-        override.direction: override for override in class_overrides or []
-    }
+    overrides_by_direction = {override.direction: override for override in class_overrides or []}
     terrain_by_direction = {
         item.direction: item.recommended_terrain_category
         for item in terrain_result.mzcat_assessment

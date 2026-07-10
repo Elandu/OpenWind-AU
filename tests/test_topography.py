@@ -49,9 +49,10 @@ def test_simple_ridge_profile_returns_ridge_candidate() -> None:
     assert result.crest_rl_m == pytest.approx(125)
     assert result.base_rl_m == pytest.approx(100)
     assert result.h_m == pytest.approx(25)
-    assert result.lu_m == pytest.approx(200)
-    assert result.average_upwind_slope == pytest.approx(0.125)
-    assert result.confidence == "low"
+    assert result.lu_m == pytest.approx(62.5)
+    assert result.average_upwind_slope == pytest.approx(0.2)
+    assert result.mt_geometry_resolved is True
+    assert result.confidence == "medium"
 
 
 def test_broad_low_gradient_ridge_screens_out_as_public_dem_undulation() -> None:
@@ -138,7 +139,19 @@ def test_escarpment_profile_returns_escarpment_candidate() -> None:
     assert result.h_m == pytest.approx(30)
     assert result.lu_m == pytest.approx(100)
     assert result.average_upwind_slope == pytest.approx(0.3)
+    assert result.mt_geometry_resolved is False
     assert result.confidence == "medium"
+
+
+def test_windward_escarpment_resolves_clause_4_4_half_height_geometry() -> None:
+    result = analyse_profile_topography(make_profile([132, 132, 130, 100, 100]), 132)
+
+    assert result.feature_type == "escarpment"
+    assert result.h_m == pytest.approx(30)
+    assert result.lu_m == pytest.approx(50)
+    assert result.x_m == pytest.approx(200)
+    assert result.average_upwind_slope == pytest.approx(0.3)
+    assert result.mt_geometry_resolved is True
 
 
 def test_valley_profile_returns_valley_candidate() -> None:

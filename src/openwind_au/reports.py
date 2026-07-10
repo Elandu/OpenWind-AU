@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,33 @@ CALCULATION_BASIS_DOC_PATH = Path("docs/calculation-basis.md")
 CALCULATION_BASIS_REPORT_TEXT = (
     "Calculation basis and data lineage reference: docs/calculation-basis.md."
 )
+MAP_ASSET_URL_REPLACEMENTS = {
+    "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js": (
+        "/static/vendor/leaflet/leaflet.js"
+    ),
+    "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css": (
+        "/static/vendor/leaflet/leaflet.css"
+    ),
+    "https://code.jquery.com/jquery-3.7.1.min.js": ("/static/vendor/jquery/jquery-3.7.1.min.js"),
+    "https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js": (
+        "/static/vendor/bootstrap/bootstrap.bundle.min.js"
+    ),
+    "https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css": (
+        "/static/vendor/bootstrap/bootstrap.min.css"
+    ),
+    "https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css": (
+        "/static/vendor/bootstrap/bootstrap-glyphicons.css"
+    ),
+    "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css": (
+        "/static/vendor/fontawesome/all.min.css"
+    ),
+    "https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/"
+    "leaflet.awesome-markers.js": "/static/vendor/awesome-markers/leaflet.awesome-markers.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/"
+    "leaflet.awesome-markers.css": "/static/vendor/awesome-markers/leaflet.awesome-markers.css",
+    "https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/"
+    "leaflet.awesome.rotate.min.css": "/static/vendor/folium/leaflet.awesome.rotate.min.css",
+}
 
 
 @dataclass
@@ -208,7 +236,15 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
     """Write a simple PDF report to *path* using ReportLab."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(str(path), pagesize=A4)
+    path.write_bytes(render_pdf_report(result))
+    return path
+
+
+def render_pdf_report(result: SiteAnalysisResult) -> bytes:
+    """Render a simple PDF report in memory using ReportLab."""
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(output, pagesize=A4)
     styles = getSampleStyleSheet()
     story = [
         Paragraph("OpenWind-AU Preliminary Terrain Report", styles["Title"]),
@@ -319,7 +355,7 @@ def write_pdf_report(result: SiteAnalysisResult, path: Path) -> Path:
         ]
     )
     doc.build(story)
-    return path
+    return output.getvalue()
 
 
 def profile_plot_html(result: SiteAnalysisResult) -> str:
@@ -419,7 +455,7 @@ def profile_plot_html(result: SiteAnalysisResult) -> str:
         yaxis_title="Elevation RL (m)",
         template="plotly_white",
     )
-    return fig.to_html(full_html=False, include_plotlyjs="cdn")
+    return fig.to_html(full_html=False, include_plotlyjs="/vendor/plotly.min.js")
 
 
 def map_html(result: SiteAnalysisResult) -> str:
@@ -485,7 +521,7 @@ def map_html(result: SiteAnalysisResult) -> str:
                 f"Lu={feature.lu_m:.0f} m, x={feature.x_m:.0f} m"
             ),
         ).add_to(fmap)
-    return fmap.get_root().render()
+    return _localize_map_assets(fmap.get_root().render())
 
 
 def obstruction_map_html(result: ObstructionInventoryResult) -> str:
@@ -536,13 +572,14 @@ def combined_map_html(
     site_layer = folium.FeatureGroup(name="Site & analysis radius", show=True)
     wind_region_layer = folium.FeatureGroup(name="Wind regions", show=True)
     mzcat_layer = folium.FeatureGroup(name="Mz,cat sectors", show=True)
-    profile_layer = folium.FeatureGroup(name="Terrain profiles", show=True)
-    feature_layer = folium.FeatureGroup(name="Topographic feature candidates", show=True)
+    profile_layer = folium.FeatureGroup(
+        name="Terrain profiles & topographic candidates",
+        show=True,
+    )
     shielding_layer = folium.FeatureGroup(name="Shielding sectors", show=True)
     shielding_polygon_layer = folium.FeatureGroup(name="Shielding obstruction polygons", show=True)
-    design_building_layer = folium.FeatureGroup(name="Design building", show=True)
-    microsoft_polygon_layer = folium.FeatureGroup(name="Building footprints", show=True)
-    obstruction_layer = folium.FeatureGroup(name="Nearby obstructions", show=True)
+    design_building_layer = folium.FeatureGroup(name="Design building (editable)", show=True)
+    obstruction_layer = folium.FeatureGroup(name="Nearby obstructions (selected)", show=True)
 
     if wind_region_assessment is not None:
         _add_wind_region_layer(wind_region_layer, site_result.site, wind_region_assessment)
@@ -633,7 +670,7 @@ def combined_map_html(
                 f"{feature.feature_type}: H={feature.h_m:.1f} m, "
                 f"Lu={feature.lu_m:.0f} m, x={feature.x_m:.0f} m"
             ),
-        ).add_to(feature_layer)
+        ).add_to(profile_layer)
 
     diagnostics = _add_obstruction_centroid_layer(fmap, obstruction_layer, obstruction_result)
 
@@ -658,7 +695,6 @@ def combined_map_html(
     site_layer.add_to(fmap)
     mzcat_layer.add_to(fmap)
     profile_layer.add_to(fmap)
-    feature_layer.add_to(fmap)
     shielding_layer.add_to(fmap)
     shielding_polygon_layer.add_to(fmap)
     diagnostics = _add_workflow_shielding_polygon_layer(
@@ -669,13 +705,6 @@ def combined_map_html(
     )
     design_building_layer.add_to(fmap)
     _add_design_building_overlay(fmap, design_building_layer, site_result)
-    microsoft_polygon_layer.add_to(fmap)
-    diagnostics = _add_workflow_microsoft_polygon_layer(
-        fmap,
-        microsoft_polygon_layer,
-        obstruction_result,
-        diagnostics,
-    )
     obstruction_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
@@ -876,10 +905,11 @@ def _add_design_building_overlay(
         const corners = footprintCorners();
         if (!footprint) {{
           footprint = L.polygon(corners, {{
-            color: "#155eef",
-            weight: 3,
-            fillColor: "#3b82f6",
-            fillOpacity: 0.28,
+            color: "#ea580c",
+            weight: 4,
+            dashArray: "10 5",
+            fillColor: "#fb923c",
+            fillOpacity: 0.22,
           }}).addTo(designLayer);
           enableCtrlDrag(footprint);
         }} else {{
@@ -893,8 +923,8 @@ def _add_design_building_overlay(
         const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
         if (!bearingLine) {{
           bearingLine = L.polyline(line, {{
-            color: "#155eef",
-            weight: 2,
+            color: "#ea580c",
+            weight: 3,
             dashArray: "4 4",
           }}).addTo(designLayer);
         }} else {{
@@ -1014,135 +1044,6 @@ def _add_design_building_overlay(
       }} else {{
         window.addEventListener("load", attachOverlay);
       }}
-    }})();
-    """
-    fmap.get_root().script.add_child(folium.Element(script))
-
-
-def _add_workflow_microsoft_polygon_layer(
-    fmap: folium.Map,
-    layer: folium.FeatureGroup,
-    result: ObstructionInventoryResult,
-    diagnostics: MapRenderDiagnostics,
-) -> MapRenderDiagnostics:
-    """Add display-limited building footprint polygons to the workflow map."""
-
-    max_display = max(
-        int(getattr(result.input, "map_max_display_obstructions", DEFAULT_MAP_DISPLAY_LIMIT)),
-        1,
-    )
-    records = sorted(
-        result.obstructions,
-        key=lambda record: map_relevance_sort_key(record, result.input.building_height_m),
-    )
-    features = []
-    payload_size = 0
-    for record in records:
-        if len(features) >= max_display:
-            break
-        display_geometry = display_geometry_for_map(
-            record.footprint_geometry,
-            result.site,
-            result.input.radius_m,
-            diagnostics,
-        )
-        if display_geometry is None:
-            continue
-        feature = obstruction_display_feature(
-            record,
-            display_geometry,
-            "microsoft_building_footprints",
-        )
-        feature_size = len(json.dumps(feature, separators=(",", ":")))
-        if (
-            diagnostics.total_geojson_payload_size + payload_size + feature_size
-            > MAX_POLYGON_GEOJSON_PAYLOAD_BYTES
-        ):
-            diagnostics.fallback_mode = True
-            diagnostics.warnings.append(
-                "Building footprint polygon display stopped at the map payload budget."
-            )
-            break
-        features.append(feature)
-        payload_size += feature_size
-        diagnostics.largest_polygon_vertex_count = max(
-            diagnostics.largest_polygon_vertex_count,
-            geometry_vertex_count(display_geometry),
-        )
-
-    diagnostics.total_geojson_payload_size += payload_size
-    if len(records) > len(features):
-        diagnostics.warnings.append(
-            "Building footprint display limited to "
-            f"{len(features)} of {len(records)} available footprints."
-        )
-    if not features:
-        diagnostics.warnings.append(
-            "No building footprint polygons were available for this map "
-            f"(cache status: {result.data_quality.microsoft_cache_status})."
-        )
-        return diagnostics
-
-    _add_explicit_microsoft_footprint_loader(fmap, layer, features)
-    diagnostics.plotted_polygons += len(features)
-    diagnostics.plotted_microsoft_polygons += len(features)
-    return diagnostics
-
-
-def _add_explicit_microsoft_footprint_loader(
-    fmap: folium.Map,
-    layer: folium.FeatureGroup,
-    features: list[dict[str, Any]],
-) -> None:
-    """Inject a direct Leaflet building footprint loader for iframe map reliability."""
-
-    feature_collection = {"type": "FeatureCollection", "features": features}
-    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
-    map_name = fmap.get_name()
-    layer_name = layer.get_name()
-    script = f"""
-    (function() {{
-      const microsoftFootprints = {feature_collection_json};
-      const microsoftLayer = {layer_name};
-      const microsoftGeoJson = L.geoJson(microsoftFootprints, {{
-        interactive: true,
-        style: function() {{
-          return {{
-            color: "#1d4ed8",
-            weight: 2,
-            opacity: 0.95,
-            fillColor: "#60a5fa",
-            fillOpacity: 0.42
-          }};
-        }},
-        onEachFeature: function(feature, leafletLayer) {{
-          const props = feature.properties || {{}};
-          leafletLayer.bindTooltip(
-            `<table>
-              <tr><th>ID</th><td>${{props.id || ""}}</td></tr>
-              <tr><th>Height</th><td>${{props.height || "missing"}}</td></tr>
-              <tr><th>Source</th><td>${{props.source || "building footprint"}}</td></tr>
-              <tr><th>Confidence</th><td>${{props.confidence || ""}}</td></tr>
-            </table>`,
-            {{sticky: false, className: "foliumtooltip"}}
-          );
-        }}
-      }});
-      microsoftGeoJson.addTo(microsoftLayer);
-      microsoftLayer.addTo({map_name});
-      microsoftGeoJson.bringToFront();
-      microsoftLayer.on("add", function() {{
-        microsoftGeoJson.bringToFront();
-      }});
-      window.openWindMicrosoftFootprintLayer = {{
-        feature_count: microsoftFootprints.features.length,
-        layer_name: "Building footprints",
-        renderer: "explicit_leaflet_geojson"
-      }};
-      console.info(
-        "OpenWind-AU building footprint layer",
-        window.openWindMicrosoftFootprintLayer
-      );
     }})();
     """
     fmap.get_root().script.add_child(folium.Element(script))
@@ -1333,6 +1234,12 @@ def _add_explicit_shielding_footprint_loader(
       );
     }})();
     """
+    script = _defer_leaflet_overlay_script(
+        script,
+        "openWindAttachShieldingFootprints",
+        map_name,
+        layer_name,
+    )
     fmap.get_root().script.add_child(folium.Element(script))
 
 
@@ -1420,18 +1327,20 @@ def _add_nearby_obstruction_footprint_layer(
           if (source === "microsoft_building_footprints") {{
             return {{
               color: "#7c3aed",
-              weight: 2,
-              opacity: 0.92,
-              fillColor: "#c4b5fd",
-              fillOpacity: 0.34
+              weight: 3,
+              opacity: 1,
+              dashArray: "6 3",
+              fillColor: "#8b5cf6",
+              fillOpacity: 0.48
             }};
           }}
           return {{
             color: "#334155",
-            weight: 2,
-            opacity: 0.9,
-            fillColor: "#cbd5e1",
-            fillOpacity: 0.34
+            weight: 3,
+            opacity: 1,
+            dashArray: "6 3",
+            fillColor: "#64748b",
+            fillOpacity: 0.44
           }};
         }},
         onEachFeature: function(feature, leafletLayer) {{
@@ -1456,7 +1365,7 @@ def _add_nearby_obstruction_footprint_layer(
       }});
       window.openWindNearbyObstructionFootprintLayer = {{
         feature_count: nearbyFootprints.features.length,
-        layer_name: "Nearby obstructions",
+        layer_name: "Nearby obstructions (selected)",
         renderer: "explicit_leaflet_geojson"
       }};
       console.info(
@@ -1465,6 +1374,12 @@ def _add_nearby_obstruction_footprint_layer(
       );
     }})();
     """
+    script = _defer_leaflet_overlay_script(
+        script,
+        "openWindAttachNearbyFootprints",
+        map_name,
+        layer_name,
+    )
     fmap.get_root().script.add_child(folium.Element(script))
 
 
@@ -2061,19 +1976,75 @@ def _add_map_diagnostics_banner(
     fmap.get_root().html.add_child(folium.Element(html))
 
 
+def _defer_leaflet_overlay_script(
+    script: str,
+    function_name: str,
+    map_name: str,
+    layer_name: str,
+) -> str:
+    """Wait for Folium's generated map and layer variables before adding overlays."""
+
+    guard = f"""    (function {function_name}() {{
+      if (!(
+        window.L &&
+        typeof {map_name} !== "undefined" &&
+        typeof {layer_name} !== "undefined"
+      )) {{
+        window.setTimeout({function_name}, 20);
+        return;
+      }}
+"""
+    return script.replace("    (function() {\n", guard, 1)
+
+
+def _localize_map_assets(html: str) -> str:
+    """Rewrite Folium CDN assets to local static files for reliable local rendering."""
+
+    for external_url, local_url in MAP_ASSET_URL_REPLACEMENTS.items():
+        html = html.replace(external_url, local_url)
+    return html
+
+
 def _render_map_with_diagnostics(
     fmap: folium.Map,
     diagnostics: MapRenderDiagnostics,
 ) -> str:
     """Render Folium HTML and inject final diagnostics."""
 
-    html = fmap.get_root().render()
+    html = _localize_map_assets(fmap.get_root().render())
     diagnostics.map_html_size = len(html.encode("utf-8"))
     diagnostics_json = json.dumps(diagnostics.as_dict(), ensure_ascii=True)
     diagnostics_panel = f"""
     <script>
       window.openWindMapDiagnostics = {diagnostics_json};
+      function openWindShowMapError(message) {{
+        var existing = document.getElementById("openwind-map-error");
+        if (existing) existing.remove();
+        var notice = document.createElement("div");
+        notice.id = "openwind-map-error";
+        notice.style.cssText = [
+          "position:fixed;left:18px;bottom:18px;z-index:10000;max-width:520px;",
+          "padding:10px 12px;background:#fff7ed;color:#7c2d12;",
+          "border:1px solid #fdba74;border-radius:6px;font:13px/1.35 Arial,sans-serif;",
+          "box-shadow:0 6px 20px rgba(16,24,40,.14)"
+        ].join("");
+        notice.innerHTML = "<strong>OpenWind-AU map dependency failed</strong><br>" + message;
+        document.body.appendChild(notice);
+      }}
+      window.addEventListener("error", function(event) {{
+        openWindShowMapError("Map script error: " + (event.message || "unknown error"));
+      }});
+      window.addEventListener("unhandledrejection", function(event) {{
+        openWindShowMapError("Map script error: " + (event.reason || "unknown promise rejection"));
+      }});
       console.info("OpenWind-AU map diagnostics", window.openWindMapDiagnostics);
+      window.addEventListener("load", function() {{
+        if (window.L && document.querySelector(".leaflet-container")) return;
+        var reason = window.L
+          ? "Leaflet loaded, but the map container was not initialised."
+          : "Leaflet failed to load from the local static assets.";
+        openWindShowMapError(reason + " Check the browser console for the first map error.");
+      }});
     </script>
     <!-- OpenWind-AU map diagnostics: {diagnostics_json} -->
     """

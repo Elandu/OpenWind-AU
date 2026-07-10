@@ -46,6 +46,8 @@ For the consumer-readiness gap list, see
 - Vegetation and non-building obstruction provenance placeholders.
 - Combined workflow map overlays for wind regions, terrain evidence, shielding sectors, and
   obstruction footprints.
+- MCP tools for traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` calculations over stdio
+  or Streamable HTTP.
 
 ## Not Implemented Or Certified
 
@@ -58,7 +60,6 @@ These items should not be described as certified OpenWind-AU outputs:
 - Calculated vegetation/canopy shielding from non-building obstruction sources.
 - AS 4055 wind classification support.
 - LiDAR acquisition or production-grade LiDAR integration.
-- MCP server integration.
 
 ## Near-Term Improvements
 
