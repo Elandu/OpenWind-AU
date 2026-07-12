@@ -3,16 +3,17 @@
 [![CI](https://github.com/Elandu/OpenWind-AU/actions/workflows/ci.yml/badge.svg)](https://github.com/Elandu/OpenWind-AU/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
-OpenWind-AU is an open-source Python/FastAPI application for preliminary terrain-profile and
-topographic screening of Australian building sites. It helps engineers and reviewers inspect public
-terrain data before deciding whether more detailed project-specific wind engineering review is
-needed.
+OpenWind-AU is an open-source Python/FastAPI application for interactive preliminary wind
+assessment of Australian building sites. It combines terrain-category evidence, directional
+AS/NZS 1170.2 wind-speed calculations, obstruction inventory, and topographic analysis into a
+reviewable engineer-facing workflow with HTML/PDF reporting and an MCP API.
 
-> **Maturity warning:** OpenWind-AU is an early-stage engineering support tool. It does not
+> **Maturity warning:** OpenWind-AU is a pre-alpha engineering support tool. It does not
 > produce certified design values.
 
-Current maturity: early-stage pre-alpha. The project is suitable for exploration, review,
-contribution, and regression testing. It is not a certified design tool.
+Current maturity: pre-alpha. The project provides an interactive wind assessment workflow with
+directional AS/NZS 1170.2 calculations, terrain-category evidence, and MCP API tools, but is not a
+certified design tool. Suitable for exploration, review, contribution, and regression testing.
 
 ## Who It Is For
 
@@ -105,15 +106,16 @@ On macOS or Linux, activate with:
 source .venv/bin/activate
 ```
 
-Open:
+Open the interactive wind assessment workflow:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-The terrain category evidence page is also available at:
+The terrain category evidence and legacy site-analysis pages are also available at:
 
 ```text
+http://127.0.0.1:8000/site-analysis
 http://127.0.0.1:8000/terrain-category
 ```
 
@@ -266,8 +268,7 @@ CI runs these checks through GitHub Actions.
 ## Roadmap
 
 See [`ROADMAP.md`](ROADMAP.md). Near-term work focuses on better validation examples, clearer
-confidence reporting, and improved public documentation. Wind-code calculations remain roadmap
-items only.
+confidence reporting, improved public documentation, and design-certification readiness.
 
 ## Contributing
 

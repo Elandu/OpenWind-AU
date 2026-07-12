@@ -2,7 +2,7 @@
 
 All notable project milestones are documented here.
 
-## Unreleased - AS/NZS Calculation Audit And MCP API
+## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 
 - Replaced sparse packaged-table interpolation for Australian `VR` with the Table 3.1(A)
   regional equations and prescribed nearest-1-m/s rounding.
