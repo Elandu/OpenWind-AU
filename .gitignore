@@ -20,3 +20,6 @@ data/cache/
 data/wind-region/
 reports/
 .server.pid
+.codex/
+tmp/
+.slim/deepwork/
