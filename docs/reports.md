@@ -68,3 +68,18 @@ score components.
 
 The report does not assign a final terrain category and does not calculate final `Mz,cat` design
 values.
+
+## Site Wind Assessment Report
+
+```text
+POST /api/wind-workflow/report/html
+```
+
+The site wind assessment report includes Wind Region Assessment, Regional Wind Speed Assessment, and
+Direction Multiplier Assessment sections. Wind region is derived from the configured local
+Geoscience Australia 1170.2 Wind Regions GIS dataset. `VR` and `Md` values are table-derived from
+editable JSON lookup files and include source-reference text and warnings when manual input is
+required.
+
+The site wind assessment report does not include pressure calculations, `Cpe`, `Cpi`, or final
+design pressures.

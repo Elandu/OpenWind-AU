@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from io import StringIO
 from json import JSONDecodeError
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -145,16 +146,65 @@ def run_obstruction_inventory(
                     site.longitude,
                     inventory_radius_m,
                 )
+                save_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                    raw_footprints,
+                    overpass_debug,
+                )
             except FootprintQueryError as exc:
-                raw_footprints = []
-                if not microsoft_footprints:
-                    data_source_status = "unavailable"
-                    warnings.append(
-                        "Building footprint query failed. The obstruction inventory is empty "
-                        "until Microsoft Building Footprints cache data or OSM data is available; "
-                        "indicative Ms cannot be calculated."
+                cached = load_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                )
+                if cached is not None:
+                    raw_footprints, overpass_debug = cached
+                    overpass_debug["pipeline_log"].append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
                     )
-                warnings.append(str(exc))
+                    warnings.append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(str(exc))
+                else:
+                    raw_footprints = []
+                    if not microsoft_footprints:
+                        data_source_status = "unavailable"
+                        warnings.append(
+                            "Building footprint query failed. The obstruction inventory is empty "
+                            "until Microsoft Building Footprints cache data or OSM data is "
+                            "available; "
+                            "indicative Ms cannot be calculated."
+                        )
+                    warnings.append(str(exc))
+            except Exception as exc:
+                cached = load_cached_osm_footprints(
+                    site.latitude,
+                    site.longitude,
+                    inventory_radius_m,
+                )
+                if cached is not None:
+                    raw_footprints, overpass_debug = cached
+                    overpass_debug["pipeline_log"].append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(
+                        "Live Overpass query failed; reused cached OSM footprint geometry."
+                    )
+                    warnings.append(f"Overpass query failed: {exc}")
+                else:
+                    raw_footprints = []
+                    if not microsoft_footprints:
+                        data_source_status = "unavailable"
+                        warnings.append(
+                            "Building footprint query failed. The obstruction inventory is empty "
+                            "until Microsoft Building Footprints cache data or OSM data is "
+                            "available; "
+                            "indicative Ms cannot be calculated."
+                        )
+                    warnings.append(f"Overpass query failed: {exc}")
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
     else:
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
@@ -300,6 +350,72 @@ def query_building_footprints_with_debug(
         "pipeline_log": conversion_debug["pipeline_log"],
     }
     log_obstruction_debug(debug)
+    return footprints, debug
+
+
+def default_osm_footprint_cache_dir() -> Path:
+    """Return the configured/default OSM footprint cache directory."""
+
+    configured = os.environ.get("OPENWIND_OSM_FOOTPRINT_CACHE")
+    if configured:
+        return Path(configured)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "OpenWind-AU" / "osm_building_footprints"
+    return Path.home() / ".cache" / "openwind-au" / "osm_building_footprints"
+
+
+def osm_footprint_cache_file(latitude: float, longitude: float, radius_m: int) -> Path:
+    """Return the cache file path for an OSM footprint query."""
+
+    key = f"{latitude:.6f}_{longitude:.6f}_{int(radius_m)}m".replace("-", "m").replace(".", "p")
+    return default_osm_footprint_cache_dir() / f"{key}.json"
+
+
+def save_cached_osm_footprints(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+    footprints: list[dict[str, Any]],
+    debug: dict[str, Any],
+) -> None:
+    """Persist successful OSM footprint geometry for repeatable obstruction analysis."""
+
+    if not footprints:
+        return
+    path = osm_footprint_cache_file(latitude, longitude, radius_m)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "radius_m": radius_m,
+        "footprints": footprints,
+        "debug": debug,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def load_cached_osm_footprints(
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Load cached OSM footprint geometry for a failed live query."""
+
+    path = osm_footprint_cache_file(latitude, longitude, radius_m)
+    if not path.exists():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    footprints = data.get("footprints", [])
+    debug = data.get("debug", {})
+    if not isinstance(footprints, list) or not isinstance(debug, dict):
+        return None
+    debug = {
+        **empty_overpass_debug(latitude, longitude, radius_m),
+        **debug,
+    }
+    debug.setdefault("pipeline_log", [])
+    debug["pipeline_log"].append(f"Loaded OSM footprint cache: {path}")
     return footprints, debug
 
 
@@ -488,6 +604,13 @@ def reviewed_footprints_to_records(reviewed: list[ReviewedFootprint]) -> list[di
             "building_levels": item.building_levels,
             "footprint_source": "manual_reviewed",
             "source": item.source,
+            "obstruction_source_type": item.obstruction_source_type,
+            "source_dataset": item.source_dataset or item.source,
+            "height_method": item.height_method
+            if item.height_method != "unknown"
+            else reviewed_height_method(item),
+            "is_vegetation_candidate": item.is_vegetation_candidate
+            or item.classification == "vegetation",
             "source_provenance": [f"manual_reviewed:{item.id}"],
             "tags": {
                 "source": item.source,
@@ -670,12 +793,13 @@ def build_obstruction_records_with_exclusions(
             continue
         tags = footprint.get("tags", {})
         height = height_from_footprint(footprint, tags, default_storey_height_m)
+        classification = footprint.get("classification") or classify_obstruction(tags)
         obstruction_id = source_id
         records.append(
             ObstructionRecord(
                 obstruction_id=obstruction_id,
                 source_id=source_id,
-                classification=footprint.get("classification") or classify_obstruction(tags),
+                classification=classification,
                 footprint_geometry=geometry,
                 centroid_latitude=centroid_lat,
                 centroid_longitude=centroid_lon,
@@ -697,6 +821,21 @@ def build_obstruction_records_with_exclusions(
                 confidence=height["confidence"],
                 manual_review_required=height["manual_review_required"],
                 review_required=height["manual_review_required"],
+                obstruction_source_type=obstruction_source_type_for(
+                    classification,
+                    tags,
+                    footprint,
+                ),
+                source_dataset=source_dataset_for_footprint(footprint, source),
+                height_method=normalise_height_method(
+                    footprint.get("height_method"),
+                    height_method_for_height_source(height["height_source"]),
+                ),
+                is_vegetation_candidate=is_vegetation_candidate(
+                    classification,
+                    tags,
+                    footprint,
+                ),
                 footprint_source=source,
                 source_provenance=footprint.get("source_provenance", [source_id]),
                 duplicate_source_ids=footprint.get("duplicate_source_ids", []),
@@ -707,6 +846,91 @@ def build_obstruction_records_with_exclusions(
 
     records.sort(key=lambda item: item.distance_m)
     return records, excluded
+
+
+def reviewed_height_method(item: ReviewedFootprint) -> str:
+    """Return a future provenance height-method label for reviewed obstruction data."""
+
+    if item.height_m is not None or item.building_levels is not None:
+        return "manual"
+    return "unknown"
+
+
+def obstruction_source_type_for(
+    classification: str,
+    tags: dict[str, Any],
+    footprint: dict[str, Any],
+) -> str:
+    """Return a broad source-type placeholder for future obstruction provenance."""
+
+    configured = footprint.get("obstruction_source_type")
+    if configured in {"building", "vegetation", "other", "unknown"}:
+        return configured
+    if classification == "vegetation":
+        return "vegetation"
+    if classification in {"residential", "commercial", "industrial", "apartment"}:
+        return "building"
+    if classification == "mixed":
+        return "other"
+    if tags.get("building"):
+        return "building"
+    return "unknown"
+
+
+def source_dataset_for_footprint(footprint: dict[str, Any], source: str) -> str | None:
+    """Return a human-readable source dataset placeholder for an obstruction footprint."""
+
+    if footprint.get("source_dataset"):
+        return str(footprint["source_dataset"])
+    if source == MICROSOFT_FOOTPRINT_SOURCE:
+        return "Microsoft Australia Building Footprints"
+    if source == "OSM":
+        return "OpenStreetMap"
+    if source == "manual_reviewed":
+        return str(footprint.get("source") or "reviewed obstruction JSON")
+    if source == "DSM_DERIVED":
+        return "DSM-DTM derived obstruction candidate"
+    return None
+
+
+def height_method_for_height_source(height_source: str) -> str:
+    """Map current height-source labels to future provenance height-method labels."""
+
+    if height_source == "manual_verified":
+        return "manual"
+    if height_source == "DSM_DTM":
+        return "dsm_dtm"
+    if height_source == "OSM_HEIGHT":
+        return "osm_height"
+    if height_source == "OSM_LEVELS":
+        return "osm_levels"
+    if height_source == "ESTIMATED":
+        return "assumption"
+    return "unknown"
+
+
+def normalise_height_method(value: Any, fallback: str = "unknown") -> str:
+    """Return a supported height-method placeholder."""
+
+    if value in {"manual", "dsm_dtm", "osm_height", "osm_levels", "assumption", "unknown"}:
+        return str(value)
+    return fallback
+
+
+def is_vegetation_candidate(
+    classification: str,
+    tags: dict[str, Any],
+    footprint: dict[str, Any],
+) -> bool:
+    """Return whether a footprint should be tracked as a vegetation obstruction candidate."""
+
+    if bool(footprint.get("is_vegetation_candidate")):
+        return True
+    if classification == "vegetation":
+        return True
+    if footprint.get("obstruction_source_type") == "vegetation":
+        return True
+    return classify_obstruction(tags) == "vegetation"
 
 
 def elevation_providers_from_env() -> tuple[
@@ -994,6 +1218,7 @@ def apply_manual_overrides(
                     if building_levels is not None
                     else record.building_levels,
                     "height_source": "manual_verified",
+                    "height_method": "manual",
                     "confidence": "high" if height_m is not None else "unknown",
                     "manual_review_required": height_m is None,
                     "review_required": height_m is None,

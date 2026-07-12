@@ -10,6 +10,7 @@ from openwind_au.dem import DEMProvider
 from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import (
+    combined_map_html,
     map_html,
     obstruction_map_html,
     profile_plot_html,
@@ -52,6 +53,7 @@ def test_report_helpers_render_outputs() -> None:
     assert "Preliminary Topographic Screening" in html
     assert "no significant feature" in html
     assert "competent engineer" in html
+    assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
     assert "plotly" in plot.lower()
     assert "site" in plot
     assert "leaflet" in fmap.lower()
@@ -145,6 +147,133 @@ def test_terrain_category_map_uses_display_limited_obstruction_layers() -> None:
     assert diagnostics["selected_obstructions"] == 500
     assert diagnostics["plotted_polygons"] == 500
     assert "Map display limited to 500 of 1000 obstructions" in html
+
+
+def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=8,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_max_display_obstructions=500,
+        ),
+        footprints=many_microsoft_footprints(25),
+    )
+
+    html = combined_map_html(site_result, obstruction_result)
+
+    assert "Shielding sectors" in html
+    assert "Shielding obstruction polygons" in html
+    assert "Topographic feature candidates" in html
+    assert "Nearby obstructions" in html
+    assert "Topographic circles" not in html
+    assert "Raw OSM building polygons before filtering" not in html
+    assert "Manual reviewed obstruction geometry" not in html
+    assert "Design building" in html
+    assert "openWindDesignBuilding" in html
+    assert "orientation_options" in html
+    assert "Microsoft building footprints" in html
+    assert "OSM fallback and matched attributes" not in html
+    assert "Vegetation polygons" not in html
+    assert "Shielding candidates" not in html
+    shielding_layer = re.search(r'"Shielding sectors" : (feature_group_[a-f0-9]+)', html)
+    assert shielding_layer
+    assert f"{shielding_layer.group(1)}.addTo(map_" in html
+    microsoft_layer = re.search(
+        r'"Microsoft building footprints" : (feature_group_[a-f0-9]+)',
+        html,
+    )
+    assert microsoft_layer
+    assert f"{microsoft_layer.group(1)}.addTo(map_" in html
+    assert "window.openWindMicrosoftFootprintLayer" in html
+    assert "explicit_leaflet_geojson" in html
+
+
+def test_combined_map_limits_shielding_obstruction_polygon_overlay() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=8,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_max_display_obstructions=3,
+        ),
+        footprints=many_microsoft_footprints(25),
+    )
+
+    html = combined_map_html(site_result, obstruction_result)
+    diagnostics = map_diagnostics(html)
+    shielding_polygon_layer = re.search(
+        r'"Shielding obstruction polygons" : (feature_group_[a-f0-9]+)',
+        html,
+    )
+
+    assert shielding_polygon_layer
+    assert f"{shielding_polygon_layer.group(1)}.addTo(map_" in html
+    assert "window.openWindShieldingFootprintLayer" in html
+    assert diagnostics["plotted_polygons"] == 6
+    assert diagnostics["plotted_microsoft_polygons"] == 3
+    assert diagnostics["plotted_shielding_polygons"] == 3
+    assert diagnostics["total_geojson_payload_size"] > 0
+    assert "Shielding polygon display limited to 3" in html
+    assert "Microsoft footprint display limited to 3" in html
+    assert "window.openWindMicrosoftFootprintLayer" in html
+    assert "window.openWindShieldingFootprintLayer" in html
+
+
+def test_combined_map_shows_below_height_shielding_candidate_polygons() -> None:
+    site_result = run_site_analysis(
+        SiteAnalysisRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=20,
+            radius_m=500,
+            sample_interval_m=100,
+        ),
+        FlatDEM(),
+    )
+    obstruction_result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=20,
+            map_max_display_obstructions=10,
+        ),
+        footprints=[
+            microsoft_footprint(1, 0, 0, height=8),
+            microsoft_footprint(2, 1, 0, height=9),
+        ],
+    )
+
+    html = combined_map_html(site_result, obstruction_result)
+    diagnostics = map_diagnostics(html)
+
+    assert all(sector.ns == 0 for sector in obstruction_result.shielding_sectors)
+    assert diagnostics["plotted_shielding_polygons"] == 2
+    assert "height_below_subject" in html
+    assert "window.openWindShieldingFootprintLayer" in html
 
 
 def test_invalid_geometry_is_repaired_or_reported_for_map_display() -> None:

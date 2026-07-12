@@ -1,0 +1,24 @@
+{
+  "source": {
+    "title": "Editable direction multiplier lookup table",
+    "standard": "AS/NZS 1170.2:2021",
+    "clause": "Section 3",
+    "table": "Table 3.2(A) - Wind direction multiplier (Md) - Australia",
+    "standard_reference": "AS/NZS 1170.2:2021 Section 3 Table 3.2(A)",
+    "status": "review data; not a substitute for the Standard",
+    "review_status": "verified_against_standard",
+    "review_note": "Values manually checked against licensed standard. User must hold appropriate rights to verify source standard."
+  },
+  "tables": {
+    "A0": {"N": 0.90, "NE": 0.85, "E": 0.85, "SE": 0.90, "S": 0.90, "SW": 0.95, "W": 1.00, "NW": 0.95},
+    "A1": {"N": 0.90, "NE": 0.85, "E": 0.85, "SE": 0.80, "S": 0.80, "SW": 0.95, "W": 1.00, "NW": 0.95},
+    "A2": {"N": 0.85, "NE": 0.75, "E": 0.85, "SE": 0.95, "S": 0.95, "SW": 0.95, "W": 1.00, "NW": 0.95},
+    "A3": {"N": 0.90, "NE": 0.75, "E": 0.75, "SE": 0.90, "S": 0.90, "SW": 0.95, "W": 1.00, "NW": 0.95},
+    "A4": {"N": 0.85, "NE": 0.75, "E": 0.75, "SE": 0.80, "S": 0.80, "SW": 0.90, "W": 1.00, "NW": 1.00},
+    "A5": {"N": 0.95, "NE": 0.80, "E": 0.80, "SE": 0.80, "S": 0.80, "SW": 0.95, "W": 1.00, "NW": 0.95},
+    "B1": {"N": 0.75, "NE": 0.75, "E": 0.85, "SE": 0.90, "S": 0.95, "SW": 0.95, "W": 0.95, "NW": 0.90},
+    "B2": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90},
+    "C": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90},
+    "D": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90}
+  }
+}

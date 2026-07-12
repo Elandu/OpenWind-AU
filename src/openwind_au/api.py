@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from openwind_au.analysis import run_site_analysis
-from openwind_au.dem import SRTMProvider
+from openwind_au.calculation_validation import (
+    calculation_validation_report_to_json,
+    run_calculation_validation_cases,
+)
+from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider
+from openwind_au.geo import geocode_address_suggestions
 from openwind_au.models import (
     CombinedMapRequest,
     MzCatAssessmentResult,
@@ -19,9 +26,11 @@ from openwind_au.models import (
     ObstructionInventoryResult,
     SiteAnalysisRequest,
     SiteAnalysisResult,
+    SiteLocation,
     TerrainCategoryEvidenceRequest,
     TerrainCategoryEvidenceResult,
     TerrainCategoryReportRequest,
+    WindRegionAssessment,
     WindWorkflowRequest,
     WindWorkflowResult,
 )
@@ -29,6 +38,11 @@ from openwind_au.obstructions import (
     manual_overrides_from_json,
     parse_manual_overrides_csv,
     run_obstruction_inventory,
+)
+from openwind_au.reference_calc_validation import (
+    compare_reference_calc_7989,
+    reference_calc_7989_class_overrides,
+    reference_calc_7989_osm_footprints,
 )
 from openwind_au.reports import (
     combined_map_html,
@@ -54,6 +68,13 @@ from openwind_au.validation import (
     run_validation_cases,
     validation_report_to_json,
 )
+from openwind_au.wind_inputs import (
+    direction_multiplier_assessment,
+    regional_wind_speed_assessment,
+    run_wind_region_validation_cases,
+    wind_region_map_html,
+)
+from openwind_au.wind_region import assess_wind_region, dataset_metadata, wind_region_debug
 from openwind_au.wind_workflow import run_wind_workflow
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -96,10 +117,20 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/geocode/suggest")
+    def geocode_suggest(
+        q: str = Query(min_length=3),
+        limit: int = Query(default=5, ge=1, le=10),
+    ) -> dict:
+        try:
+            return {"suggestions": geocode_address_suggestions(q, limit=limit)}
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     @app.post("/api/analyse", response_model=SiteAnalysisResult)
     def analyse(request: SiteAnalysisRequest) -> SiteAnalysisResult:
         try:
-            return run_site_analysis(request, SRTMProvider())
+            return run_site_analysis(request, _dem_provider())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -125,7 +156,12 @@ def create_app() -> FastAPI:
                 obstruction_result,
                 evidence,
             ),
-            "combined_map_html": combined_map_html(site_result, obstruction_result),
+            "combined_map_html": combined_map_html(
+                site_result,
+                obstruction_result,
+                evidence,
+                wind_region_assessment=_optional_wind_region(site_result),
+            ),
         }
 
     @app.post("/api/wind-workflow", response_model=WindWorkflowResult)
@@ -143,10 +179,84 @@ def create_app() -> FastAPI:
             terrain_result=evidence,
         )
 
+    @app.post("/api/wind-workflow/stream")
+    def wind_workflow_stream(request: WindWorkflowRequest) -> StreamingResponse:
+        return StreamingResponse(
+            _wind_workflow_stream_events(request),
+            media_type="application/x-ndjson",
+        )
+
     @app.post("/api/wind-workflow/report/html", response_class=HTMLResponse)
     def wind_workflow_report_html(request: WindWorkflowRequest) -> str:
         result = wind_workflow(request)
         return render_wind_workflow_report_html(result)
+
+    @app.post("/api/wind-workflow/map", response_class=HTMLResponse)
+    def wind_workflow_map(request: WindWorkflowRequest) -> str:
+        try:
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return combined_map_html(
+            site_result,
+            obstruction_result,
+            evidence,
+            wind_region_assessment=_optional_wind_region(site_result),
+        )
+
+    @app.post("/api/wind-region", response_model=WindRegionAssessment)
+    def wind_region_assessment(request: SiteAnalysisRequest) -> WindRegionAssessment:
+        try:
+            site_result = analyse(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return assess_wind_region(site_result.site)
+
+    @app.post("/api/wind-region/map", response_class=HTMLResponse)
+    def wind_region_map(request: SiteAnalysisRequest) -> str:
+        try:
+            site_result = analyse(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        assessment = assess_wind_region(site_result.site)
+        return wind_region_map_html(site_result.site, assessment)
+
+    @app.get("/api/debug/wind-region/dataset")
+    def wind_region_dataset_debug() -> dict:
+        try:
+            return dataset_metadata()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/debug/wind-region")
+    def wind_region_debug_get(
+        address: str | None = Query(default=None),
+        latitude: float | None = Query(default=None),
+        longitude: float | None = Query(default=None),
+    ) -> dict:
+        try:
+            site = _wind_region_debug_site(address, latitude, longitude)
+            return wind_region_debug(site)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/debug/wind-region")
+    def wind_region_debug_post(request: SiteAnalysisRequest) -> dict:
+        try:
+            site_result = analyse(request)
+            return wind_region_debug(site_result.site)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/export/json")
     def export_json(request: SiteAnalysisRequest) -> Response:
@@ -372,16 +482,181 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return render_validation_report_html(report)
 
+    @app.get("/api/calculation-validation")
+    def calculation_validation_report() -> Response:
+        content = json.dumps(
+            calculation_validation_report_to_json(run_calculation_validation_cases()),
+            indent=2,
+        )
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/reference-validation/7989")
+    def reference_calc_7989_validation(apply_reference_overrides: bool = False) -> Response:
+        class_overrides = (
+            reference_calc_7989_class_overrides() if apply_reference_overrides else []
+        )
+        request = WindWorkflowRequest(
+            latitude=-27.520503,
+            longitude=152.936814,
+            building_height_m=4.0,
+            radius_m=2000,
+            obstruction_radius_m=500,
+            sample_interval_m=50,
+            annual_exceedance_probability="1/500",
+            mzcat_recommendation_mode="best_estimate",
+            class_multiplier_overrides=class_overrides,
+        )
+        site_result = run_site_analysis(request, _dem_provider())
+        obstruction_result = run_obstruction_inventory(
+            _obstruction_request_from_combined(request),
+            footprints=reference_calc_7989_osm_footprints(),
+        )
+        terrain_result = run_terrain_category_evidence(site_result, obstruction_result)
+        content = compare_reference_calc_7989(
+            site_result=site_result,
+            obstruction_result=obstruction_result,
+            terrain_result=terrain_result,
+            class_overrides=class_overrides,
+        ).model_dump_json(indent=2)
+        return Response(content=content, media_type="application/json")
+
+    @app.get("/api/wind-region/validation")
+    def wind_region_validation() -> Response:
+        content = json.dumps(run_wind_region_validation_cases(), indent=2)
+        return Response(content=content, media_type="application/json")
+
     return app
 
 
 def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
-    site_result = run_site_analysis(request, SRTMProvider())
+    site_result = run_site_analysis(request, _dem_provider())
     obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
     evidence = run_terrain_category_evidence(site_result, obstruction_result)
     return site_result, obstruction_result, evidence
+
+
+def _wind_workflow_stream_events(request: WindWorkflowRequest):
+    """Yield newline-delimited JSON workflow progress events."""
+
+    def event(stage: str, percent: int, label: str, data: dict[str, Any] | None = None) -> str:
+        payload: dict[str, Any] = {
+            "stage": stage,
+            "percent": percent,
+            "label": label,
+        }
+        if data is not None:
+            payload["data"] = data
+        return json.dumps(payload, separators=(",", ":")) + "\n"
+
+    try:
+        yield event("start", 2, "Resolving site location and elevation")
+        site_result = run_site_analysis(request, _dem_provider())
+        yield event(
+            "site",
+            16,
+            "Site resolved; calculating wind region, VR, and Md",
+            {"site_analysis": result_to_json(site_result)},
+        )
+
+        wind_region = assess_wind_region(site_result.site)
+        regional_speed = regional_wind_speed_assessment(
+            wind_region,
+            importance_level=request.importance_level,
+            annual_exceedance_probability=request.annual_exceedance_probability,
+        )
+        direction_multipliers = direction_multiplier_assessment(wind_region)
+        yield event(
+            "wind_inputs",
+            30,
+            "Wind inputs calculated; building obstruction inventory",
+            {
+                "wind_region_assessment": wind_region.model_dump(),
+                "regional_wind_speed_assessment": regional_speed.model_dump(),
+                "direction_multiplier_assessment": direction_multipliers.model_dump(),
+            },
+        )
+
+        obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
+        yield event(
+            "obstructions",
+            48,
+            "Obstructions analysed; calculating terrain category and Mz,cat",
+            {
+                "obstruction_summary": {
+                    "total_obstructions": len(obstruction_result.obstructions),
+                    "shielding_sectors": len(obstruction_result.shielding_sectors),
+                    "warnings": obstruction_result.warnings,
+                }
+            },
+        )
+
+        evidence = run_terrain_category_evidence(site_result, obstruction_result)
+        yield event(
+            "terrain",
+            68,
+            "Terrain and Mz,cat calculated; calculating directional Vsit,b",
+            {
+                "terrain_category_evidence": {
+                    "directions": [item.model_dump() for item in evidence.directions],
+                    "mzcat_assessment": [item.model_dump() for item in evidence.mzcat_assessment],
+                    "warnings": evidence.warnings,
+                }
+            },
+        )
+
+        workflow = run_wind_workflow(
+            request=request,
+            site_result=site_result,
+            obstruction_result=obstruction_result,
+            terrain_result=evidence,
+            wind_region=wind_region,
+            regional_speed=regional_speed,
+            direction_multipliers=direction_multipliers,
+        )
+        yield event(
+            "workflow",
+            84,
+            "Directional variables calculated; rendering combined map layers",
+            {"workflow": workflow.model_dump(mode="json")},
+        )
+
+        map_html_content = combined_map_html(
+            site_result,
+            obstruction_result,
+            evidence,
+            wind_region_assessment=wind_region,
+        )
+        yield event(
+            "map",
+            96,
+            "Combined map rendered; finalising assessment",
+            {"map_html": map_html_content},
+        )
+        yield event("complete", 100, "Assessment complete")
+    except ValueError as exc:
+        yield event("error", 100, str(exc), {"status_code": 400})
+    except RuntimeError as exc:
+        yield event("error", 100, str(exc), {"status_code": 502})
+
+
+def _optional_wind_region(site_result: SiteAnalysisResult) -> WindRegionAssessment | None:
+    try:
+        return assess_wind_region(site_result.site)
+    except ValueError:
+        return None
+
+
+def _dem_provider():
+    provider = os.environ.get("OPENWIND_DEM_PROVIDER", "srtm").strip().lower()
+    if provider in {"", "srtm"}:
+        return SRTMProvider()
+    if provider in {"open-meteo", "open_meteo", "openmeteo"}:
+        return OpenMeteoElevationProvider()
+    raise ValueError(
+        f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'."
+    )
 
 
 def _obstruction_request_from_combined(
@@ -402,6 +677,28 @@ def _obstruction_request_from_combined(
         map_display_mode=request.map_display_mode,
         map_max_display_obstructions=request.map_max_display_obstructions,
     )
+
+
+def _wind_region_debug_site(
+    address: str | None,
+    latitude: float | None,
+    longitude: float | None,
+) -> SiteLocation:
+    has_coords = latitude is not None and longitude is not None
+    if has_coords:
+        return SiteLocation(
+            latitude=latitude,
+            longitude=longitude,
+            ground_elevation_m=0.0,
+            source="debug coordinates",
+            display_name=address,
+        )
+    if latitude is not None or longitude is not None:
+        raise ValueError("Provide both latitude and longitude when using coordinates.")
+    if address and address.strip():
+        request = SiteAnalysisRequest(address=address, building_height_m=10)
+        return run_site_analysis(request, _dem_provider()).site
+    raise ValueError("Provide either address or latitude and longitude.")
 
 
 def _apply_mzcat_reviews(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
@@ -75,6 +78,28 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert "not a certified" in body["disclaimer"]
 
 
+def test_geocode_suggest_endpoint(monkeypatch) -> None:
+    def fake_suggestions(query, limit=5):
+        assert query == "macquarie"
+        assert limit == 3
+        return [
+            {
+                "latitude": -33.85918,
+                "longitude": 151.21319,
+                "display_name": "1 Macquarie Street, Sydney NSW",
+                "source": "OpenStreetMap Nominatim",
+            }
+        ]
+
+    monkeypatch.setattr(api_module, "geocode_address_suggestions", fake_suggestions)
+    client = TestClient(api_module.create_app())
+
+    response = client.get("/api/geocode/suggest", params={"q": "macquarie", "limit": 3})
+
+    assert response.status_code == 200
+    assert response.json()["suggestions"][0]["display_name"] == "1 Macquarie Street, Sydney NSW"
+
+
 def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
 
@@ -103,6 +128,8 @@ def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
     # so we assert on the layer-control wiring rather than on the literal name strings.
     assert "leaflet" in body.lower()
     assert "L.control.layers" in body
+    assert "Design building" in body
+    assert "openWindDesignBuilding" in body
     assert body.count("L.featureGroup") >= 4
 
 
@@ -124,6 +151,92 @@ def test_validation_endpoints(monkeypatch) -> None:
     assert "not proof of AS/NZS 1170.2 compliance" in report.json()["disclaimer"]
     assert html.status_code == 200
     assert "OpenWind-AU Validation Report" in html.text
+
+
+def test_wind_region_endpoints(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv(
+        "OPENWIND_WIND_REGION_DATASET",
+        str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
+    )
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.8688,
+        "longitude": 151.2093,
+        "building_height_m": 10,
+        "radius_m": 500,
+    }
+
+    assessment = client.post("/api/wind-region", json=payload)
+    fmap = client.post("/api/wind-region/map", json=payload)
+    validation = client.get("/api/wind-region/validation")
+    metadata = client.get("/api/debug/wind-region/dataset")
+    debug = client.get(
+        "/api/debug/wind-region",
+        params={"latitude": -34.4278, "longitude": 150.8931},
+    )
+
+    assert assessment.status_code == 200
+    assert assessment.json()["wind_region"] == "A2"
+    assert assessment.json()["dataset_name"] == "wind_regions_sample"
+    assert assessment.json()["polygon_count"] == 12
+    assert assessment.json()["region_polygon"]
+    assert fmap.status_code == 200
+    assert "Selected Wind Region A2" in fmap.text
+    assert validation.status_code == 200
+    wollongong = next(item for item in validation.json() if item["site"] == "Wollongong")
+    assert wollongong["expected_region"] == "A2"
+    assert wollongong["actual_region"] == "A3"
+    assert wollongong["status"] == "fail"
+    assert "test fixture" in wollongong["diagnosis"]
+    assert metadata.status_code == 200
+    assert metadata.json()["is_test_fixture"] is True
+    assert debug.status_code == 200
+    assert debug.json()["selected_polygon"]["region_name"] == "A3"
+
+
+def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv(
+        "OPENWIND_WIND_REGION_DATASET",
+        str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
+    )
+
+    def fake_inventory(request):
+        return run_obstruction_inventory(request, footprints=sample_footprints())
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.8688,
+        "longitude": 151.2093,
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+        "obstruction_radius_m": 500,
+        "annual_exceedance_probability": "1/500",
+    }
+
+    response = client.post("/api/wind-workflow/stream", json=payload)
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    stages = [event["stage"] for event in events]
+    assert stages == [
+        "start",
+        "site",
+        "wind_inputs",
+        "obstructions",
+        "terrain",
+        "workflow",
+        "map",
+        "complete",
+    ]
+    workflow_event = next(event for event in events if event["stage"] == "workflow")
+    map_event = next(event for event in events if event["stage"] == "map")
+    assert workflow_event["data"]["workflow"]["wind_region_assessment"]["wind_region"] == "A2"
+    assert workflow_event["data"]["workflow"]["regional_wind_speed_assessment"]["vr_ult"] == 45.0
+    assert "L.control.layers" in map_event["data"]["map_html"]
 
 
 def test_obstruction_inventory_endpoints(monkeypatch) -> None:
@@ -257,7 +370,21 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert validation.status_code == 200
     assert all(item["status"] == "pass" for item in validation.json())
     assert page.status_code == 200
-    assert "Terrain Category Evidence" in page.text
+    assert 'id="visual-evidence"' in page.text
+    assert "Map and Terrain Chart" in page.text
+    assert "Shielding and topographic evidence map" in page.text
+    assert "Terrain profile chart" in page.text
+    assert "Advanced inputs" in page.text
+    assert "Terrain profile summaries" in page.text
+    assert "Analysis diagnostics" in page.text
+    assert "Terrain category sectors and evidence" in page.text
+    assert page.text.index("Map and Terrain Chart") < page.text.index("Terrain profile summaries")
+    assert 'id="terrain-evidence"' in page.text
+    assert 'id="shielding-evidence"' in page.text
+    assert 'id="topographic-evidence"' in page.text
+    assert 'id="profiles"' in page.text
+    assert 'id="latitude" name="latitude" type="number" step="any"' in page.text
+    assert 'id="longitude" name="longitude" type="number" step="any"' in page.text
 
 
 def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
@@ -297,6 +424,8 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert "plotly" in body["profile_plot_html"].lower()
     assert "openWindMapDiagnostics" in body["terrain_category_map_html"]
     assert "openWindMapDiagnostics" in body["combined_map_html"]
+    assert "Shielding sectors" in body["combined_map_html"]
+    assert "Topographic feature candidates" in body["combined_map_html"]
 
 
 def test_terrain_category_report_accepts_engineer_mzcat_reviews(monkeypatch) -> None:

@@ -48,6 +48,28 @@ ruff format --check .
 
 The first real terrain analysis may download public SRTM tiles into `data/cache/srtm`.
 
+## Optional Elevation Provider
+
+OpenWind-AU uses cached public SRTM terrain tiles by default:
+
+```powershell
+$env:OPENWIND_DEM_PROVIDER="srtm"
+```
+
+For source comparison against a free point-elevation API, use Open-Meteo:
+
+```powershell
+$env:OPENWIND_DEM_PROVIDER="open-meteo"
+```
+
+Open-Meteo's elevation endpoint is based on Copernicus DEM GLO-90 public terrain data. This is an
+opt-in provider for comparison and review workflows; all public DEM outputs still require
+engineering review before project use. To use a proxy or test endpoint, set:
+
+```powershell
+$env:OPENWIND_OPEN_METEO_ELEVATION_URL="https://api.open-meteo.com/v1/elevation"
+```
+
 ## Optional Microsoft Building Footprint Cache
 
 The obstruction inventory prefers
@@ -70,6 +92,13 @@ C:\data\openwind-au\microsoft_building_footprints\tiles\-34_151.geojsonl
 If no Microsoft cache tile is available for a site, OpenWind-AU falls back to OSM/Overpass where
 available and reports the fallback in the obstruction data quality fields.
 
+Successful OSM/Overpass building queries are cached locally so repeat analyses can survive
+temporary Overpass outages. Override the cache location with:
+
+```powershell
+$env:OPENWIND_OSM_FOOTPRINT_CACHE="C:\data\openwind-au\osm_building_footprints"
+```
+
 Teams that maintain tiled footprint hosting can also provide an index:
 
 ```powershell
@@ -91,6 +120,36 @@ The index maps tile keys to downloadable files:
 
 With an index configured, OpenWind-AU downloads only the tile keys touched by the site radius and
 stores them in the local cache.
+
+## Optional Wind Region GIS Dataset
+
+Wind-region lookup prefers Geoscience Australia's
+[1170.2 Wind Regions for Australia](https://ecat.ga.gov.au/geonetwork/srv/api/records/74dfa021-95cd-4090-9e25-a7a8efde5454)
+GIS dataset. The catalogue describes the dataset as Geoscience Australia's interpretation of the
+AS/NZS 1170.2 wind-region definitions and notes that professional designers should refer to the
+Standard for design purposes.
+
+Download and extract the GA data ZIP from the catalogue, then configure the local GeoJSON or GPKG
+path:
+
+```powershell
+$env:OPENWIND_WIND_REGION_DATASET="C:\data\openwind-au\1170_2_wind_regions.gpkg"
+```
+
+Optional settings:
+
+```powershell
+$env:OPENWIND_WIND_REGION_LAYER="wind_regions"
+$env:OPENWIND_WIND_REGION_FIELD="wind_region"
+$env:OPENWIND_WIND_REGION_BOUNDARY_WARNING_M="25000"
+```
+
+OpenWind-AU does not generate wind regions from a copied image. Test-only sample polygons live under
+`tests/fixtures` and must not be used for project assessments.
+
+Regional wind speed and direction multiplier lookup data are editable JSON files packaged under
+`src/openwind_au/data`. To use project-reviewed tables, set `OPENWIND_VR_TABLE_PATH` and
+`OPENWIND_MD_TABLE_PATH` to replacement JSON files with the same structure.
 
 ## Optional DSM/DTM Height Enrichment
 

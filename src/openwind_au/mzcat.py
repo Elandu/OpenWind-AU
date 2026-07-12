@@ -114,24 +114,12 @@ def mzcat_recommendation(
     confidence: str,
     mode: str,
 ) -> dict[str, object]:
-    """Return a reviewable recommendation without selecting a final value."""
+    """Return an indicative recommendation for workflow calculation."""
 
     category_width = abs(
         SUPPORTED_TERRAIN_CATEGORIES.index(upper_category)
         - SUPPORTED_TERRAIN_CATEGORIES.index(lower_category)
     )
-    if confidence != "high" or category_width > 1:
-        return {
-            "category": "review required",
-            "mzcat": None,
-            "confidence": confidence,
-            "reasoning": [
-                "Recommendation requires engineer review because evidence is not high-confidence "
-                "or the terrain category range is broad.",
-                f"Suggested range remains {evidence.suggested_category_range}.",
-            ],
-        }
-
     if mode == "best_estimate":
         category = upper_category
         value = upper_value
@@ -145,11 +133,18 @@ def mzcat_recommendation(
     return {
         "category": category,
         "mzcat": round(value, 3),
-        "confidence": "high",
+        "confidence": confidence,
         "reasoning": [
             mode_reason,
-            "Evidence confidence is high and the suggested terrain category range is narrow.",
-            "Engineer acceptance is still required before this becomes a final selected value.",
+            (
+                "Evidence confidence is high and the suggested terrain category range is narrow."
+                if confidence == "high" and category_width <= 1
+                else (
+                    "Automatic indicative value selected despite lower confidence or broad "
+                    "terrain category range so the workflow can calculate through Vsit,b."
+                )
+            ),
+            "Engineer review is handled at assessment level before reporting final issue.",
         ],
     }
 

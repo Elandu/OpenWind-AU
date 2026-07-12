@@ -65,6 +65,32 @@ Good validation cases should be:
 Validation examples can be proposed with the GitHub issue template:
 `.github/ISSUE_TEMPLATE/validation_example.yml`.
 
+## Deterministic Calculation Validation
+
+The qualitative site validation above depends on public terrain data and broad expected behaviour.
+OpenWind-AU also includes deterministic calculation validation for wind inputs, shielding, and
+topographic screening formulas using synthetic inputs and prior project-reference checks with
+known expected outputs.
+
+Use:
+
+```text
+GET /api/calculation-validation
+```
+
+These checks are designed to be stable without external DEM, geocoding, Microsoft footprint, or
+Overpass data. They validate covered implementation details such as:
+
+- indicative `Ms` interpolation thresholds;
+- the prior Modos 04625 Region A2 serviceability regional wind speed reference of 37 m/s;
+- shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
+- topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
+- threshold behaviour where sub-5 m relief is screened out.
+
+Passing deterministic calculation validation confirms that the covered formulas and screening
+rules are internally consistent. It does not certify AS/NZS 1170.2 compliance, public dataset
+accuracy, or suitability for a project site.
+
 ## Terrain Category Evidence Examples
 
 Terrain category evidence scoring includes synthetic representative examples for:
@@ -85,3 +111,35 @@ GET /api/terrain-category/validation
 
 These examples validate that suggested ranges and indicative Mz,cat ranges are broadly reasonable
 prompts for review. They do not assign final terrain categories or final `Mz,cat` design values.
+
+## Reference Calculation Comparisons
+
+OpenWind-AU includes a fixed comparison against reference calculation job 7989 for 6 Byambee Street, Kenmore,
+QLD. The source PDF reports:
+
+- Region `B1`;
+- `Vh,ult = 40 m/s`, `Vh,serv = 26 m/s`;
+- `TC3` terrain in all eight directions;
+- `FS` shielding in all eight directions;
+- topography class `T1` for `NE` and `E`, and `T0` elsewhere.
+
+Use:
+
+```text
+GET /api/reference-validation/7989
+```
+
+This endpoint runs the current workflow for the fixed site and compares directional terrain,
+shielding, and topographic classes. It is intentionally a class-level gap check: mismatches usually
+mean the public obstruction/topographic evidence or class mapping needs review before final
+multipliers are trusted.
+
+Use:
+
+```text
+GET /api/reference-validation/7989?apply_reference_overrides=true
+```
+
+to apply the encoded reference calculation classes as reviewed `class_multiplier_overrides`. This proves the
+workflow can carry source classes through to `Mz,cat`, `Ms`, and `Mt` while preserving the raw
+evidence mismatch in the default endpoint.

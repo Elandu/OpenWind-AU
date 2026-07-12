@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from openwind_au.dem import DEMProvider
+from openwind_au.dem import DEMProvider, dem_provider_label
 from openwind_au.geo import geocode_address
 from openwind_au.models import (
     SiteAnalysisRequest,
@@ -30,6 +30,7 @@ def run_site_analysis(
         sample_interval_m=request.sample_interval_m,
     )
     features = analyse_topography(profiles, location.ground_elevation_m)
+    dem_source = dem_provider_label(dem_provider)
     return SiteAnalysisResult(
         input=request,
         site=location,
@@ -37,7 +38,8 @@ def run_site_analysis(
         features=features,
         assumptions=[
             "Terrain profiles are sampled in the eight cardinal and intercardinal directions.",
-            "DEM elevations are public terrain data and may not reflect local survey levels.",
+            f"DEM elevations are sampled from {dem_source} and may not reflect "
+            "local survey levels.",
             "Topographic screening is rule-based and conservative.",
             "Feature metrics are geometric indicators for preliminary engineering review only.",
             "Building height is recorded for context and future wind workflow integration.",
@@ -47,7 +49,8 @@ def run_site_analysis(
             "multipliers, topographic multipliers, or design wind pressures.",
             "Candidate ridges, hills, escarpments, and valleys require review "
             "by a competent engineer against project-specific context.",
-            "DEM resolution and vertical accuracy may be insufficient for final design decisions.",
+            "Public DEM resolution and vertical accuracy may be insufficient for final design "
+            "decisions.",
         ],
     )
 

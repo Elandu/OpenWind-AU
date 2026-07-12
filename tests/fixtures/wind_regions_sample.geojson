@@ -1,0 +1,17 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"wind_region": "C"}, "geometry": {"type": "Polygon", "coordinates": [[[129.7, -13.4], [131.6, -13.4], [131.6, -11.7], [129.7, -11.7], [129.7, -13.4]]]}},
+    {"type": "Feature", "properties": {"wind_region": "D"}, "geometry": {"type": "Polygon", "coordinates": [[[117.5, -21.0], [120.0, -21.0], [120.0, -19.0], [117.5, -19.0], [117.5, -21.0]]]}},
+    {"type": "Feature", "properties": {"wind_region": "B1"}, "geometry": {"type": "Polygon", "coordinates": [[[152.0, -28.5], [154.0, -28.5], [154.0, -26.5], [152.0, -26.5], [152.0, -28.5]]]}},
+    {"type": "Feature", "properties": {"wind_region": "B2"}, "geometry": {"type": "Polygon", "coordinates": [[[147.5, -21.0], [149.5, -21.0], [149.5, -19.5], [147.5, -19.5], [147.5, -21.0]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A0"}, "geometry": {"type": "Polygon", "coordinates": [[[114.6, -32.9], [116.5, -32.9], [116.5, -31.2], [114.6, -31.2], [114.6, -32.9]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A1"}, "geometry": {"type": "Polygon", "coordinates": [[[137.5, -35.5], [139.5, -35.5], [139.5, -34.0], [137.5, -34.0], [137.5, -35.5]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A2"}, "geometry": {"type": "Polygon", "coordinates": [[[150.45, -34.25], [151.65, -34.25], [151.65, -33.45], [150.45, -33.45], [150.45, -34.25]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A3"}, "geometry": {"type": "Polygon", "coordinates": [[[150.55, -34.85], [151.25, -34.85], [151.25, -34.05], [150.55, -34.05], [150.55, -34.85]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A4"}, "geometry": {"type": "Polygon", "coordinates": [[[144.0, -38.5], [145.8, -38.5], [145.8, -37.2], [144.0, -37.2], [144.0, -38.5]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A5"}, "geometry": {"type": "Polygon", "coordinates": [[[146.0, -43.5], [148.5, -43.5], [148.5, -41.5], [146.0, -41.5], [146.0, -43.5]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A6"}, "geometry": {"type": "Polygon", "coordinates": [[[146.0, -37.5], [149.0, -37.5], [149.0, -35.5], [146.0, -35.5], [146.0, -37.5]]]}},
+    {"type": "Feature", "properties": {"wind_region": "A7"}, "geometry": {"type": "Polygon", "coordinates": [[[117.0, -35.5], [119.0, -35.5], [119.0, -33.0], [117.0, -33.0], [117.0, -35.5]]]}}
+  ]
+}

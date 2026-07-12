@@ -134,11 +134,32 @@ If a project maintains its own tile index, set `OPENWIND_MICROSOFT_FOOTPRINT_IND
 `OPENWIND_MICROSOFT_FOOTPRINT_INDEX_URL`. The index maps tile keys to downloadable GeoJSON or
 GeoJSONL URLs, allowing OpenWind-AU to fetch only the tile required for the current site.
 
+## Wind Region GIS Dataset
+
+OpenWind-AU uses a local GIS file for wind-region lookup. The preferred source is Geoscience
+Australia's [1170.2 Wind Regions for Australia](https://ecat.ga.gov.au/geonetwork/srv/api/records/74dfa021-95cd-4090-9e25-a7a8efde5454)
+dataset. The catalogue data download is currently published at
+`https://d28rz98at9flks.cloudfront.net/146359/146359_01_0.zip`.
+
+OpenWind-AU does not hard-code the map from an image and does not silently download this dataset
+during an assessment. Download and extract the GA data locally, then set the local GeoJSON or GPKG
+path:
+
+```powershell
+$env:OPENWIND_WIND_REGION_DATASET="C:\data\openwind-au\1170_2_wind_regions.gpkg"
+```
+
+For a GeoPackage with multiple layers, set `OPENWIND_WIND_REGION_LAYER`. If the region attribute is
+not auto-detected, set `OPENWIND_WIND_REGION_FIELD` to the field containing labels such as `A0`,
+`A1`, `B1`, `B2`, `C`, or `D`. Sample polygons in this repository are test fixtures only and are not
+a production wind-region map.
+
 ## Documentation
 
 - [Installation](docs/installation.md)
 - [Running locally](docs/running-locally.md)
 - [Workflow guide](docs/workflow.md)
+- [Calculation basis and data lineage](docs/calculation-basis.md)
 - [Reviewer checklist](docs/reviewer-checklist.md)
 - [API usage](docs/api.md)
 - [Report exports](docs/reports.md)
@@ -179,6 +200,8 @@ POST /api/obstructions/report/html
 POST /api/terrain-category/evidence
 POST /api/terrain-category/map
 POST /api/terrain-category/report/html
+POST /api/wind-region
+POST /api/wind-region/map
 GET  /api/terrain-category/validation
 GET  /terrain-category
 GET  /validation

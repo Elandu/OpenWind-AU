@@ -16,6 +16,7 @@
 
     <main>
       <section class="panel">
+        <h2>Evidence Analysis</h2>
         <form id="analysis-form">
           <div class="grid">
             <label>
@@ -23,16 +24,20 @@
               <input id="address" name="address" placeholder="1 Macquarie Street, Sydney NSW" />
             </label>
             <label>
+              Building height (m)
+              <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
+            </label>
+          </div>
+          <details class="form-details">
+            <summary>Advanced inputs</summary>
+            <div class="grid">
+            <label>
               Latitude
-              <input id="latitude" name="latitude" type="number" step="0.000001" />
+              <input id="latitude" name="latitude" type="number" step="any" />
             </label>
             <label>
               Longitude
-              <input id="longitude" name="longitude" type="number" step="0.000001" />
-            </label>
-            <label>
-              Building height (m)
-              <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
+              <input id="longitude" name="longitude" type="number" step="any" />
             </label>
             <label>
               Radius (m)
@@ -88,7 +93,8 @@
                 <option value="best_estimate">Best estimate</option>
               </select>
             </label>
-          </div>
+            </div>
+          </details>
           <button type="submit">Run Analysis</button>
         </form>
         <p class="disclaimer">
@@ -96,230 +102,242 @@
         </p>
       </section>
 
-      <section class="panel">
-        <h2>Summary</h2>
-        <pre id="summary">Run an analysis to see results.</pre>
-      </section>
-
-      <section class="panel">
-        <h2>8-Direction Terrain Analysis</h2>
-        <div id="profile-summary" class="profile-grid">
-          <p>Terrain profile summaries will appear here after analysis.</p>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Preliminary Topographic Screening</h2>
-        <div class="table-wrap">
-          <table id="topography-table">
-            <thead>
-              <tr>
-                <th>Dir.</th>
-                <th>Feature</th>
-                <th>Site RL</th>
-                <th>Crest RL</th>
-                <th>Base RL</th>
-                <th>H</th>
-                <th>Lu</th>
-                <th>x</th>
-                <th>Slope</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody id="topography-summary">
-              <tr><td colspan="10">Topographic screening results will appear after analysis.</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="note">Candidate features require review by a competent engineer.</p>
-      </section>
-
-      <section class="panel">
-        <h2>Obstruction Inventory For Shielding Review</h2>
-        <p class="disclaimer">
-          Preliminary sector shielding only. Indicative Ms values require verified obstruction
-          heights and competent engineering review.
+      <section id="visual-evidence" class="panel">
+        <h2>Map and Terrain Chart</h2>
+        <p class="note">
+          The map shows the site radius, terrain profile lines, topographic feature candidates,
+          shielding sector polygons, and obstruction footprints. Use the layer control inside the
+          map to toggle individual layers.
         </p>
         <div class="toolbar">
-          <label class="file-control">
-            CSV height import
-            <input id="obstruction-csv" type="file" accept=".csv,text/csv" />
-          </label>
-          <label class="file-control">
-            JSON review import
-            <input id="obstruction-json" type="file" accept=".json,application/json" />
-          </label>
-          <button id="obstruction-export" type="button">Export Reviewed JSON</button>
-          <label>
-            Filter
-            <select id="obstruction-filter">
-              <option value="all">All obstructions</option>
-              <option value="high">High confidence</option>
-              <option value="medium">Medium confidence</option>
-              <option value="low">Low confidence</option>
-              <option value="unknown">Unknown confidence</option>
-              <option value="review_required">Review required</option>
-            </select>
-          </label>
+          <a class="button-link" href="#map-frame">Map</a>
+          <a class="button-link" href="#profile-frame">Terrain chart</a>
+          <a class="button-link" href="#terrain-category-frame">Terrain category sectors</a>
         </div>
-        <p id="obstruction-warning" class="note">Run an analysis to inventory nearby obstructions.</p>
-        <div>
-          <h3>Obstruction Data Quality</h3>
-          <div class="table-wrap">
-            <table>
-              <tbody id="obstruction-quality-table">
-                <tr><td>Run an analysis to see source quality diagnostics.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div>
-          <h3>Building Table</h3>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Class</th>
-                  <th>Distance</th>
-                  <th>Bearing</th>
-                  <th>Selected height</th>
-                  <th>DSM-DTM estimate</th>
-                  <th>Levels</th>
-                  <th>Source</th>
-                  <th>Confidence</th>
-                  <th>Review</th>
-                </tr>
-              </thead>
-              <tbody id="obstruction-table">
-                <tr><td colspan="10">Obstruction inventory will appear after analysis.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Preliminary Shielding Sector Analysis</h2>
-        <p class="note">
-          Each wind direction uses a 45 degree upwind sector with radius 20 times the subject
-          building height. Obstructions are counted only where available hs is at least the subject
-          building height.
-        </p>
-        <p id="shielding-threshold-note" class="note">Current subject building height threshold z will appear after analysis.</p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Dir.</th>
-                <th>Sector</th>
-                <th>Radius</th>
-                <th>ns</th>
-                <th>Avg hs</th>
-                <th>Avg bs</th>
-                <th>ls</th>
-                <th>s</th>
-                <th>Indicative Ms</th>
-                <th>Rejected</th>
-                <th>Height confidence</th>
-              </tr>
-            </thead>
-            <tbody id="shielding-sector-table">
-              <tr><td colspan="11">Shielding sectors will appear after analysis.</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="debug-panel">
-          <h3>Why is Ms = 1.0?</h3>
-          <label>
-            Direction
-            <select id="ms-explanation-sector"></select>
-          </label>
-          <div id="ms-explanation" class="note">Run an analysis to inspect shielding rejection reasons.</div>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h2>Terrain Category Evidence</h2>
-        <p class="disclaimer">
-          Evidence support only. OpenWind-AU does not assign a final AS/NZS 1170.2 terrain
-          category and does not calculate final Mz,cat design values.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Dir.</th>
-                <th>Built-up</th>
-                <th>Vegetation</th>
-                <th>Open terrain</th>
-                <th>Avg height</th>
-                <th>Max height</th>
-                <th>Density</th>
-                <th>Spacing</th>
-                <th>Fetch</th>
-                <th>Suggested range</th>
-                <th>Confidence</th>
-                <th>Warnings</th>
-              </tr>
-            </thead>
-            <tbody id="terrain-category-table">
-              <tr><td colspan="12">Terrain category evidence will appear after analysis.</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <iframe id="terrain-category-frame" class="map-iframe" title="Terrain category evidence map"></iframe>
-      </section>
-
-      <section class="panel">
-        <h2>Directional Mz,cat Summary</h2>
-        <p class="disclaimer">
-          Indicative evidence only. Terrain category is not confirmed, Mz,cat values are not final
-          design values, and engineer review is required.
-        </p>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Direction</th>
-                <th>Suggested TC Range</th>
-                <th>Indicative Mz,cat Range</th>
-                <th>Recommended</th>
-                <th>Engineer Review</th>
-                <th>Final Selected Mz,cat</th>
-                <th>Confidence</th>
-                <th>Reasoning</th>
-                <th>Warnings</th>
-              </tr>
-            </thead>
-            <tbody id="mzcat-table">
-              <tr><td colspan="9">Indicative Mz,cat evidence will appear after analysis.</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <button id="terrain-report" type="button">Open Reviewed Mz,cat Report</button>
-      </section>
-
-      <section class="panel">
-        <h2>Combined Map</h2>
-        <p class="note">
-          Toggleable layers: site and analysis radius, terrain profiles, topographic feature
-          candidates, and obstruction footprints. Use the layer control inside the map to switch
-          layers on or off.
-        </p>
-        <iframe id="map-frame" class="map-iframe" title="Combined map"></iframe>
-      </section>
-
-      <section class="panel">
-        <h2>Terrain Profile Chart</h2>
+        <iframe id="map-frame" class="map-iframe" title="Shielding and topographic evidence map"></iframe>
+        <h3>Terrain Profile Chart</h3>
         <p class="note">
           Elevation vs distance for each radial profile, with candidate base, crest, H, and Lu
           overlays.
         </p>
-        <iframe id="profile-frame" title="Terrain profiles"></iframe>
+        <iframe id="profile-frame" title="Terrain profile chart"></iframe>
       </section>
+
+      <section id="profiles" class="panel">
+        <details>
+          <summary>Terrain profile summaries</summary>
+          <div id="profile-summary" class="profile-grid">
+            <p>Terrain profile summaries will appear here after analysis.</p>
+          </div>
+        </details>
+      </section>
+
+      <section id="topographic-evidence" class="panel">
+        <details>
+          <summary>Topographic screening table</summary>
+          <div class="table-wrap">
+            <table id="topography-table">
+              <thead>
+                <tr>
+                  <th>Dir.</th>
+                  <th>Feature</th>
+                  <th>Site RL</th>
+                  <th>Crest RL</th>
+                  <th>Base RL</th>
+                  <th>H</th>
+                  <th>Lu</th>
+                  <th>x</th>
+                  <th>Slope</th>
+                  <th>Confidence</th>
+                </tr>
+              </thead>
+              <tbody id="topography-summary">
+                <tr><td colspan="10">Topographic screening results will appear after analysis.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="note">Candidate features require review by a competent engineer.</p>
+        </details>
+      </section>
+
+      <section id="shielding-inventory" class="panel">
+        <details>
+          <summary>Obstruction inventory and height review</summary>
+          <p class="disclaimer">
+            Preliminary sector shielding only. Indicative Ms values require verified obstruction
+            heights and competent engineering review.
+          </p>
+          <div class="toolbar">
+            <label class="file-control">
+              CSV height import
+              <input id="obstruction-csv" type="file" accept=".csv,text/csv" />
+            </label>
+            <label class="file-control">
+              JSON review import
+              <input id="obstruction-json" type="file" accept=".json,application/json" />
+            </label>
+            <button id="obstruction-export" type="button">Export Reviewed JSON</button>
+            <label>
+              Filter
+              <select id="obstruction-filter">
+                <option value="all">All obstructions</option>
+                <option value="high">High confidence</option>
+                <option value="medium">Medium confidence</option>
+                <option value="low">Low confidence</option>
+                <option value="unknown">Unknown confidence</option>
+                <option value="review_required">Review required</option>
+              </select>
+            </label>
+          </div>
+          <p id="obstruction-warning" class="note">Run an analysis to inventory nearby obstructions.</p>
+          <div>
+            <h3>Obstruction Data Quality</h3>
+            <div class="table-wrap">
+              <table>
+                <tbody id="obstruction-quality-table">
+                  <tr><td>Run an analysis to see source quality diagnostics.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h3>Building Table</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Class</th>
+                    <th>Distance</th>
+                    <th>Bearing</th>
+                    <th>Selected height</th>
+                    <th>DSM-DTM estimate</th>
+                    <th>Levels</th>
+                    <th>Source</th>
+                    <th>Confidence</th>
+                    <th>Review</th>
+                  </tr>
+                </thead>
+                <tbody id="obstruction-table">
+                  <tr><td colspan="10">Obstruction inventory will appear after analysis.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section id="shielding-evidence" class="panel">
+        <details>
+          <summary>Shielding sector table</summary>
+          <p id="shielding-threshold-note" class="note">Current subject building height threshold z will appear after analysis.</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dir.</th>
+                  <th>Sector</th>
+                  <th>Radius</th>
+                  <th>ns</th>
+                  <th>Avg hs</th>
+                  <th>Avg bs</th>
+                  <th>ls</th>
+                  <th>s</th>
+                  <th>Indicative Ms</th>
+                  <th>Rejected</th>
+                  <th>Height confidence</th>
+                </tr>
+              </thead>
+              <tbody id="shielding-sector-table">
+                <tr><td colspan="11">Shielding sectors will appear after analysis.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="debug-panel">
+            <h3>Why is Ms = 1.0?</h3>
+            <label>
+              Direction
+              <select id="ms-explanation-sector"></select>
+            </label>
+            <div id="ms-explanation" class="note">Run an analysis to inspect shielding rejection reasons.</div>
+          </div>
+        </details>
+      </section>
+
+      <section id="terrain-evidence" class="panel">
+        <details>
+          <summary>Terrain category sectors and evidence</summary>
+          <p class="disclaimer">
+            Evidence support only. OpenWind-AU does not assign a final AS/NZS 1170.2 terrain
+            category and does not calculate final Mz,cat design values.
+          </p>
+          <iframe id="terrain-category-frame" class="map-iframe" title="Terrain category evidence map"></iframe>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dir.</th>
+                  <th>Built-up</th>
+                  <th>Vegetation</th>
+                  <th>Open terrain</th>
+                  <th>Avg height</th>
+                  <th>Max height</th>
+                  <th>Density</th>
+                  <th>Spacing</th>
+                  <th>Fetch</th>
+                  <th>Suggested range</th>
+                  <th>Confidence</th>
+                  <th>Warnings</th>
+                </tr>
+              </thead>
+              <tbody id="terrain-category-table">
+                <tr><td colspan="12">Terrain category evidence will appear after analysis.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+
+      <section class="panel">
+        <details>
+          <summary>Directional Mz,cat review</summary>
+          <p class="disclaimer">
+            Indicative evidence only. Terrain category is not confirmed, Mz,cat values are not final
+            design values, and engineer review is required.
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Direction</th>
+                  <th>Suggested TC Range</th>
+                  <th>Indicative Mz,cat Range</th>
+                  <th>Recommended</th>
+                  <th>Engineer Review</th>
+                  <th>Final Selected Mz,cat</th>
+                  <th>Confidence</th>
+                  <th>Reasoning</th>
+                  <th>Warnings</th>
+                </tr>
+              </thead>
+              <tbody id="mzcat-table">
+                <tr><td colspan="9">Indicative Mz,cat evidence will appear after analysis.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <button id="terrain-report" type="button">Open Reviewed Mz,cat Report</button>
+        </details>
+      </section>
+
+      <section class="panel">
+        <details class="diagnostic-details">
+          <summary>Analysis diagnostics</summary>
+          <pre id="summary">Run an analysis to see results.</pre>
+        </details>
+      </section>
+
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260621-site-analysis-ux"></script>
   </body>
 </html>

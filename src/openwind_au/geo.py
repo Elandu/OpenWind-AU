@@ -57,6 +57,48 @@ def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[s
     }
 
 
+def geocode_address_suggestions(
+    query: str,
+    limit: int = 5,
+    user_agent: str = "OpenWind-AU/0.1",
+) -> list[dict[str, Any]]:
+    """Return candidate Australian address matches from OpenStreetMap Nominatim."""
+
+    cleaned_query = query.strip()
+    if len(cleaned_query) < 3:
+        return []
+
+    bounded_limit = max(1, min(int(limit), 10))
+    params = {
+        "q": cleaned_query,
+        "format": "jsonv2",
+        "limit": bounded_limit,
+        "countrycodes": "au",
+        "addressdetails": 1,
+    }
+    try:
+        data = _get_json(NOMINATIM_URL, params, user_agent)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to query address suggestions with Nominatim: {exc}") from exc
+
+    suggestions = []
+    seen = set()
+    for item in data or []:
+        display_name = item.get("display_name")
+        if not display_name or display_name in seen:
+            continue
+        seen.add(display_name)
+        suggestions.append(
+            {
+                "latitude": float(item["lat"]),
+                "longitude": float(item["lon"]),
+                "display_name": display_name,
+                "source": "OpenStreetMap Nominatim",
+            }
+        )
+    return suggestions
+
+
 def destination_point(
     latitude: float,
     longitude: float,

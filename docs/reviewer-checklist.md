@@ -30,8 +30,13 @@ Use this checklist before relying on OpenWind-AU outputs.
 ## Independent Code Work
 
 - Confirm AS/NZS calculations independently.
+- Confirm the packaged `VR` and `Md` lookup tables remain tested against independently defined
+  AS/NZS 1170.2:2021 expected values.
 - Confirm topographic multipliers independently.
 - Confirm terrain category and shielding multipliers independently.
+- Treat vegetation and non-building shielding as planned context only; it is not a certified `Ms`
+  source in OpenWind-AU.
+- Prefer DSM-DTM evidence for any future vegetation obstruction height review.
 - Confirm design wind pressures independently.
 
 OpenWind-AU is an early-stage engineering support tool. It does not produce certified design
