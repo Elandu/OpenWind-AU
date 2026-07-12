@@ -255,7 +255,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     workflow_start_cancellation = (
         "cancelAddressResolution();\n  closeAddressSuggestions();\n  cancelActiveWorkflow();"
     )
-    assert workflow_start_cancellation in script.text
+    assert workflow_start_cancellation in script.text.replace("\r\n", "\n")
     assert "syncCurrentMapSiteToFrame" in script.text
     assert "startReportRequest" in script.text
     assert "reportRequestIsCurrent" in script.text
