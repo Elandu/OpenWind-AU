@@ -11,6 +11,7 @@ import subprocess
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlencode
 
 import numpy as np
@@ -19,6 +20,7 @@ import requests
 DEM_PROVIDER_ENV = "OPENWIND_DEM_PROVIDER"
 OPEN_METEO_ELEVATION_URL_ENV = "OPENWIND_OPEN_METEO_ELEVATION_URL"
 OPEN_METEO_ELEVATION_URL = "https://api.open-meteo.com/v1/elevation"
+OPEN_METEO_MAX_COORDINATES_PER_REQUEST = 100
 
 
 class DEMProvider(ABC):
@@ -27,6 +29,11 @@ class DEMProvider(ABC):
     @abstractmethod
     def elevation(self, latitude: float, longitude: float) -> float:
         """Return elevation in metres above mean sea level."""
+
+    def elevations(self, points: list[tuple[float, float]]) -> list[float]:
+        """Return elevations for points, using point reads unless a provider can batch."""
+
+        return [self.elevation(latitude, longitude) for latitude, longitude in points]
 
 
 class SRTMProvider(DEMProvider):
@@ -133,22 +140,38 @@ class OpenMeteoElevationProvider(DEMProvider):
     def elevation(self, latitude: float, longitude: float) -> float:
         """Return Open-Meteo elevation in metres for a WGS84 point."""
 
-        key = (round(latitude, 7), round(longitude, 7))
-        if key in self._cache:
-            return self._cache[key]
-        try:
-            payload = _get_json(
-                self.base_url,
-                params={"latitude": latitude, "longitude": longitude},
-                timeout_seconds=self.timeout_seconds,
-            )
-            elevation = _parse_open_meteo_elevation(payload)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to retrieve Open-Meteo elevation for {latitude},{longitude}: {exc}"
-            ) from exc
-        self._cache[key] = elevation
-        return elevation
+        return self.elevations([(latitude, longitude)])[0]
+
+    def elevations(self, points: list[tuple[float, float]]) -> list[float]:
+        """Return elevations in Open-Meteo batches of at most 100 coordinate pairs."""
+
+        if not points:
+            return []
+        requested_keys = [
+            (round(latitude, 7), round(longitude, 7)) for latitude, longitude in points
+        ]
+        missing_keys = list(dict.fromkeys(key for key in requested_keys if key not in self._cache))
+        for start in range(0, len(missing_keys), OPEN_METEO_MAX_COORDINATES_PER_REQUEST):
+            batch = missing_keys[start : start + OPEN_METEO_MAX_COORDINATES_PER_REQUEST]
+            latitudes = [latitude for latitude, _longitude in batch]
+            longitudes = [longitude for _latitude, longitude in batch]
+            params: dict[str, float | str] = {
+                "latitude": latitudes[0] if len(batch) == 1 else ",".join(map(str, latitudes)),
+                "longitude": (longitudes[0] if len(batch) == 1 else ",".join(map(str, longitudes))),
+            }
+            try:
+                payload = _get_json(
+                    self.base_url,
+                    params=params,
+                    timeout_seconds=self.timeout_seconds,
+                )
+                elevations = _parse_open_meteo_elevations(payload, expected_count=len(batch))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to retrieve Open-Meteo elevations for {len(batch)} points: {exc}"
+                ) from exc
+            self._cache.update(zip(batch, elevations, strict=True))
+        return [self._cache[key] for key in requested_keys]
 
 
 class ArrayDEMProvider(DEMProvider):
@@ -215,19 +238,24 @@ def dem_provider_label(provider: DEMProvider) -> str:
     return provider.__class__.__name__
 
 
-def _parse_open_meteo_elevation(payload: dict) -> float:
-    """Extract the first elevation value from an Open-Meteo response."""
+def _parse_open_meteo_elevations(payload: dict, *, expected_count: int) -> list[float]:
+    """Extract a finite elevation for every requested Open-Meteo coordinate."""
 
     elevations = payload.get("elevation")
-    if not isinstance(elevations, list) or not elevations:
-        raise RuntimeError("response did not include an elevation array")
-    value = elevations[0]
-    if not isinstance(value, int | float):
-        raise RuntimeError("response elevation value was not numeric")
-    return float(value)
+    if not isinstance(elevations, list) or len(elevations) != expected_count:
+        raise RuntimeError(
+            f"response included {len(elevations) if isinstance(elevations, list) else 0} "
+            f"elevations for {expected_count} coordinates"
+        )
+    parsed = []
+    for value in elevations:
+        if not isinstance(value, int | float) or not math.isfinite(float(value)):
+            raise RuntimeError("response elevation value was not a finite number")
+        parsed.append(float(value))
+    return parsed
 
 
-def _get_json(url: str, params: dict[str, float], timeout_seconds: float) -> dict:
+def _get_json(url: str, params: dict[str, Any], timeout_seconds: float) -> dict:
     """Fetch JSON, falling back to curl for Windows Python TLS issues."""
 
     try:

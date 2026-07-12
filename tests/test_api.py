@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
@@ -16,6 +17,85 @@ from openwind_au.obstructions import run_obstruction_inventory
 class FlatDEM(DEMProvider):
     def elevation(self, latitude: float, longitude: float) -> float:
         return 75.0
+
+
+def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
+    production_regions = ["A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D"]
+    monkeypatch.setattr(
+        api_module,
+        "dataset_metadata",
+        lambda: {
+            "dataset_name": "production-wind-regions",
+            "polygon_count": 20,
+            "is_test_fixture": False,
+            "available_region_names": production_regions,
+        },
+    )
+    monkeypatch.setattr(
+        api_module,
+        "load_md_tables",
+        lambda: {
+            "source": {"review_status": api_module.VERIFIED_LOOKUP_REVIEW_STATUS},
+            "tables": {
+                region: {direction: 1.0 for direction in api_module.DIRECTIONS}
+                for region in production_regions
+            },
+        },
+    )
+    client = TestClient(api_module.create_app())
+
+    live = client.get("/health/live")
+    ready = client.get("/health")
+
+    assert live.status_code == 200
+    assert live.json() == {"status": "ok"}
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "ready"
+    assert all(check["ready"] for check in ready.json()["checks"].values())
+
+
+def test_health_reports_missing_production_inputs(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "dataset_metadata",
+        lambda: {
+            "dataset_name": "wind_regions_sample",
+            "polygon_count": 12,
+            "is_test_fixture": True,
+        },
+    )
+    client = TestClient(api_module.create_app())
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "not_ready"
+    assert response.json()["checks"]["wind_region_dataset"]["ready"] is False
+    assert "dataset_path" not in response.text
+
+
+def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "dataset_metadata",
+        lambda: {
+            "dataset_name": "production-wind-regions",
+            "polygon_count": 1,
+            "is_test_fixture": False,
+            "available_region_names": ["A2"],
+        },
+    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: ["invalid"])
+    monkeypatch.setattr(api_module, "load_vr_tables", lambda: {"tables": []})
+    client = TestClient(api_module.create_app())
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["checks"]["direction_multiplier_table"]["ready"] is False
+    assert body["checks"]["regional_wind_speed_table"]["ready"] is False
+    assert "inspect the server logs" in response.text
 
 
 def sample_footprints() -> list[dict]:
@@ -137,17 +217,72 @@ def test_geocode_suggest_endpoint(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "geocode_address_suggestions", fake_suggestions)
     client = TestClient(api_module.create_app())
 
-    response = client.get("/api/geocode/suggest", params={"q": "macquarie", "limit": 3})
+    response = client.post(
+        "/api/geocode/suggest",
+        json={"query": "macquarie", "limit": 3},
+    )
 
     assert response.status_code == 200
     assert response.json()["suggestions"][0]["display_name"] == "1 Macquarie Street, Sydney NSW"
 
 
+def test_geocode_resolve_endpoint_and_errors(monkeypatch) -> None:
+    def fake_geocode(query):
+        assert query == "1 Macquarie Street Sydney"
+        return {
+            "latitude": -33.85918,
+            "longitude": 151.21319,
+            "display_name": "1 Macquarie Street, Sydney NSW",
+            "source": "OpenStreetMap Nominatim",
+        }
+
+    monkeypatch.setattr(api_module, "geocode_address", fake_geocode)
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/geocode/resolve",
+        json={"query": "1 Macquarie Street Sydney"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["latitude"] == -33.85918
+
+    monkeypatch.setattr(
+        api_module,
+        "geocode_address",
+        lambda _query: (_ for _ in ()).throw(ValueError("No result")),
+    )
+    assert (
+        client.post(
+            "/api/geocode/resolve",
+            json={"query": "missing"},
+        ).status_code
+        == 404
+    )
+
+    monkeypatch.setattr(
+        api_module,
+        "geocode_address",
+        lambda _query: (_ for _ in ()).throw(RuntimeError("upstream unavailable")),
+    )
+    assert (
+        client.post(
+            "/api/geocode/resolve",
+            json={"query": "failure"},
+        ).status_code
+        == 502
+    )
+
+
 def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
 
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -222,7 +357,7 @@ def test_wind_region_endpoints(monkeypatch) -> None:
     assert assessment.status_code == 200
     assert assessment.json()["wind_region"] == "A2"
     assert assessment.json()["dataset_name"] == "wind_regions_sample"
-    assert assessment.json()["polygon_count"] == 12
+    assert assessment.json()["polygon_count"] == 10
     assert assessment.json()["region_polygon"]
     assert fmap.status_code == 200
     assert "Selected Wind Region A2" in fmap.text
@@ -245,8 +380,12 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
         str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
     )
 
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -282,9 +421,41 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
     assert "L.control.layers" in map_event["data"]["map_html"]
 
 
+def test_wind_workflow_stream_emits_sanitized_terminal_event_for_unexpected_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "run_site_analysis",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyError("private detail")),
+    )
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-workflow/stream",
+        json={
+            "latitude": -33.8688,
+            "longitude": 151.2093,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert events[-1]["stage"] == "error"
+    assert events[-1]["data"]["status_code"] == 500
+    assert "server logs" in events[-1]["label"]
+    assert "private detail" not in response.text
+
+
 def test_obstruction_inventory_endpoints(monkeypatch) -> None:
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -302,10 +473,12 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
     csv_import = client.post(
         "/api/obstructions/import/csv",
         content="obstruction_id,height_m\nosm-way-1,8.5",
+        headers={"content-type": "text/csv"},
     )
     json_import = client.post(
         "/api/obstructions/import/json",
         content='[{"obstruction_id":"osm-way-1","height_m":8.5}]',
+        headers={"content-type": "application/json"},
     )
     assert inventory.status_code == 200
     body = inventory.json()
@@ -316,6 +489,12 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
     assert body["data_quality"]["total_osm_building_footprints_found"] == 1
     assert body["data_quality"]["total_usable_obstruction_polygons"] == 1
     assert body["data_quality"]["source_summary"]["OSM"] == 1
+    assert "raw_osm_building_footprints" not in body["data_quality"]
+    assert "excluded_objects" not in body["data_quality"]
+    assert "pipeline_log" not in body["data_quality"]
+    assert "microsoft_cache_path" not in body["data_quality"]
+    assert "raw_overpass_counts" not in body["data_quality"]
+    assert "returned_geometry_bbox" not in body["data_quality"]
     assert len(body["shielding_sectors"]) == 8
     assert any(sector["ns"] == 1 for sector in body["shielding_sectors"])
     assert "Indicative Ms values are not certified" in body["disclaimer"]
@@ -344,9 +523,82 @@ def test_obstruction_inventory_endpoints(monkeypatch) -> None:
     assert json_import.json()[0]["height_m"] == 8.5
 
 
+def test_obstruction_inventory_openapi_omits_private_diagnostics() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    operation = schema["paths"]["/api/obstructions/inventory"]["post"]
+    response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema["$ref"].endswith("/PublicObstructionInventoryResult")
+    quality = schema["components"]["schemas"]["PublicObstructionDataQuality"]["properties"]
+    input_properties = schema["components"]["schemas"]["PublicObstructionInventoryInput"][
+        "properties"
+    ]
+    for private_field in (
+        "excluded_objects",
+        "microsoft_cache_files",
+        "microsoft_cache_path",
+        "overpass_query",
+        "pipeline_log",
+        "raw_osm_building_footprints",
+        "raw_overpass_counts",
+        "returned_geometry_bbox",
+        "sample_building_ids",
+    ):
+        assert private_field not in quality
+    assert "reviewed_footprints" not in input_properties
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "content_type", "expected_status"),
+    [
+        ("/api/obstructions/import/csv", b"\xff\xfe", "text/csv", 400),
+        ("/api/obstructions/import/csv", b"wrong,value\nfoo,1", "text/csv", 400),
+        (
+            "/api/obstructions/import/csv",
+            b"obstruction_id,height_m\nduplicate,2\nduplicate,3",
+            "text/csv",
+            400,
+        ),
+        ("/api/obstructions/import/json", b"{broken", "application/json", 400),
+        ("/api/obstructions/import/json", b'{"unexpected": []}', "application/json", 400),
+        ("/api/obstructions/import/json", b"[]", "text/plain", 415),
+    ],
+)
+def test_obstruction_import_rejects_invalid_payloads(
+    path: str,
+    content: bytes,
+    content_type: str,
+    expected_status: int,
+) -> None:
+    client = TestClient(api_module.create_app())
+
+    response = client.post(path, content=content, headers={"content-type": content_type})
+
+    assert response.status_code == expected_status
+    assert response.json()["detail"]
+
+
+def test_obstruction_import_rejects_oversized_payload() -> None:
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/obstructions/import/csv",
+        content=b"x" * (api_module.MAX_OBSTRUCTION_IMPORT_BYTES + 1),
+        headers={"content-type": "text/csv"},
+    )
+
+    assert response.status_code == 413
+
+
 def test_obstruction_debug_endpoint(monkeypatch) -> None:
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    monkeypatch.setenv(api_module.DEBUG_ENDPOINTS_ENV, "1")
+
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -368,11 +620,28 @@ def test_obstruction_debug_endpoint(monkeypatch) -> None:
     assert "pipeline_log" in body
 
 
+def test_obstruction_debug_endpoint_is_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv(api_module.DEBUG_ENDPOINTS_ENV, raising=False)
+    client = TestClient(api_module.create_app())
+
+    response = client.get(
+        "/api/obstructions/debug",
+        params={"latitude": -33.86, "longitude": 151.21, "radius_m": 500},
+    )
+
+    assert response.status_code == 404
+    assert "/api/obstructions/debug" not in client.get("/openapi.json").json()["paths"]
+
+
 def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
 
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -434,9 +703,13 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
     calls = {"inventory": 0}
 
-    def fake_inventory(request):
+    def fake_inventory(request, *, resolved_site=None):
         calls["inventory"] += 1
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())
@@ -458,6 +731,8 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert calls["inventory"] == 1
     assert body["site_analysis"]["site"]["ground_elevation_m"] == 75
     assert len(body["obstruction_inventory"]["obstructions"]) == 1
+    assert "raw_osm_building_footprints" not in body["obstruction_inventory"]["data_quality"]
+    assert "pipeline_log" not in body["obstruction_inventory"]["data_quality"]
     assert len(body["terrain_category_evidence"]["directions"]) == 8
     assert len(body["terrain_category_evidence"]["mzcat_assessment"]) == 8
     assert (
@@ -471,11 +746,65 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert r"Terrain profiles \u0026 topographic candidates" in body["combined_map_html"]
 
 
+def test_address_workflow_reuses_one_geocoded_site(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    geocode_calls: list[str] = []
+
+    def fake_geocode(query: str) -> dict:
+        geocode_calls.append(query)
+        return {
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "display_name": "Resolved test address",
+            "source": "test geocoder",
+        }
+
+    monkeypatch.setattr("openwind_au.analysis.geocode_address", fake_geocode)
+
+    def fake_inventory(request, *, resolved_site=None):
+        assert request.latitude is None
+        assert request.longitude is None
+        assert resolved_site.latitude == pytest.approx(-33.86)
+        assert resolved_site.longitude == pytest.approx(151.21)
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
+
+    monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/full-analysis",
+        json={
+            "address": "1 Test Street, Sydney NSW",
+            "building_height_m": 10,
+            "radius_m": 500,
+            "sample_interval_m": 100,
+            "obstruction_radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 200
+    assert geocode_calls == ["1 Test Street, Sydney NSW"]
+    assert response.json()["obstruction_inventory"]["site"]["source"] == "test geocoder"
+    assert response.json()["obstruction_inventory"]["input"]["address"] == (
+        "1 Test Street, Sydney NSW"
+    )
+    assert response.json()["obstruction_inventory"]["input"]["latitude"] is None
+    assert response.json()["obstruction_inventory"]["input"]["longitude"] is None
+
+
 def test_terrain_category_report_accepts_engineer_mzcat_reviews(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
 
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     client = TestClient(api_module.create_app())

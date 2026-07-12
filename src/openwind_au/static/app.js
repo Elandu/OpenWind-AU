@@ -214,7 +214,7 @@ form.addEventListener("submit", async (event) => {
 function renderProfileSummary(profiles) {
   profileSummary.innerHTML = profiles.map((profile) => `
     <article class="profile-card">
-      <h3>${profile.direction}</h3>
+      <h3>${escapeHtml(profile.direction)}</h3>
       <dl>
         <div><dt>Azimuth</dt><dd>${profile.azimuth_deg.toFixed(0)} deg</dd></div>
         <div><dt>Endpoint</dt><dd>${profile.endpoint_latitude.toFixed(5)}, ${profile.endpoint_longitude.toFixed(5)}</dd></div>
@@ -229,8 +229,8 @@ function renderProfileSummary(profiles) {
 function renderTopographySummary(features) {
   topographySummary.innerHTML = features.map((feature) => `
     <tr>
-      <td>${feature.direction}</td>
-      <td>${feature.feature_type}</td>
+      <td>${escapeHtml(feature.direction)}</td>
+      <td>${escapeHtml(feature.feature_type)}</td>
       <td>${feature.site_rl_m.toFixed(2)} m</td>
       <td>${feature.crest_rl_m.toFixed(2)} m</td>
       <td>${feature.base_rl_m.toFixed(2)} m</td>
@@ -238,7 +238,7 @@ function renderTopographySummary(features) {
       <td>${feature.lu_m.toFixed(1)} m</td>
       <td>${feature.x_m.toFixed(1)} m</td>
       <td>${feature.average_upwind_slope.toFixed(3)}</td>
-      <td>${feature.confidence}</td>
+      <td>${escapeHtml(feature.confidence)}</td>
     </tr>
   `).join("");
 }
@@ -307,16 +307,11 @@ function renderObstructionDataQuality(dataQuality) {
     .map(([name, count]) => `${escapeHtml(name)}: ${count}`)
     .join(", ") || "None";
   const warnings = (dataQuality.warnings || []).map((warning) => escapeHtml(warning)).join("<br>") || "None";
-  const microsoftFiles = (dataQuality.microsoft_cache_files || [])
-    .map((path) => escapeHtml(path))
-    .join("<br>") || "None";
   obstructionQualityTable.innerHTML = `
     <tr><th>Query centre</th><td>${formatQueryCentre(dataQuality.query_centre)}</td></tr>
     <tr><th>Query radius</th><td>${dataQuality.query_radius_m || "-"} m</td></tr>
     <tr><th>Microsoft source status</th><td>${escapeHtml(dataQuality.microsoft_source_status || "unavailable")}</td></tr>
     <tr><th>Microsoft cache status</th><td>${escapeHtml(dataQuality.microsoft_cache_status || "miss")}</td></tr>
-    <tr><th>Microsoft cache path</th><td>${escapeHtml(dataQuality.microsoft_cache_path || "-")}</td></tr>
-    <tr><th>Microsoft cache files</th><td>${microsoftFiles}</td></tr>
     <tr><th>Raw Overpass counts</th><td>${rawCounts}</td></tr>
     <tr><th>Parsed counts</th><td>${parsedCounts}</td></tr>
     <tr><th>Total Microsoft building footprints found</th><td>${dataQuality.total_microsoft_building_footprints_found || 0}</td></tr>
@@ -355,7 +350,7 @@ function renderTerrainCategoryEvidence(evidence) {
   }
   terrainCategoryTable.innerHTML = directions.map((direction) => `
     <tr>
-      <td>${direction.direction}</td>
+      <td>${escapeHtml(direction.direction)}</td>
       <td>${direction.built_up_area_percentage.toFixed(1)}%</td>
       <td>${direction.vegetation_area_percentage.toFixed(1)}%</td>
       <td>${direction.open_terrain_percentage.toFixed(1)}%</td>
@@ -366,7 +361,7 @@ function renderTerrainCategoryEvidence(evidence) {
       <td>${direction.directional_fetch_distance_m.toFixed(0)} m</td>
       <td>${badge("neutral", direction.suggested_category_range)}</td>
       <td>${badge(direction.confidence, direction.confidence)}</td>
-      <td>${(direction.warnings || []).join(" ")}</td>
+      <td>${(direction.warnings || []).map(escapeHtml).join(" ")}</td>
     </tr>
   `).join("");
   renderMzCatAssessment(evidence.mzcat_assessment || []);
@@ -518,7 +513,7 @@ function renderShieldingSectors(sectors) {
   shieldingThresholdNote.textContent = `Current subject building height threshold z = ${subjectHeight.toFixed(2)} m. Obstructions with selected hs >= z are included in preliminary shielding.`;
   shieldingSectorTable.innerHTML = sectors.map((sector) => `
     <tr>
-      <td>${sector.direction}</td>
+      <td>${escapeHtml(sector.direction)}</td>
       <td>${sector.sector_start_deg.toFixed(1)}-${sector.sector_end_deg.toFixed(1)} deg</td>
       <td>${sector.sector_radius_m.toFixed(1)} m</td>
       <td>${sector.ns}</td>
@@ -533,7 +528,7 @@ function renderShieldingSectors(sectors) {
         <span class="muted">high ${sector.high_confidence_count || 0}, est ${sector.estimated_height_count || 0}, unknown ${sector.unknown_height_count || 0}</span>
       </td>
     </tr>
-    ${(sector.warnings || []).length ? `<tr><td></td><td colspan="10">${sector.warnings.join(" ")}</td></tr>` : ""}
+    ${(sector.warnings || []).length ? `<tr><td></td><td colspan="10">${sector.warnings.map(escapeHtml).join(" ")}</td></tr>` : ""}
   `).join("");
   renderMsExplanation(sectors);
 }
@@ -542,7 +537,7 @@ function rejectionSummary(sector) {
   const counts = sector.rejection_reason_counts || {};
   const entries = Object.entries(counts).filter(([, count]) => count);
   if (!entries.length) return "-";
-  return entries.map(([reason, count]) => `${reasonLabel(reason)} ${count}`).join(", ");
+  return entries.map(([reason, count]) => `${escapeHtml(reasonLabel(reason))} ${count}`).join(", ");
 }
 
 function renderMsExplanation(sectors) {
@@ -554,7 +549,7 @@ function renderMsExplanation(sectors) {
   }
   const previous = msExplanationSector.value;
   msExplanationSector.innerHTML = sectors.map((sector) =>
-    `<option value="${sector.direction}">${sector.direction} - Ms ${sector.indicative_ms.toFixed(3)}</option>`
+    `<option value="${escapeHtml(sector.direction)}">${escapeHtml(sector.direction)} - Ms ${sector.indicative_ms.toFixed(3)}</option>`
   ).join("");
   const selectedDirection = sectors.some((sector) => sector.direction === previous) ? previous : sectors[0].direction;
   msExplanationSector.value = selectedDirection;
@@ -563,22 +558,22 @@ function renderMsExplanation(sectors) {
   const reasonRows = Object.entries(sector.rejection_reason_counts || {})
     .filter(([, count]) => count)
     .sort((a, b) => b[1] - a[1])
-    .map(([reason, count]) => `<li>${reasonLabel(reason)}: ${count}</li>`)
+    .map(([reason, count]) => `<li>${escapeHtml(reasonLabel(reason))}: ${count}</li>`)
     .join("");
   const rejectedRows = rejected.length
     ? `<table class="debug-table"><thead><tr><th>ID</th><th>Reason</th><th>Distance</th><th>Bearing</th><th>Height</th><th>Source</th></tr></thead><tbody>${rejected.map((item) => `
         <tr>
           <td>${escapeHtml(item.obstruction_id)}</td>
-          <td>${reasonLabel(item.reason)}</td>
+          <td>${escapeHtml(reasonLabel(item.reason))}</td>
           <td>${formatMaybeNumber(item.distance_m, " m")}</td>
           <td>${formatMaybeNumber(item.bearing_deg, " deg")}</td>
           <td>${formatMaybeNumber(item.height_m, " m")}</td>
-          <td>${sourceLabel(item.height_source)}</td>
+          <td>${escapeHtml(sourceLabel(item.height_source))}</td>
         </tr>
       `).join("")}</tbody></table>`
     : "<p>No rejected in-sector obstructions were recorded.</p>";
   msExplanation.innerHTML = `
-    <p>${sector.direction} uses azimuth ${sector.wind_direction_deg.toFixed(1)} deg, upwind sector ${sector.sector_start_deg.toFixed(1)}-${sector.sector_end_deg.toFixed(1)} deg, radius ${sector.sector_radius_m.toFixed(1)} m, z ${sector.subject_height_m.toFixed(2)} m.</p>
+    <p>${escapeHtml(sector.direction)} uses azimuth ${sector.wind_direction_deg.toFixed(1)} deg, upwind sector ${sector.sector_start_deg.toFixed(1)}-${sector.sector_end_deg.toFixed(1)} deg, radius ${sector.sector_radius_m.toFixed(1)} m, z ${sector.subject_height_m.toFixed(2)} m.</p>
     <p>${sector.total_obstructions_in_sector || 0} obstructions are in sector; ${sector.usable_height_count || 0} have usable height; ${sector.included_as_shielding_count || sector.ns || 0} are included as shielding.</p>
     <h4>Top rejection reasons</h4>
     ${reasonRows ? `<ul>${reasonRows}</ul>` : "<p>No rejection reasons were recorded.</p>"}
@@ -602,13 +597,13 @@ function obstructionRow(item) {
   const reviewRequired = item.review_required ?? item.manual_review_required;
   return `
     <tr>
-      <td>${item.obstruction_id}</td>
-      <td>${item.classification || "unknown"}</td>
+      <td>${escapeHtml(item.obstruction_id)}</td>
+      <td>${escapeHtml(item.classification || "unknown")}</td>
       <td>${item.distance_m.toFixed(1)} m</td>
       <td>${item.bearing_deg.toFixed(0)} deg</td>
-      <td><input data-id="${item.obstruction_id}" data-field="height_m" type="number" step="0.1" value="${heightValue}" placeholder="missing" /></td>
+      <td><input data-id="${escapeHtml(item.obstruction_id)}" data-field="height_m" type="number" step="0.1" value="${heightValue}" placeholder="missing" /></td>
       <td>${dsmHeightValue}</td>
-      <td><input data-id="${item.obstruction_id}" data-field="building_levels" type="number" step="0.1" value="${levelsValue}" /></td>
+      <td><input data-id="${escapeHtml(item.obstruction_id)}" data-field="building_levels" type="number" step="0.1" value="${levelsValue}" /></td>
       <td>${badge(item.height_source, sourceLabel(item.height_source))}</td>
       <td>${badge(item.confidence || "unknown", item.confidence || "unknown")}</td>
       <td>${reviewRequired ? badge("review", "review required") : badge("ok", "reviewed")}</td>
@@ -626,7 +621,7 @@ function filterObstructions(obstructions) {
 }
 
 function badge(kind, text) {
-  return `<span class="badge badge-${badgeClass(kind)}">${text}</span>`;
+  return `<span class="badge badge-${badgeClass(kind)}">${escapeHtml(text)}</span>`;
 }
 
 function badgeClass(kind) {
@@ -688,14 +683,18 @@ obstructionCsv.addEventListener("change", async (event) => {
 obstructionJson.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  const imported = JSON.parse(await file.text());
-  if (!Array.isArray(imported) && imported.site && imported.input) {
-    currentObstructionInventory = imported;
-    reviewedObstructions = imported.obstructions || [];
-    renderObstructionInventory(currentObstructionInventory);
-    return;
+  try {
+    const imported = JSON.parse(await file.text());
+    const overrides = Array.isArray(imported) ? imported : imported?.obstructions;
+    if (!Array.isArray(overrides)) {
+      throw new Error("JSON must be an array or an object containing an obstructions array.");
+    }
+    applyBrowserOverrides(overrides);
+  } catch (error) {
+    summary.textContent = `Obstruction JSON import failed: ${error.message}`;
+  } finally {
+    event.target.value = "";
   }
-  applyBrowserOverrides(Array.isArray(imported) ? imported : imported.obstructions || []);
 });
 
 obstructionExport.addEventListener("click", () => {
@@ -725,12 +724,13 @@ function parseCsvOverrides(text) {
 }
 
 function applyBrowserOverrides(overrides) {
-  for (const override of overrides) {
+  for (const rawOverride of overrides) {
+    const override = normaliseImportedOverride(rawOverride);
+    if (!override) continue;
     const id = override.obstruction_id;
     let item = reviewedObstructions.find((obstruction) => obstruction.obstruction_id === id);
     if (!item && override.footprint_geometry) {
-      item = { ...override };
-      item.footprint_source = "manual_reviewed";
+      item = override;
       reviewedObstructions.push(item);
     }
     if (!item) continue;
@@ -758,6 +758,44 @@ function applyBrowserOverrides(overrides) {
   currentObstructionInventory = inventory;
   refreshShieldingSectors();
   renderObstructionInventory(inventory);
+}
+
+function normaliseImportedOverride(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const obstructionId = String(value.obstruction_id || "").trim();
+  if (!obstructionId || obstructionId.length > 256) return null;
+  const height = parseOptionalNumber(value.height_m);
+  const levels = parseOptionalNumber(value.building_levels);
+  if (height !== null && (height < 0 || height > 500)) return null;
+  if (levels !== null && (levels < 0 || levels > 200)) return null;
+  const classification = [
+    "residential",
+    "commercial",
+    "industrial",
+    "apartment",
+    "vegetation",
+    "mixed",
+    "unknown",
+  ].includes(value.classification) ? value.classification : "unknown";
+  const geometry = value.footprint_geometry;
+  const validGeometry = geometry && typeof geometry === "object" && [
+    "Polygon",
+    "MultiPolygon",
+  ].includes(geometry.type) && Array.isArray(geometry.coordinates);
+  return {
+    obstruction_id: obstructionId,
+    height_m: height,
+    building_levels: levels,
+    footprint_geometry: validGeometry ? geometry : null,
+    footprint_source: "manual_reviewed",
+    classification,
+    distance_m: parseOptionalNumber(value.distance_m) ?? 0,
+    bearing_deg: parseOptionalNumber(value.bearing_deg) ?? 0,
+    centroid_latitude: parseOptionalNumber(value.centroid_latitude) ?? 0,
+    centroid_longitude: parseOptionalNumber(value.centroid_longitude) ?? 0,
+    notes: [],
+    warnings: [],
+  };
 }
 
 function parseOptionalNumber(value) {

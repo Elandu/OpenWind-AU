@@ -136,7 +136,10 @@ source diagnostics.
 
 If a project maintains its own tile index, set `OPENWIND_MICROSOFT_FOOTPRINT_INDEX` or
 `OPENWIND_MICROSOFT_FOOTPRINT_INDEX_URL`. The index maps tile keys to downloadable GeoJSON or
-GeoJSONL URLs, allowing OpenWind-AU to fetch only the tile required for the current site.
+GeoJSONL URLs, allowing OpenWind-AU to fetch only the tile required for the current site. Remote
+index and tile URLs (including redirects) must use HTTPS. Remote indexes are limited to 2 MiB,
+tiles are limited to 50 MiB, and an optional per-tile `sha256` is verified before a supported
+GeoJSON file is installed atomically in the cache.
 
 ## Wind Region GIS Dataset
 
@@ -192,10 +195,18 @@ curl -X POST http://127.0.0.1:8000/api/analyse \
 Main endpoints:
 
 ```text
+GET  /health/live
+GET  /health
+POST /api/geocode/suggest
+POST /api/geocode/resolve
 POST /api/analyse
 POST /api/export/json
 POST /api/report/html
 POST /api/report/pdf
+POST /api/wind-workflow/report/html
+POST /api/wind-workflow/report/pdf
+POST /api/wind-workflow/result/report/html
+POST /api/wind-workflow/result/report/pdf
 POST /api/plots/profile
 POST /api/maps/site
 POST /api/map/combined
@@ -213,6 +224,10 @@ GET  /validation
 GET  /api/validation
 GET  /api/validation/report/html
 ```
+
+`/health/live` is the process-liveness probe. `/health` is the stricter assessment-readiness probe
+and returns HTTP 503 with component checks until required production datasets, reviewed lookup
+tables, and the configured DEM provider/cache are usable.
 
 ## Example Outputs
 

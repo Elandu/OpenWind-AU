@@ -120,14 +120,12 @@ def shielding_sector_result(
             average_ground_gradient = (
                 abs(obstruction.ground_rl_m - site.ground_elevation_m) / obstruction.distance_m
             )
-            obstruction_top_rl = obstruction.ground_rl_m + height
-            subject_top_rl = site.ground_elevation_m + subject_height_m
-            if average_ground_gradient > 0.2 and obstruction_top_rl <= subject_top_rl:
+            if average_ground_gradient > 0.2:
                 _record_rejection(
                     rejected,
                     rejection_reason_counts,
                     obstruction,
-                    "steep_slope_below_subject",
+                    "steep_upwind_ground_gradient",
                     height,
                 )
                 continue

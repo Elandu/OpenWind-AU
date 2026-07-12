@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 from io import StringIO
@@ -89,10 +90,12 @@ def run_obstruction_inventory(
     footprints: list[dict[str, Any]] | None = None,
     dsm_provider: ElevationProvider | None = None,
     dtm_provider: ElevationProvider | None = None,
+    *,
+    resolved_site: SiteLocation | None = None,
 ) -> ObstructionInventoryResult:
     """Build a review inventory of nearby obstructions."""
 
-    site = resolve_obstruction_site(request)
+    site = resolved_site or resolve_obstruction_site(request)
     raw_footprints = footprints
     warnings: list[str] = []
     data_source_status = "ok"
@@ -222,12 +225,30 @@ def run_obstruction_inventory(
         request.default_storey_height_m,
     )
     excluded_objects = [*duplicate_exclusions, *excluded_objects]
+    owned_elevation_providers: list[ElevationProvider] = []
     if dsm_provider is None or dtm_provider is None:
-        env_dsm_provider, env_dtm_provider, provider_warnings = elevation_providers_from_env()
-        dsm_provider = dsm_provider or env_dsm_provider
-        dtm_provider = dtm_provider or env_dtm_provider
+        env_dsm_provider, env_dtm_provider, provider_warnings = elevation_providers_from_env(
+            load_dsm=dsm_provider is None,
+            load_dtm=dtm_provider is None,
+        )
+        if dsm_provider is None and env_dsm_provider is not None:
+            dsm_provider = env_dsm_provider
+            owned_elevation_providers.append(env_dsm_provider)
+        if dtm_provider is None and env_dtm_provider is not None:
+            dtm_provider = env_dtm_provider
+            owned_elevation_providers.append(env_dtm_provider)
         warnings.extend(provider_warnings)
-    records, enrichment_warnings = enrich_obstruction_heights(records, dsm_provider, dtm_provider)
+    try:
+        records, enrichment_warnings = enrich_obstruction_heights(
+            records,
+            dsm_provider,
+            dtm_provider,
+        )
+    finally:
+        for provider in owned_elevation_providers:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
     warnings.extend(enrichment_warnings)
     records = apply_manual_overrides(
         records,
@@ -933,7 +954,11 @@ def is_vegetation_candidate(
     return classify_obstruction(tags) == "vegetation"
 
 
-def elevation_providers_from_env() -> tuple[
+def elevation_providers_from_env(
+    *,
+    load_dsm: bool = True,
+    load_dtm: bool = True,
+) -> tuple[
     ElevationProvider | None,
     ElevationProvider | None,
     list[str],
@@ -945,12 +970,12 @@ def elevation_providers_from_env() -> tuple[
     dtm_path = os.environ.get("OPENWIND_DTM_PATH")
     dsm_provider = None
     dtm_provider = None
-    if dsm_path:
+    if dsm_path and load_dsm:
         try:
             dsm_provider = RasterElevationProvider(dsm_path)
         except Exception as exc:
             warnings.append(f"DSM unavailable from OPENWIND_DSM_PATH: {exc}")
-    if dtm_path:
+    if dtm_path and load_dtm:
         try:
             dtm_provider = RasterElevationProvider(dtm_path)
         except Exception as exc:
@@ -1084,14 +1109,7 @@ def obstruction_data_quality(
     )
     parsed_counts = overpass_debug.get("parsed_counts", {})
     raw_overpass_counts = overpass_debug.get("raw_overpass_counts", {})
-    pipeline_log = [
-        f"query_centre={overpass_debug.get('query_centre')}",
-        f"query_radius_m={overpass_debug.get('query_radius_m')}",
-        f"raw_overpass_counts={raw_overpass_counts}",
-        f"parsed_counts={parsed_counts}",
-        f"excluded_reasons={excluded_reasons}",
-        *overpass_debug.get("pipeline_log", []),
-    ]
+    pipeline_log = list(dict.fromkeys(overpass_debug.get("pipeline_log", [])))
     return ObstructionDataQuality(
         query_centre=overpass_debug.get("query_centre"),
         query_radius_m=overpass_debug.get("query_radius_m"),
@@ -1233,16 +1251,33 @@ def parse_manual_overrides_csv(content: str) -> list[ObstructionManualOverride]:
     """Parse reviewed obstruction heights from CSV text."""
 
     rows = csv.DictReader(StringIO(content))
+    fieldnames = {field.strip() for field in (rows.fieldnames or []) if field}
+    if "obstruction_id" not in fieldnames:
+        raise ValueError("CSV must include an obstruction_id column")
+    if not fieldnames.intersection({"height_m", "building_levels"}):
+        raise ValueError("CSV must include a height_m or building_levels column")
     overrides: list[ObstructionManualOverride] = []
-    for row in rows:
+    seen_ids: set[str] = set()
+    for row_number, row in enumerate(rows, start=2):
         obstruction_id = (row.get("obstruction_id") or "").strip()
         if not obstruction_id:
+            if any(str(value or "").strip() for value in row.values()):
+                raise ValueError(f"CSV row {row_number} is missing obstruction_id")
             continue
+        if obstruction_id in seen_ids:
+            raise ValueError(f"CSV contains duplicate obstruction_id: {obstruction_id}")
+        seen_ids.add(obstruction_id)
+        height_m = _parse_import_number(row.get("height_m"), "height_m", row_number)
+        building_levels = _parse_import_number(
+            row.get("building_levels"), "building_levels", row_number
+        )
+        if height_m is None and building_levels is None:
+            raise ValueError(f"CSV row {row_number} must provide height_m or building_levels")
         overrides.append(
             ObstructionManualOverride(
                 obstruction_id=obstruction_id,
-                height_m=parse_float(row.get("height_m")),
-                building_levels=parse_float(row.get("building_levels")),
+                height_m=height_m,
+                building_levels=building_levels,
                 height_source=row.get("height_source") or "manual_review",
                 notes=row.get("notes") or None,
             )
@@ -1260,13 +1295,27 @@ def manual_overrides_from_json(content: str) -> list[ObstructionManualOverride]:
     """Import manual overrides from JSON text."""
 
     data = json.loads(content)
-    if isinstance(data, dict) and "obstructions" in data:
+    if isinstance(data, dict):
+        if set(data) != {"obstructions"}:
+            raise ValueError("JSON object must contain only an obstructions array")
         data = data["obstructions"]
+    if not isinstance(data, list):
+        raise ValueError("JSON import must be an array or an object containing obstructions")
     overrides: list[ObstructionManualOverride] = []
-    for item in data:
-        obstruction_id = item.get("obstruction_id")
+    seen_ids: set[str] = set()
+    for item_number, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"JSON obstruction {item_number} must be an object")
+        obstruction_id = str(item.get("obstruction_id") or "").strip()
         if not obstruction_id:
-            continue
+            raise ValueError(f"JSON obstruction {item_number} is missing obstruction_id")
+        if obstruction_id in seen_ids:
+            raise ValueError(f"JSON contains duplicate obstruction_id: {obstruction_id}")
+        seen_ids.add(obstruction_id)
+        if item.get("height_m") is None and item.get("building_levels") is None:
+            raise ValueError(
+                f"JSON obstruction {item_number} must provide height_m or building_levels"
+            )
         overrides.append(
             ObstructionManualOverride(
                 obstruction_id=obstruction_id,
@@ -1279,16 +1328,44 @@ def manual_overrides_from_json(content: str) -> list[ObstructionManualOverride]:
     return overrides
 
 
+def _parse_import_number(value: Any, field: str, row_number: int) -> float | None:
+    """Parse an optional finite non-negative number from an import row."""
+
+    if value is None or not str(value).strip():
+        return None
+    parsed = parse_float(value)
+    if parsed is None:
+        raise ValueError(f"CSV row {row_number} has an invalid {field}")
+    return parsed
+
+
 def parse_height_m(value: Any) -> float | None:
     """Parse an OSM height value in metres."""
 
     if value is None:
         return None
     if isinstance(value, int | float):
-        return float(value)
-    text = str(value).strip().lower().replace("metres", "").replace("meters", "")
-    text = text.replace("meter", "").replace("metre", "").replace("m", "").strip()
-    return parse_float(text)
+        height = float(value)
+    else:
+        text = str(value).strip().lower()
+        match = re.fullmatch(
+            r"([+]?(?:\d+(?:\.\d*)?|\.\d+))\s*"
+            r"(mm|cm|m|metres?|meters?|ft|feet|foot)?",
+            text,
+        )
+        if not match:
+            return None
+        height = float(match.group(1))
+        unit = match.group(2) or "m"
+        if unit == "mm":
+            height /= 1000
+        elif unit == "cm":
+            height /= 100
+        elif unit in {"ft", "feet", "foot"}:
+            height *= 0.3048
+    if not math.isfinite(height) or height < 0 or height > 500:
+        return None
+    return height
 
 
 def parse_float(value: Any) -> float | None:
@@ -1300,7 +1377,7 @@ def parse_float(value: Any) -> float | None:
         number = float(str(value).strip())
     except ValueError:
         return None
-    if number < 0:
+    if not math.isfinite(number) or number < 0:
         return None
     return number
 

@@ -18,11 +18,12 @@ from openwind_au.models import (
 ReferenceStatus = Literal["match", "mismatch", "not_available"]
 
 REFERENCE_CALC_7989_DIRECTIONS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-REFERENCE_CALC_7989_SOURCE = (
-    "C:\\Users\\nguye\\Downloads\\CALCS ___7989 - 6 Byambee St, Kenmore QLD 4069.pdf"
-)
+REFERENCE_CALC_7989_SOURCE = "Reference calculation 7989 (project-supplied source document)"
 REFERENCE_TOPOGRAPHIC_T1_SLOPE = 0.18
-REFERENCE_CALC_7989_OSM_FIXTURE = (
+_PACKAGED_REFERENCE_CALC_7989_OSM_FIXTURE = (
+    Path(__file__).resolve().parent / "data" / "reference_calc_7989_osm_footprints.json"
+)
+_SOURCE_REFERENCE_CALC_7989_OSM_FIXTURE = (
     Path(__file__).resolve().parents[2]
     / "data"
     / "validation"
@@ -117,7 +118,12 @@ def reference_calc_7989_class_overrides() -> list[WindClassMultiplierOverride]:
 def reference_calc_7989_osm_footprints() -> list[dict]:
     """Return the bundled OSM footprint snapshot for reference calculation 7989."""
 
-    data = json.loads(REFERENCE_CALC_7989_OSM_FIXTURE.read_text(encoding="utf-8"))
+    fixture_path = (
+        _PACKAGED_REFERENCE_CALC_7989_OSM_FIXTURE
+        if _PACKAGED_REFERENCE_CALC_7989_OSM_FIXTURE.exists()
+        else _SOURCE_REFERENCE_CALC_7989_OSM_FIXTURE
+    )
+    data = json.loads(fixture_path.read_text(encoding="utf-8"))
     footprints = data.get("footprints", [])
     if not isinstance(footprints, list):
         return []

@@ -217,9 +217,8 @@ indicative shielding multiplier workflow.
 
 Vegetation is excluded because Clause 4.3 does not permit trees or vegetation to provide
 shielding. For structures higher than 25 m, `Ms` is fixed at 1.0. Where ground levels are
-available, an upwind building on an average ground gradient greater than 0.2 is rejected unless
-its top elevation exceeds the subject building top elevation. Missing ground levels are reported
-for review.
+available, an upwind building on an average ground gradient greater than 0.2 is rejected. Missing
+ground levels are reported for review.
 
 Indicative `Ms` values are not certified design values.
 

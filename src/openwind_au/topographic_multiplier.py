@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 
@@ -40,6 +41,15 @@ def calculate_topographic_multiplier(
     calculating the hill-shape multiplier Mh.
     """
 
+    dimensions = {
+        "H": h_m,
+        "Lu": lu_m,
+        "x": x_m,
+        "z": z_m,
+        "site elevation": site_elevation_m,
+    }
+    if any(not math.isfinite(value) for value in dimensions.values()):
+        raise ValueError("Topographic dimensions and elevations must be finite numbers.")
     if z_m < 0:
         raise ValueError("Reference height z must not be negative.")
     if h_m < 0 or lu_m < 0 or x_m < 0:

@@ -210,8 +210,8 @@ def test_priority_order_manual_osm_levels_dsm_unknown() -> None:
     assert by_id["unknown"].height_source == "DSM_DTM"
     assert by_id["explicit"].raw_source_height_source == "OSM_HEIGHT"
     assert by_id["levels"].raw_source_height_source == "OSM_LEVELS"
+    assert all(by_id[item].height_method == "dsm_dtm" for item in ("explicit", "levels", "dsm"))
     assert any(
-        "DSM-DTM estimated" in warning
+        sector.rejection_reason_counts.get("steep_upwind_ground_gradient", 0) > 0
         for sector in result.shielding_sectors
-        for warning in sector.warnings
     )

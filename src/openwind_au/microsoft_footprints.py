@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import threading
+import time
+import uuid
+from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,11 +26,18 @@ MICROSOFT_AUSTRALIA_DOWNLOAD_URL = (
 )
 MICROSOFT_FOOTPRINT_SOURCE = "microsoft_building_footprints"
 MICROSOFT_DATA_LICENSE = "ODbL"
+MAX_MICROSOFT_TILE_BYTES = 50 * 1024 * 1024
+MAX_MICROSOFT_INDEX_BYTES = 2 * 1024 * 1024
+MAX_MICROSOFT_QUERY_CACHE_ENTRIES = 128
+MICROSOFT_TILE_SUFFIXES = {".geojson", ".json", ".geojsonl", ".ndjson"}
 COORDINATE_PREFIX_RE = re.compile(
     r'"coordinates"\s*:\s*\[\s*\[\s*\[\s*'
     r"(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)"
 )
-MICROSOFT_QUERY_CACHE: dict[tuple[Any, ...], MicrosoftFootprintResult] = {}
+MICROSOFT_QUERY_CACHE: OrderedDict[tuple[Any, ...], MicrosoftFootprintResult] = OrderedDict()
+MICROSOFT_QUERY_CACHE_LOCK = threading.RLock()
+MICROSOFT_TARGET_LOCKS: dict[str, threading.Lock] = {}
+MICROSOFT_TARGET_LOCKS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -61,9 +73,9 @@ def query_microsoft_building_footprints(
         cache_root,
         explicit_file=explicit_file,
     )
-    if not candidate_files and allow_download:
+    if allow_download and explicit_file is None:
         downloaded = download_indexed_tiles(latitude, longitude, radius_m, cache_root)
-        candidate_files.extend(downloaded)
+        candidate_files = list(dict.fromkeys([*candidate_files, *downloaded]))
     if not candidate_files:
         return MicrosoftFootprintResult(
             footprints=[],
@@ -83,14 +95,16 @@ def query_microsoft_building_footprints(
         explicit_file,
         candidate_files,
     )
-    if cache_key in MICROSOFT_QUERY_CACHE:
-        return deepcopy(MICROSOFT_QUERY_CACHE[cache_key])
+    cached_result = cached_microsoft_query_result(cache_key)
+    if cached_result is not None:
+        return cached_result
 
     footprints: list[dict[str, Any]] = []
     used_files: list[str] = []
     for path in candidate_files:
         try:
-            path_footprints = read_footprint_file(path, latitude, longitude, radius_m)
+            with microsoft_target_lock(path):
+                path_footprints = read_footprint_file(path, latitude, longitude, radius_m)
         except Exception as exc:
             warnings.append(f"Microsoft footprint cache file could not be read: {path}: {exc}")
             continue
@@ -106,7 +120,7 @@ def query_microsoft_building_footprints(
             cache_files=[str(path) for path in candidate_files],
             warnings=warnings,
         )
-        MICROSOFT_QUERY_CACHE[cache_key] = deepcopy(result)
+        cache_microsoft_query_result(cache_key, result)
         return result
     result = MicrosoftFootprintResult(
         footprints=deduplicate_by_source_id(footprints),
@@ -116,8 +130,34 @@ def query_microsoft_building_footprints(
         cache_files=used_files,
         warnings=warnings,
     )
-    MICROSOFT_QUERY_CACHE[cache_key] = deepcopy(result)
+    cache_microsoft_query_result(cache_key, result)
     return result
+
+
+def cache_microsoft_query_result(
+    cache_key: tuple[Any, ...],
+    result: MicrosoftFootprintResult,
+) -> None:
+    """Store a bounded copy of a Microsoft footprint query result."""
+
+    with MICROSOFT_QUERY_CACHE_LOCK:
+        MICROSOFT_QUERY_CACHE[cache_key] = deepcopy(result)
+        MICROSOFT_QUERY_CACHE.move_to_end(cache_key)
+        while len(MICROSOFT_QUERY_CACHE) > MAX_MICROSOFT_QUERY_CACHE_ENTRIES:
+            MICROSOFT_QUERY_CACHE.popitem(last=False)
+
+
+def cached_microsoft_query_result(
+    cache_key: tuple[Any, ...],
+) -> MicrosoftFootprintResult | None:
+    """Return a copy of a cached result while synchronizing LRU access."""
+
+    with MICROSOFT_QUERY_CACHE_LOCK:
+        result = MICROSOFT_QUERY_CACHE.get(cache_key)
+        if result is None:
+            return None
+        MICROSOFT_QUERY_CACHE.move_to_end(cache_key)
+        return deepcopy(result)
 
 
 def default_microsoft_cache_dir() -> Path:
@@ -189,13 +229,6 @@ def candidate_cache_files(
                 cache_root / f"microsoft_au_{tile_key}.geojson",
             ]
         )
-    if cache_root.exists():
-        candidates.extend(
-            path
-            for path in cache_root.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in {".geojson", ".json", ".geojsonl", ".ndjson"}
-        )
     seen: set[Path] = set()
     existing: list[Path] = []
     for path in candidates:
@@ -238,16 +271,184 @@ def download_indexed_tiles(
         if not isinstance(entry, dict) or not entry.get("url"):
             continue
         relative_file = entry.get("file") or f"tiles/{tile_key}.geojsonl"
-        target = cache_root / relative_file
-        if target.exists():
+        target = safe_indexed_tile_target(cache_root, relative_file)
+        url = str(entry["url"])
+        if not url.lower().startswith("https://"):
+            raise ValueError("Microsoft footprint tile URLs must use HTTPS")
+        expected_sha256 = normalize_expected_sha256(entry.get("sha256"))
+        with microsoft_target_lock(target):
+            if target.exists():
+                try:
+                    validate_cached_tile(target, expected_sha256=expected_sha256)
+                except (OSError, ValueError):
+                    pass
+                else:
+                    downloaded.append(target)
+                    continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            response = requests.get(url, timeout=60, stream=True)
+            try:
+                response.raise_for_status()
+                response_url = str(getattr(response, "url", url))
+                if not response_url.lower().startswith("https://"):
+                    raise ValueError("Microsoft footprint tile redirects must remain on HTTPS")
+                download_tile_response(response, target, expected_sha256=expected_sha256)
+            finally:
+                close_response(response)
             downloaded.append(target)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        response = requests.get(entry["url"], timeout=60)
-        response.raise_for_status()
-        target.write_bytes(response.content)
-        downloaded.append(target)
     return downloaded
+
+
+def microsoft_target_lock(target: Path) -> threading.Lock:
+    """Return the process-local lock for an indexed cache target."""
+
+    key = os.path.normcase(os.path.abspath(os.fspath(target)))
+    with MICROSOFT_TARGET_LOCKS_LOCK:
+        return MICROSOFT_TARGET_LOCKS.setdefault(key, threading.Lock())
+
+
+def safe_indexed_tile_target(cache_root: Path, relative_file: Any) -> Path:
+    """Resolve an index-provided tile path and enforce cache containment."""
+
+    if not isinstance(relative_file, str) or not relative_file.strip():
+        raise ValueError("Microsoft footprint index tile file must be a relative path")
+    relative = Path(relative_file)
+    if relative.is_absolute():
+        raise ValueError("Microsoft footprint index tile file must be relative to the cache")
+    root = cache_root.resolve()
+    target = (root / relative).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Microsoft footprint index tile file escapes the cache directory") from exc
+    if target.suffix.lower() not in MICROSOFT_TILE_SUFFIXES:
+        allowed = ", ".join(sorted(MICROSOFT_TILE_SUFFIXES))
+        raise ValueError(f"Microsoft footprint tile must use one of: {allowed}")
+    return target
+
+
+def download_tile_response(
+    response: Any,
+    target: Path,
+    *,
+    expected_sha256: Any = None,
+) -> None:
+    """Stream a bounded tile to a temporary file, validate it, then replace atomically."""
+
+    expected_hash = normalize_expected_sha256(expected_sha256)
+    content_length = (
+        response.headers.get("content-length") if hasattr(response, "headers") else None
+    )
+    if content_length:
+        try:
+            declared_size = int(content_length)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Microsoft footprint tile has an invalid Content-Length") from exc
+        if declared_size > MAX_MICROSOFT_TILE_BYTES:
+            raise ValueError(f"Microsoft footprint tile exceeds {MAX_MICROSOFT_TILE_BYTES} bytes")
+
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.part")
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with temporary.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > MAX_MICROSOFT_TILE_BYTES:
+                    raise ValueError(
+                        f"Microsoft footprint tile exceeds {MAX_MICROSOFT_TILE_BYTES} bytes"
+                    )
+                digest.update(chunk)
+                handle.write(chunk)
+        if size == 0:
+            raise ValueError("Microsoft footprint tile download was empty")
+        if expected_hash and digest.hexdigest() != expected_hash:
+            raise ValueError("Microsoft footprint tile SHA-256 does not match the index")
+        validate_downloaded_tile(temporary, target.suffix.lower())
+        atomic_replace_with_retry(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_replace_with_retry(source: Path, target: Path) -> None:
+    """Replace a cache target, tolerating brief Windows file-sharing races."""
+
+    for attempt in range(5):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * (2**attempt))
+
+
+def validate_cached_tile(path: Path, *, expected_sha256: str | None) -> None:
+    """Validate the size, optional digest, and structure of an indexed cached tile."""
+
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ValueError("Microsoft footprint tile could not be inspected") from exc
+    if size == 0:
+        raise ValueError("Microsoft footprint tile is empty")
+    if size > MAX_MICROSOFT_TILE_BYTES:
+        raise ValueError(f"Microsoft footprint tile exceeds {MAX_MICROSOFT_TILE_BYTES} bytes")
+    if expected_sha256:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(64 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("Microsoft footprint tile SHA-256 does not match the index")
+    validate_downloaded_tile(path, path.suffix.lower())
+
+
+def close_response(response: Any) -> None:
+    """Close a requests-like response when it exposes a close method."""
+
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def normalize_expected_sha256(value: Any) -> str | None:
+    """Validate an optional hexadecimal SHA-256 value from a tile index."""
+
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError("Microsoft footprint tile sha256 must contain 64 hexadecimal characters")
+    return normalized
+
+
+def validate_downloaded_tile(path: Path, suffix: str) -> None:
+    """Reject downloaded files that are not supported GeoJSON structures."""
+
+    if suffix in {".geojsonl", ".ndjson"}:
+        with path.open("r", encoding="utf-8-sig") as handle:
+            first_line = next((line for line in handle if line.strip()), "")
+        if not first_line:
+            raise ValueError("Microsoft footprint tile contains no GeoJSON records")
+        data = json.loads(first_line)
+        if not isinstance(data, dict) or data.get("type") not in {
+            "Feature",
+            "Polygon",
+            "MultiPolygon",
+        }:
+            raise ValueError("Microsoft footprint tile contains an unsupported GeoJSONL record")
+        return
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("type") not in {
+        "FeatureCollection",
+        "Feature",
+        "Polygon",
+        "MultiPolygon",
+    }:
+        raise ValueError("Microsoft footprint tile contains unsupported GeoJSON")
 
 
 def load_tile_index(cache_root: Path) -> dict[str, Any] | None:
@@ -256,13 +457,51 @@ def load_tile_index(cache_root: Path) -> dict[str, Any] | None:
     local_index = os.environ.get("OPENWIND_MICROSOFT_FOOTPRINT_INDEX")
     index_path = Path(local_index) if local_index else cache_root / "index.json"
     if index_path.exists():
-        return json.loads(index_path.read_text(encoding="utf-8"))
+        return validate_tile_index(json.loads(index_path.read_text(encoding="utf-8")))
     index_url = os.environ.get("OPENWIND_MICROSOFT_FOOTPRINT_INDEX_URL")
     if not index_url:
         return None
-    response = requests.get(index_url, timeout=30)
-    response.raise_for_status()
-    return response.json()
+    if not index_url.lower().startswith("https://"):
+        raise ValueError("Microsoft footprint index URLs must use HTTPS")
+    response = requests.get(index_url, timeout=30, stream=True)
+    try:
+        response.raise_for_status()
+        response_url = str(getattr(response, "url", index_url))
+        if not response_url.lower().startswith("https://"):
+            raise ValueError("Microsoft footprint index redirects must remain on HTTPS")
+        content_length = response.headers.get("content-length")
+        if content_length:
+            try:
+                declared_size = int(content_length)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Microsoft footprint index has an invalid Content-Length") from exc
+            if declared_size > MAX_MICROSOFT_INDEX_BYTES:
+                raise ValueError(
+                    f"Microsoft footprint index exceeds {MAX_MICROSOFT_INDEX_BYTES} bytes"
+                )
+        payload = bytearray()
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            payload.extend(chunk)
+            if len(payload) > MAX_MICROSOFT_INDEX_BYTES:
+                raise ValueError(
+                    f"Microsoft footprint index exceeds {MAX_MICROSOFT_INDEX_BYTES} bytes"
+                )
+        if not payload:
+            raise ValueError("Microsoft footprint index download was empty")
+        data = json.loads(payload.decode("utf-8-sig"))
+        return validate_tile_index(data)
+    finally:
+        close_response(response)
+
+
+def validate_tile_index(data: Any) -> dict[str, Any]:
+    """Validate the minimum structure required from a tile index."""
+
+    if not isinstance(data, dict) or not isinstance(data.get("tiles"), dict):
+        raise ValueError("Microsoft footprint index must contain a tiles object")
+    return data
 
 
 def read_footprint_file(

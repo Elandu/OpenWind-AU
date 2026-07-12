@@ -85,7 +85,7 @@ header {
   flex: 1;
   border-right: 1px solid var(--panel-border);
   padding: 0 20px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .dashboard-inline-field {
@@ -98,7 +98,74 @@ header {
 }
 
 .dashboard-address-field {
+  position: relative;
   flex: 1;
+}
+
+.address-autocomplete {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+}
+
+.address-autocomplete .dashboard-inline-input {
+  max-width: none;
+}
+
+.address-suggestions {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(360px, 55vh);
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgb(16 24 40 / 18%);
+  list-style: none;
+}
+
+.address-suggestions[hidden] {
+  display: none;
+}
+
+.address-suggestions li {
+  margin: 0;
+}
+
+.address-suggestions [role="option"] {
+  margin: 0;
+  padding: 9px 10px;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.address-suggestions [role="option"]:hover,
+.address-suggestions [role="option"].is-active {
+  background: var(--soft-fill);
+}
+
+.address-suggestion-status {
+  padding: 9px 10px;
+  color: var(--muted-ink);
+  font-size: 0.82rem;
+}
+
+.address-suggestion-attribution {
+  border-top: 1px solid var(--panel-border);
+  padding: 6px 10px 4px;
+  color: var(--muted-ink);
+  font-size: 0.7rem;
+  text-align: right;
 }
 
 .dashboard-inline-input {
@@ -400,6 +467,7 @@ main {
 
 .map-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -407,6 +475,10 @@ main {
   border-bottom: 1px solid var(--panel-border);
   padding: 8px 12px;
   background: #ffffff;
+}
+
+.map-coordinate-readout {
+  min-width: 210px;
 }
 
 .map-toolbar strong,
@@ -752,6 +824,26 @@ button:disabled {
 
 .assessment-submit {
   width: 100%;
+}
+
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.report-actions button {
+  margin-top: 0;
+}
+
+.report-actions .secondary-action {
+  border: 1px solid var(--engineering-blue);
+  background: #ffffff;
+  color: var(--engineering-blue);
+}
+
+.report-actions .secondary-action:hover {
+  background: #eff4ff;
 }
 
 button:focus-visible,
@@ -1277,7 +1369,7 @@ iframe {
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 900px) {
   header,
   .dashboard-topbar {
     align-items: flex-start;

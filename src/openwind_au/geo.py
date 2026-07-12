@@ -7,13 +7,17 @@ import math
 import os
 import shutil
 import subprocess
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
 
+from openwind_au.models import SUPPORTED_LATITUDE_RANGE, SUPPORTED_LONGITUDE_RANGE
+
 EARTH_RADIUS_M = 6_371_008.8
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+DEFAULT_PHOTON_URL = "https://photon.komoot.io/api/"
 
 
 def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[str, Any]:
@@ -37,7 +41,7 @@ def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[s
     params = {
         "q": address,
         "format": "jsonv2",
-        "limit": 1,
+        "limit": 5,
         "countrycodes": "au",
     }
     try:
@@ -48,7 +52,9 @@ def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[s
     if not data:
         raise ValueError(f"No geocoding result found for address: {address}")
 
-    first = data[0]
+    first = next((item for item in data if _is_supported_coordinate(item)), None)
+    if first is None:
+        raise ValueError(f"No supported Australian location found for address: {address}")
     return {
         "latitude": float(first["lat"]),
         "longitude": float(first["lon"]),
@@ -62,29 +68,42 @@ def geocode_address_suggestions(
     limit: int = 5,
     user_agent: str = "OpenWind-AU/0.1",
 ) -> list[dict[str, Any]]:
-    """Return candidate Australian address matches from OpenStreetMap Nominatim."""
+    """Return candidate Australian address matches from a Photon search service."""
 
     cleaned_query = query.strip()
     if len(cleaned_query) < 3:
         return []
 
     bounded_limit = max(1, min(int(limit), 10))
+    photon_url = os.getenv("OPENWIND_PHOTON_URL", DEFAULT_PHOTON_URL).strip()
     params = {
         "q": cleaned_query,
-        "format": "jsonv2",
         "limit": bounded_limit,
-        "countrycodes": "au",
-        "addressdetails": 1,
+        "lang": "en",
+        "bbox": (
+            f"{SUPPORTED_LONGITUDE_RANGE[0]},{SUPPORTED_LATITUDE_RANGE[0]},"
+            f"{SUPPORTED_LONGITUDE_RANGE[1]},{SUPPORTED_LATITUDE_RANGE[1]}"
+        ),
     }
     try:
-        data = _get_json(NOMINATIM_URL, params, user_agent)
+        data = _cached_get_json(photon_url, tuple(params.items()), user_agent)
     except Exception as exc:
-        raise RuntimeError(f"Failed to query address suggestions with Nominatim: {exc}") from exc
+        raise RuntimeError(f"Failed to query address suggestions with Photon: {exc}") from exc
 
     suggestions = []
     seen = set()
-    for item in data or []:
-        display_name = item.get("display_name")
+    for feature in data.get("features", []) if isinstance(data, dict) else []:
+        geometry = feature.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        if len(coordinates) < 2:
+            continue
+        item = {"lat": coordinates[1], "lon": coordinates[0]}
+        if not _is_supported_coordinate(item):
+            continue
+        properties = feature.get("properties") or {}
+        if str(properties.get("countrycode", "")).upper() not in {"", "AU"}:
+            continue
+        display_name = _photon_display_name(properties)
         if not display_name or display_name in seen:
             continue
         seen.add(display_name)
@@ -93,10 +112,54 @@ def geocode_address_suggestions(
                 "latitude": float(item["lat"]),
                 "longitude": float(item["lon"]),
                 "display_name": display_name,
-                "source": "OpenStreetMap Nominatim",
+                "source": "Komoot Photon (OpenStreetMap)",
             }
         )
     return suggestions
+
+
+@lru_cache(maxsize=256)
+def _cached_get_json(
+    url: str,
+    parameter_items: tuple[tuple[str, Any], ...],
+    user_agent: str,
+) -> Any:
+    """Cache repeated autocomplete queries to reduce public service traffic."""
+
+    return _get_json(url, dict(parameter_items), user_agent)
+
+
+def _photon_display_name(properties: dict[str, Any]) -> str:
+    """Build a readable Australian address label from Photon properties."""
+
+    name = str(properties.get("name") or "").strip()
+    street = str(properties.get("street") or "").strip()
+    house_number = str(properties.get("housenumber") or "").strip()
+    street_address = " ".join(part for part in (house_number, street) if part)
+    parts = []
+    if name and name.casefold() != street_address.casefold():
+        parts.append(name)
+    if street_address:
+        parts.append(street_address)
+    for key in ("locality", "district", "city", "state", "postcode", "country"):
+        value = str(properties.get(key) or "").strip()
+        if value and value.casefold() not in {part.casefold() for part in parts}:
+            parts.append(value)
+    return ", ".join(parts)
+
+
+def _is_supported_coordinate(item: dict[str, Any]) -> bool:
+    """Return whether a geocoder item is inside the application's supported bounds."""
+
+    try:
+        latitude = float(item["lat"])
+        longitude = float(item["lon"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        SUPPORTED_LATITUDE_RANGE[0] <= latitude <= SUPPORTED_LATITUDE_RANGE[1]
+        and SUPPORTED_LONGITUDE_RANGE[0] <= longitude <= SUPPORTED_LONGITUDE_RANGE[1]
+    )
 
 
 def destination_point(

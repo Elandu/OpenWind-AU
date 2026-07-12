@@ -7,6 +7,28 @@ wind pressures.
 For MCP clients, use the separate stdio or Streamable HTTP server documented in
 [`mcp.md`](mcp.md).
 
+## Service Health
+
+```text
+GET /health/live
+GET /health
+```
+
+`/health/live` is a process-liveness probe. It returns HTTP 200 with `{"status": "ok"}` when the
+API process can answer requests.
+
+`/health` is a deployment-readiness probe. It returns HTTP 200 with `status: "ready"` only when a
+non-test wind-region dataset, reviewed and complete `Md` and `VR` lookup data, and the configured
+DEM provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
+consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
+assessment traffic.
+
+Raw obstruction-provider diagnostics are intentionally absent from OpenAPI and disabled by
+default. For a trusted local troubleshooting session only, set
+`OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable
+`GET /api/obstructions/debug`. Do not expose that route on a public deployment because it includes
+provider queries, cache diagnostics, and pipeline details.
+
 ## Analyse A Site
 
 ```bash
@@ -87,8 +109,10 @@ and require competent engineering review.
 The obstruction inventory radius is independent from the terrain analysis radius. In the browser UI
 it defaults to 500 m so dense urban building-footprint queries do not inherit a 2 km or 4 km
 terrain radius. If the Microsoft cache is unavailable, the response reports
-`microsoft_source_status`, `microsoft_cache_status`, `microsoft_cache_path`, and
-`osm_fallback_used`. If Microsoft and OSM sources are both unavailable, the inventory response
+`microsoft_source_status`, `microsoft_cache_status`, `osm_fallback_used`, source totals, and
+consumer-safe warnings. Server cache paths and filenames, raw source geometry, provider queries,
+sample source IDs, excluded source objects, and pipeline logs are not included in the public
+inventory response. If Microsoft and OSM sources are both unavailable, the inventory response
 remains HTTP 200 with `data_source_status: "unavailable"`, an empty obstruction list, and warning
 text for the reviewer.
 
@@ -127,6 +151,36 @@ are prompts for review, not confirmed categories.
 
 For the human review workflow, see [`workflow.md`](workflow.md) and
 [`reviewer-checklist.md`](reviewer-checklist.md).
+
+## Site Wind Workflow Overrides
+
+```text
+POST /api/wind-workflow
+POST /api/wind-workflow/stream
+POST /api/wind-workflow/map
+POST /api/wind-workflow/report/html
+POST /api/wind-workflow/report/pdf
+```
+
+Wind-workflow requests use a strict schema: unknown fields are rejected with HTTP 422 rather than
+silently ignored. In particular, legacy request fields such as `wind_region`,
+`regional_wind_speed_mps`, `wind_direction_multipliers`, and `workflow_reviews` are not accepted.
+Use the two explicit override collections instead:
+
+- `class_multiplier_overrides` accepts at most one entry per direction. Every entry requires a
+  non-empty `reason` and at least one reviewed `terrain_category`, `shielding_class`, or
+  `topographic_class`. An exact `mzcat`, `ms`, or `mt` value is accepted only when its corresponding
+  class is also supplied.
+- A terrain category selects `Mz,cat` from Table 4.1. Project-specific shielding (`FS/PS/NS`) and
+  topographic (`T0-T5`) class labels are provenance only; they do not imply a standard multiplier.
+  Supply an explicit reviewed `ms` or `mt` to replace the calculated Clause 4.3 or 4.4 value.
+- `workflow_overrides` accepts at most one entry for each variable/direction pair. A `VR` override
+  is non-directional and must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` overrides
+  require one of `N`, `NE`, `E`, `SE`, `S`, `SW`, `W`, or `NW`. Every entry requires a positive
+  `override_value` and a non-empty `reason`.
+
+These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
+and do not certify the automated GIS evidence or final design outcome.
 
 ## Validation
 

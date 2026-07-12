@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from openwind_au.models import (
     MzCatAssessmentResult,
     MzCatDirectionAssessment,
@@ -197,6 +199,8 @@ def indicative_mzcat(
 ) -> float:
     """Return Table 4.1 Mz,cat using linear height/category interpolation."""
 
+    if not math.isfinite(assessment_height_m) or assessment_height_m <= 0:
+        raise ValueError("Assessment height must be a finite number greater than zero.")
     height = max(3.0, min(200.0, assessment_height_m))
     if wind_region == "A0":
         if height > 100.0:

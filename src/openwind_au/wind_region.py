@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,6 @@ REGION_LABELS = (
     "A3",
     "A4",
     "A5",
-    "A6",
-    "A7",
     "B1",
     "B2",
     "A",
@@ -275,7 +274,24 @@ def wind_region_debug(site: SiteLocation, *, include_geometry: bool = False) -> 
 def load_wind_region_geodataframe(path: Path) -> gpd.GeoDataFrame:
     """Load and normalise a GeoJSON/GPKG wind-region layer."""
 
+    resolved = path.resolve()
     layer = os.environ.get(LAYER_ENV) or None
+    return _load_wind_region_geodataframe(
+        str(resolved),
+        layer,
+        resolved.stat().st_mtime_ns,
+    )
+
+
+@lru_cache(maxsize=4)
+def _load_wind_region_geodataframe(
+    path_text: str,
+    layer: str | None,
+    _modified_ns: int,
+) -> gpd.GeoDataFrame:
+    """Load a wind-region layer once per path, layer, and file revision."""
+
+    path = Path(path_text)
     try:
         gdf = gpd.read_file(path, layer=layer) if layer else gpd.read_file(path)
     except Exception as exc:

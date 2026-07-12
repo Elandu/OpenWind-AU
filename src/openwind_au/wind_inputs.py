@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -117,17 +118,25 @@ def direction_multiplier_assessment(
     rows: list[DirectionMultiplierRow] = []
     warnings = ["Md values are automatically selected and require engineering review."]
     warnings.extend(lookup_metadata_warnings(data, MD_METADATA_WARNING))
+    missing_directions: list[str] = []
     for direction in DIRECTIONS:
         raw = values.get(direction)
         md = float(raw) if raw is not None else None
         if md is None:
-            warnings.append(f"Md table value missing for {direction}; manual input required.")
+            missing_directions.append(direction)
         rows.append(
             DirectionMultiplierRow(
                 direction=direction,
                 md=md,
                 is_governing=highest is not None and md == highest,
             )
+        )
+    if missing_directions:
+        missing = ", ".join(missing_directions)
+        warnings.append(
+            f"Reviewed Md table values are unavailable for {wind_region.wind_region} "
+            f"directions {missing}; those directions are blocked until an engineer supplies "
+            "documented overrides."
         )
     return DirectionMultiplierAssessment(
         wind_region=wind_region.wind_region,
@@ -305,15 +314,19 @@ def validation_diagnosis(
 def parse_ari_years(value: str) -> int:
     """Parse AEP/ARI text such as 1/500, 1:500, or 500 into an ARI year count."""
 
-    text = str(value or "").strip().lower().replace("ari", "")
-    for separator in ("/", ":"):
-        if separator in text:
-            text = text.split(separator)[-1]
-            break
-    digits = "".join(character for character in text if character.isdigit())
-    if not digits:
-        raise ValueError("Annual exceedance probability must contain a positive ARI in years.")
-    ari_years = int(digits)
+    text = " ".join(str(value or "").strip().lower().split())
+    direct_match = re.fullmatch(r"(?:ari\s*)?(\d+)\s*(?:years?|yrs?)?", text)
+    ratio_match = re.fullmatch(
+        r"1\s*(?:/|:|in|[- ]in[- ])\s*(\d+)\s*(?:years?|yrs?)?",
+        text,
+    )
+    match = ratio_match or direct_match
+    if not match:
+        raise ValueError(
+            "Annual exceedance probability must contain a positive ARI year count or a form "
+            "such as 1/500."
+        )
+    ari_years = int(match.group(1))
     if ari_years < 1:
         raise ValueError("Annual recurrence interval must be at least 1 year.")
     return ari_years

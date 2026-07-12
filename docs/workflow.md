@@ -104,8 +104,9 @@ Before using any output in project work, a competent engineer should confirm:
 - all code calculations independently.
 
 The wind workflow API also accepts reviewed directional class inputs via
-`class_multiplier_overrides`. These are useful when a prior calculation, such as reference calculation, gives
-the controlling classes rather than raw public-data evidence. Each entry can include:
+`class_multiplier_overrides`. These are useful when a prior calculation, such as a reference
+calculation, gives the controlling classes rather than raw public-data evidence. Each entry must
+have a unique direction, a reason, and at least one reviewed class, and can include:
 
 - `direction`;
 - `terrain_category` such as `TC3`;
@@ -114,5 +115,17 @@ the controlling classes rather than raw public-data evidence. Each entry can inc
 - optional exact `mzcat`, `ms`, or `mt` values;
 - `reason` and `source_reference`.
 
-When exact multipliers are not supplied, OpenWind-AU uses transparent preliminary defaults for the
-class and keeps the override reason in the calculation details.
+An exact `mzcat`, `ms`, or `mt` value is valid only when the corresponding terrain, shielding, or
+topographic class is present. Terrain categories map to the reviewed Table 4.1 values. Shielding
+and topographic classes are project/reference provenance rather than AS/NZS 1170.2 lookup keys, so
+a class alone does not invent an `Ms` or `Mt`; provide the reviewed numeric value when it should
+replace the Clause 4.3 or 4.4 calculation. Only one class override entry is accepted per direction.
+
+Direct reviewed variable values use `workflow_overrides`. `VR` is non-directional and must omit
+`direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` require a direction. Duplicate
+variable/direction pairs are rejected. Each entry requires `variable`, `override_value`, and
+`reason`, with an optional display `label`.
+
+The wind workflow request rejects unknown fields. Legacy fields that previously appeared to
+override a result but were ignored—`wind_region`, `regional_wind_speed_mps`,
+`wind_direction_multipliers`, and `workflow_reviews`—are no longer accepted.

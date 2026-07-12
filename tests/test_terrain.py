@@ -21,6 +21,22 @@ class SlopingDEM(DEMProvider):
         return 100 + latitude * 10 + longitude * 5
 
 
+class BatchTrackingDEM(SlopingDEM):
+    def __init__(self) -> None:
+        self.batch_sizes: list[int] = []
+
+    def elevations(self, points: list[tuple[float, float]]) -> list[float]:
+        self.batch_sizes.append(len(points))
+        return super().elevations(points)
+
+
+class LegacySinglePointDEM:
+    """Duck-typed provider implementing the original elevation contract only."""
+
+    def elevation(self, latitude: float, longitude: float) -> float:
+        return 50.0 + latitude - longitude
+
+
 def test_profile_direction_contract() -> None:
     assert [direction.name for direction in PROFILE_DIRECTIONS] == [
         "N",
@@ -75,3 +91,31 @@ def test_standard_profiles_include_endpoint_coordinates() -> None:
     assert all(profile.points[-1].distance_m == 500 for profile in profiles)
     assert all(profile.endpoint_latitude == profile.points[-1].latitude for profile in profiles)
     assert all(profile.endpoint_longitude == profile.points[-1].longitude for profile in profiles)
+
+
+def test_standard_profiles_request_unique_elevations_in_one_batch() -> None:
+    dem = BatchTrackingDEM()
+
+    profiles = generate_standard_terrain_profiles(
+        latitude=-33.86,
+        longitude=151.21,
+        dem_provider=dem,
+        radius_m=500,
+        sample_interval_m=100,
+    )
+
+    assert len(profiles) == 8
+    assert dem.batch_sizes == [41]
+
+
+def test_standard_profiles_support_legacy_single_point_provider() -> None:
+    profiles = generate_standard_terrain_profiles(
+        latitude=-33.86,
+        longitude=151.21,
+        dem_provider=LegacySinglePointDEM(),  # type: ignore[arg-type]
+        radius_m=500,
+        sample_interval_m=100,
+    )
+
+    assert len(profiles) == 8
+    assert all(len(profile.points) == 6 for profile in profiles)

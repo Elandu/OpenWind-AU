@@ -70,17 +70,48 @@ def generate_terrain_profiles(
         raise ValueError("sample_interval_m must be less than or equal to radius_m.")
 
     distances = profile_distances(radius_m=radius_m, sample_interval_m=sample_interval_m)
-    profiles: list[TerrainProfile] = []
+    profile_locations: list[list[tuple[float, float, float]]] = []
     for direction in directions:
+        profile_locations.append(
+            [
+                (
+                    float(distance),
+                    *destination_point(latitude, longitude, direction.azimuth_deg, float(distance)),
+                )
+                for distance in distances
+            ]
+        )
+    unique_locations = list(
+        dict.fromkeys(
+            (point_latitude, point_longitude)
+            for locations in profile_locations
+            for _distance, point_latitude, point_longitude in locations
+        )
+    )
+    batch_elevations = getattr(dem_provider, "elevations", None)
+    if callable(batch_elevations):
+        elevations = batch_elevations(unique_locations)
+    else:
+        # Keep duck-typed/custom providers written against the original
+        # single-point interface working while built-in providers batch.
+        elevations = [
+            dem_provider.elevation(point_latitude, point_longitude)
+            for point_latitude, point_longitude in unique_locations
+        ]
+    if len(elevations) != len(unique_locations):
+        raise RuntimeError("DEM provider returned a different number of elevations than requested.")
+    elevation_by_location = dict(zip(unique_locations, elevations, strict=True))
+
+    profiles: list[TerrainProfile] = []
+    for direction, locations in zip(directions, profile_locations, strict=True):
         samples = [
-            sample_elevation(
-                latitude,
-                longitude,
-                direction.azimuth_deg,
-                float(distance),
-                dem_provider,
+            ElevationSample(
+                distance_m=distance,
+                latitude=point_latitude,
+                longitude=point_longitude,
+                elevation_m=elevation_by_location[(point_latitude, point_longitude)],
             )
-            for distance in distances
+            for distance, point_latitude, point_longitude in locations
         ]
         elevations = np.array([sample.elevation_m for sample in samples])
         total_rise = elevations[-1] - elevations[0]

@@ -13,6 +13,7 @@ from openwind_au.models import (
     ObstructionInventoryRequest,
     ObstructionManualOverride,
     ReviewedFootprint,
+    SiteLocation,
 )
 from openwind_au.obstructions import (
     COMMON_OSM_BUILDING_VALUES,
@@ -111,6 +112,23 @@ def test_explicit_height_tag_wins_over_levels() -> None:
     assert result["manual_review_required"] is True
 
 
+@pytest.mark.parametrize(
+    ("raw_height", "expected_m"),
+    [("3000 mm", 3.0), ("350 cm", 3.5), ("10 ft", 3.048), ("12.5 m", 12.5)],
+)
+def test_height_tags_parse_supported_units(raw_height, expected_m) -> None:
+    result = height_from_tags({"height": raw_height})
+
+    assert result["height_m"] == pytest.approx(expected_m)
+
+
+@pytest.mark.parametrize("raw_height", ["inf", "NaN", "600 m", "12 metres extra"])
+def test_height_tags_reject_non_finite_or_implausible_values(raw_height) -> None:
+    result = height_from_tags({"height": raw_height})
+
+    assert result["height_m"] is None
+
+
 def test_building_levels_convert_using_configured_storey_height() -> None:
     result = height_from_tags({"building:levels": "4"}, default_storey_height_m=3.2)
 
@@ -201,6 +219,79 @@ def test_run_obstruction_inventory_uses_supplied_footprints() -> None:
     assert result.height_source_summary["OSM Height"] == 1
     assert result.height_source_summary["OSM Levels"] == 1
     assert result.height_source_summary["Unknown"] == 1
+
+
+def test_inventory_closes_environment_raster_providers(monkeypatch) -> None:
+    class ClosableElevation:
+        def __init__(self, value: float) -> None:
+            self.value = value
+            self.closed = False
+
+        def elevation(self, latitude: float, longitude: float) -> float:
+            del latitude, longitude
+            return self.value
+
+        def close(self) -> None:
+            self.closed = True
+
+    dsm = ClosableElevation(60)
+    dtm = ClosableElevation(50)
+
+    def fake_environment_providers(*, load_dsm: bool, load_dtm: bool):
+        assert load_dsm is True
+        assert load_dtm is True
+        return dsm, dtm, []
+
+    monkeypatch.setattr(
+        obstructions_module,
+        "elevation_providers_from_env",
+        fake_environment_providers,
+    )
+
+    run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+        ),
+        footprints=[square_footprint(tags={})],
+    )
+
+    assert dsm.closed is True
+    assert dtm.closed is True
+
+
+def test_inventory_uses_resolved_site_elevation_for_shielding_gradient() -> None:
+    class ConstantElevation:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def elevation(self, latitude: float, longitude: float) -> float:
+            del latitude, longitude
+            return self.value
+
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            address="Resolved address",
+            radius_m=500,
+            building_height_m=10,
+        ),
+        footprints=[square_footprint(tags={})],
+        dsm_provider=ConstantElevation(20),
+        dtm_provider=ConstantElevation(10),
+        resolved_site=SiteLocation(
+            latitude=-33.86,
+            longitude=151.21,
+            ground_elevation_m=50,
+            source="resolved test site",
+            display_name="Resolved address",
+        ),
+    )
+
+    east = next(sector for sector in result.shielding_sectors if sector.direction == "E")
+    assert result.site.ground_elevation_m == 50
+    assert east.ns == 0
+    assert east.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
 
 
 def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(

@@ -46,6 +46,12 @@ class RasterElevationProvider:
 
         self.dataset.close()
 
+    def __enter__(self) -> RasterElevationProvider:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
 
 def enrich_obstruction_heights(
     records: list[ObstructionRecord],

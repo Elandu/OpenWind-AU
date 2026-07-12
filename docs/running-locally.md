@@ -24,6 +24,18 @@ Open the validation page:
 http://127.0.0.1:8000/validation
 ```
 
+Check process liveness separately from assessment readiness:
+
+```text
+GET http://127.0.0.1:8000/health/live
+GET http://127.0.0.1:8000/health
+```
+
+`/health/live` returns HTTP 200 when the API process is responsive. `/health` returns HTTP 200 only
+when the production wind-region dataset, reviewed lookup data, and configured DEM provider/cache
+are ready; otherwise it returns HTTP 503 with per-component checks. A development instance can be
+live while correctly reporting `not_ready` for project assessments.
+
 ## Local Data
 
 SRTM terrain tiles are cached under:

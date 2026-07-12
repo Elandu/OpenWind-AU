@@ -50,8 +50,12 @@ def client(monkeypatch) -> TestClient:
         str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
     )
 
-    def fake_inventory(request):
-        return run_obstruction_inventory(request, footprints=sample_footprints())
+    def fake_inventory(request, *, resolved_site=None):
+        return run_obstruction_inventory(
+            request,
+            footprints=sample_footprints(),
+            resolved_site=resolved_site,
+        )
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     return TestClient(api_module.create_app())
@@ -75,14 +79,14 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         "Run Assessment",
         "Interactive Wind Map",
         "Map Layers",
-        "Assessment Summary",
+        "Assessment Basis",
         "Directional Site Wind Speed, Vsit,b",
         "Regional Wind Speed, VR",
         "Wind Direction Multiplier, Md",
         "Terrain Category / Mz,cat",
         "Shielding Multiplier, Ms",
         "Topographic Multiplier, Mt",
-        "Report and Diagnostics",
+        "Reports",
     ]
     assert all(heading in body for heading in headings)
     assert [body.index(heading) for heading in headings] == sorted(
@@ -95,8 +99,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="dashboard-project"' in body
     assert 'id="dashboard-project-number"' in body
     assert 'id="dashboard-address"' in body
-    assert 'list="dashboard-address-suggestions"' in body
     assert 'id="dashboard-address-suggestions"' in body
+    assert 'role="combobox"' in body
+    assert 'role="listbox"' in body
+    assert 'aria-autocomplete="list"' in body
     assert 'form="workflow-form"' in body
     assert 'name="address"' in body
     assert 'class="workflow-progress"' in body
@@ -129,7 +135,11 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "detail-workspace-active" in script.text
     assert "setIframeHtml(workflowMapFrame, event.data.map_html)" in script.text
     assert '"ArrowLeft", "ArrowRight", "Home", "End"' in script.text
-    assert "Open Site Wind Assessment Report" in body
+    assert "Generate PDF Report" in body
+    assert "Open HTML Report" in body
+    assert 'id="workflow-pdf"' in body
+    assert "/api/wind-workflow/result/report/pdf" in script.text
+    assert 'link.download = "openwind-au-site-wind-assessment.pdf"' in script.text
     assert "<h2>1." not in body
     assert "<h2>2." not in body
     assert "<h2>9." not in body
@@ -159,8 +169,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         assert f'<option value="{orientation}"' in body
     assert "Street address" not in body
     assert "Assessment status" not in body
-    assert "Key site and wind inputs. Detailed calculation evidence is collapsed below." in body
-    assert "Detailed calculation inputs and engineering review evidence" in body
+    assert "Directional values appear once below." in body
+    assert "Engineering overrides" in body
+    assert 'id="raw-provenance"' in body
     assert "required" not in body.split('id="dashboard-address"', 1)[1].split("/>", 1)[0]
     assert "User assumptions" not in body
     assert "Structure type" not in body
@@ -175,8 +186,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Review status" not in body
     assert "Accept</button>" not in body
     assert "Override" not in body
-    assert "source reference, and VR" in body
-    assert "Wind Inputs Summary" in body
+    assert "Calculated regional speed available for engineering override." in body
     assert "Interactive wind assessment map" in body
     assert 'id="workflow-map-frame"' in body
     assert "Terrain Profile Graph" in body
@@ -184,9 +194,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="map-iframe profile-iframe"' in body
     assert 'title="Terrain profile graph"' in body
     assert 'id="wind-region-frame"' not in body
-    assert "Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat" in body
-    assert "Recommended Ms, Final Ms" in body
-    assert "Recommended Mt, Final Mt" in body
+    assert body.count("Directional calculated values with optional engineering overrides.") == 3
     assert "Evidence tools" not in body
     assert "Supporting Evidence and Maps" not in body
     assert "Terrain Evidence" not in body
@@ -199,12 +207,12 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'href="/site-analysis#shielding-evidence"' not in body
     assert 'href="/site-analysis#topographic-evidence"' not in body
     assert 'href="/site-analysis#profiles"' not in body
-    assert "Wind input details and warnings" in script.text
+    assert "Wind input details and warnings" not in script.text
     assert "setWorkflowProgress" in script.text
     assert "hiddenWindInputWarningPatterns" in script.text
     assert "visibleWarnings" in script.text
-    assert "Clause 4.4 inputs" in script.text
-    assert "Show geometry" in script.text
+    assert "Clause 4.4 inputs" not in script.text
+    assert "Show geometry" not in script.text
     assert "activateWorkspaceTab" in script.text
     assert "terrainProfileFrame.hidden" in script.text
     assert "syncDesignBuildingOverlay" in script.text
@@ -213,8 +221,11 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "zoomMapToAddress" in script.text
     assert "queueAddressSuggestions" in script.text
     assert "dashboard-address-suggestions" in script.text
-    assert "/api/analyse" in script.text
     assert "/api/geocode/suggest" in script.text
+    assert "/api/geocode/resolve" in script.text
+    assert "invalidateDesignLocationForAddress" in script.text
+    assert 'locationMode = "address"' in script.text
+    assert "coordinateOverride = null" in script.text
     assert "keydown" in script.text
     assert "tile.openstreetmap.org" in script.text
     assert "orientationOptions" in script.text
@@ -233,8 +244,34 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     for step in range(1, 10):
         assert f'data-step="{step}"' in body
     assert "/api/plots/profile" in script.text
-    assert "ctrlKey" in script.text
+    assert "ctrlKey" not in script.text
+    assert "enableBuildingDrag" in script.text
+    assert "position_modified" in script.text
+    assert "coordinateOverride" in script.text
+    assert "assessmentFingerprint" in script.text
+    assert "acceptedWorkflowFingerprint(requestPayload, currentWorkflow)" in script.text
+    assert "assessmentIsCurrent" in script.text
+    assert "activeWorkflowController" in script.text
+    workflow_start_cancellation = (
+        "cancelAddressResolution();\n  closeAddressSuggestions();\n  cancelActiveWorkflow();"
+    )
+    assert workflow_start_cancellation in script.text
+    assert "syncCurrentMapSiteToFrame" in script.text
+    assert "startReportRequest" in script.text
+    assert "reportRequestIsCurrent" in script.text
+    assert "cancelActiveReportRequest" in script.text
+    assert "allowWorkflowFallback" in script.text
+    assert "formatApiError" in script.text
+    assert body.count('sandbox="allow-scripts"') >= 2
+    assert "allow-same-origin" not in body
+    assert "jsonForInlineScript" in script.text
+    assert "openwindDesignBuildingLocation" in script.text
+    assert 'id="map-coordinate-readout"' in body
+    assert 'id="resolved-site-latitude"' in script.text
+    assert 'id="resolved-site-longitude"' in script.text
     assert "aria-selected" in script.text
+    assert 'aria-controls="workspace-panel-map"' in body
+    assert 'aria-labelledby="workspace-tab-map"' in body
     assert "/api/wind-workflow/stream" in script.text
     assert "handleWorkflowStreamEvent" in script.text
     assert "Live progress unavailable" in script.text
@@ -248,9 +285,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "md-standard-table" in script.text
     assert "Governing Md" not in script.text
     assert "inlineFinalValueCell" in script.text
-    assert "tableCalculationSummary" in script.text
+    assert "renderRawProvenance" in script.text
     assert "<th>Source Reference</th>" not in script.text
-    assert "Calculation provenance and warnings" in script.text
+    assert "Calculation provenance and warnings" in body
     assert "Override Value" not in script.text
     assert "Show calculation" not in script.text
     assert "Show details" not in script.text
@@ -261,9 +298,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "overflow: visible;" in stylesheet.text
 
 
-def test_calculation_panel_content_in_workflow_report(monkeypatch) -> None:
+def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {
+        "project_number": "OW-2026-017",
         "engineer_notes": "Assessment reviewed for test issue.",
         "workflow_overrides": sample_overrides(),
     }
@@ -271,42 +309,80 @@ def test_calculation_panel_content_in_workflow_report(monkeypatch) -> None:
     response = test_client.post("/api/wind-workflow/report/html", json=payload)
 
     assert response.status_code == 200
-    assert "Executive Summary" in response.text
-    assert "2. Site Information" in response.text
-    assert "3. Wind Assessment Summary" in response.text
-    assert "4. Directional Results Table" in response.text
-    assert "5. Terrain Category" in response.text
-    assert "6. Shielding" in response.text
-    assert "7. Topography" in response.text
-    assert "8. Vsit,b" in response.text
-    assert "9. Maps" in response.text
-    assert "10. Profiles" in response.text
-    assert "11. Engineer Notes" in response.text
-    assert "12. Limitations" in response.text
+    assert "Project and outcome" in response.text
+    assert "OW-2026-017" in response.text
+    assert "Directional site wind speeds" in response.text
+    assert "Review items" in response.text
+    assert "Basis and limitations" in response.text
+    assert response.text.count("<section") == 4
     assert "Assessment status" not in response.text
-    assert "<span>Status</span>" not in response.text
-    assert "Variable Summary" in response.text
-    assert "Wind Region Assessment" in response.text
-    assert "Regional Wind Speed Assessment" in response.text
-    assert "Direction Multiplier Assessment" in response.text
-    assert "Geoscience Australia 1170.2 Wind Regions" in response.text
-    assert "Editable regional wind speed lookup table" in response.text
-    assert "Editable direction multiplier lookup table" in response.text
-    assert "Overrides Applied" in response.text
+    assert "Executive Summary" not in response.text
+    assert "Variable Summary" not in response.text
+    assert "Wind Region Assessment" not in response.text
+    assert "Regional Wind Speed Assessment" not in response.text
+    assert "Direction Multiplier Assessment" not in response.text
+    assert "Maps" not in response.text
+    assert "Profiles" not in response.text
+    assert "configured Geoscience Australia 1170.2 GIS dataset" in response.text
+    assert "Table 3.1(A)" in response.text
+    assert "Table 3.2(A)" in response.text
+    assert "verified_against_standard" not in response.text
+    assert "local path" not in response.text
+    assert "Overrides Applied" not in response.text
     assert "Project engineer selected a directional override after review." in response.text
     assert "Assessment reviewed for test issue." in response.text
-    assert "Review Status" not in response.text
-    assert "Engineer Review Notes" not in response.text
     assert "enclosed industrial building" not in response.text
     assert "30 m x 20 m x 10 m" not in response.text
-    assert "Formula / basis" in response.text
-    assert "Source Reference" in response.text
-    assert "Evidence Reference" not in response.text
-    assert "Supporting Evidence" not in response.text
-    assert "Evidence / source details" not in response.text
     assert "Vsit,b = VR x Md x Mz,cat x Ms x Mt" in response.text
-    assert "No final design pressure calculations are included" in response.text
-    assert "Pressure, cladding, Cpe, and Cpi calculations are outside this scope." in response.text
+    assert response.text.count("No final design pressures") == 1
+
+
+def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {"project_number": "OW-2026-017"}
+
+    response = test_client.post("/api/wind-workflow/report/pdf", json=payload)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="openwind-au-site-wind-assessment.pdf"'
+    )
+    assert response.content.startswith(b"%PDF-")
+    assert len(response.content) > 2_000
+
+
+def test_wind_workflow_pdf_escapes_untrusted_project_text(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "project_number": "OW-<b>unclosed & unsafe",
+        "engineer_notes": "Check 5 < 6 & do not parse <font color='red'>markup",
+    }
+
+    response = test_client.post("/api/wind-workflow/report/pdf", json=payload)
+
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF-")
+    assert len(response.content) > 2_000
+
+
+def test_completed_workflow_pdf_endpoint_does_not_rerun_analysis(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow_response.status_code == 200
+
+    def fail_if_rerun(*_args, **_kwargs):
+        raise AssertionError("completed-result report endpoint reran the workflow")
+
+    monkeypatch.setattr(api_module, "run_wind_workflow", fail_if_rerun)
+    response = test_client.post(
+        "/api/wind-workflow/result/report/pdf",
+        json=workflow_response.json(),
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF-")
 
 
 def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
@@ -334,6 +410,9 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "setDimensions" in body
     assert "startOrientationDrag" in body
     assert "applyOrientationFromLatLng" in body
+    assert "enableBuildingDrag" in body
+    assert "position_modified" in body
+    assert "ctrlKey" not in body
     assert "Raw OSM building polygons before filtering" not in body
     assert "Manual reviewed obstruction geometry" not in body
     assert "Building footprints (source context)" not in body
@@ -456,19 +535,85 @@ def test_reasoned_override_values_propagate_to_workflow(monkeypatch) -> None:
     assert north["final_vsitb"] is not None
 
 
+def test_vsitb_override_updates_summary_and_governing_result(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "workflow_overrides": [
+            {
+                "variable": "Vsitb",
+                "direction": "N",
+                "override_value": 99,
+                "reason": "Reviewed directional site wind speed.",
+            }
+        ]
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    north_row = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
+    north_variable = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Vsitb" and item["direction"] == "N"
+    )
+    assert north_row["recommended_vsitb"] != 99
+    assert north_row["final_vsitb"] == 99
+    assert north_row["is_governing"] is True
+    assert north_variable["calculated_value"] == north_row["recommended_vsitb"]
+    assert north_variable["final_value"] == 99
+    assert north_variable["is_overridden"] is True
+    assert body["governing_direction"] == "N"
+    assert body["governing_vsitb"] == 99
+
+
+def test_invalid_or_duplicate_override_scopes_are_rejected(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    invalid_overrides = [
+        {
+            "workflow_overrides": [
+                {
+                    "variable": "VR",
+                    "direction": "N",
+                    "override_value": 45,
+                    "reason": "invalid",
+                }
+            ]
+        },
+        {"workflow_overrides": [{"variable": "Md", "override_value": 1, "reason": "invalid"}]},
+        {"class_multiplier_overrides": [{"direction": "N", "ms": 0.9, "reason": "invalid"}]},
+        {"class_multiplier_overrides": [{"direction": "N", "reason": "invalid"}]},
+        {
+            "workflow_overrides": [
+                {"variable": "Md", "direction": "N", "override_value": 0.8, "reason": "first"},
+                {"variable": "Md", "direction": "N", "override_value": 0.9, "reason": "second"},
+            ]
+        },
+    ]
+
+    for invalid in invalid_overrides:
+        response = test_client.post("/api/wind-workflow", json=workflow_payload() | invalid)
+
+        assert response.status_code == 422
+
+
 def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {
+        "project_number": "OW-2026-018",
         "class_multiplier_overrides": [
             {
                 "direction": "N",
                 "terrain_category": "TC3",
                 "shielding_class": "FS",
                 "topographic_class": "T1",
+                "ms": 0.85,
+                "mt": 1.08,
                 "reason": "Reference calculation classes accepted by engineer.",
                 "source_reference": "reference calculation reference",
             }
-        ]
+        ],
     }
 
     response = test_client.post("/api/wind-workflow", json=payload)
@@ -494,7 +639,7 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert "Reviewed FS" in ms_north["recommended_label"]
     assert "Reviewed T1" in mt_north["recommended_label"]
     assert any("Reference calculation classes" in item for item in mzcat_north["detail_items"])
-    assert any("class override" in warning for warning in ms_north["warnings"])
+    assert any("explicit reviewed numeric override" in warning for warning in ms_north["warnings"])
     north = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
     assert north["mzcat"] == 0.83
     assert north["ms"] == 0.85
@@ -502,9 +647,39 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert north["final_vsitb"] is not None
 
 
+def test_project_classes_without_numeric_values_do_not_invent_multipliers(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "class_multiplier_overrides": [
+            {
+                "direction": "N",
+                "shielding_class": "FS",
+                "topographic_class": "T1",
+                "reason": "Reference classes recorded without reviewed numeric multipliers.",
+            }
+        ],
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    ms_north = next(
+        item for item in body["variables"] if item["variable"] == "Ms" and item["direction"] == "N"
+    )
+    mt_north = next(
+        item for item in body["variables"] if item["variable"] == "Mt" and item["direction"] == "N"
+    )
+    assert ms_north["final_value"] == ms_north["calculated_value"]
+    assert mt_north["final_value"] == mt_north["calculated_value"]
+    assert any("without a numeric Ms" in warning for warning in ms_north["warnings"])
+    assert any("without a numeric Mt" in warning for warning in mt_north["warnings"])
+
+
 def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {
+        "project_number": "OW-2026-018",
         "structure_class": "building",
         "structure_orientation_deg": 0,
         "roof_shape": "gable",
@@ -521,15 +696,20 @@ def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["input"]["structure_class"] == "building"
+    assert body["input"]["project_number"] == "OW-2026-018"
     assert body["input"]["structure_orientation_deg"] == 0
     assert body["input"]["roof_shape"] == "gable"
     assert body["input"]["building_width_m"] == 4
     assert body["input"]["building_length_m"] == 5
     assert body["input"]["base_rl_m"] == 0
     assert report.status_code == 200
-    assert "Structure class" in report.text
-    assert "Roof shape" in report.text
-    assert "Base RL" in report.text
+    assert "OW-2026-018" in report.text
+    assert "Height 10.00 m" in report.text
+    assert "4.00 m x" in report.text
+    assert "5.00 m" in report.text
+    assert "; building" in report.text
+    assert "Roof shape" not in report.text
+    assert "Base RL" not in report.text
 
 
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
@@ -560,32 +740,23 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
         assert row["final_vsitb"] == expected
 
 
-def test_legacy_variable_reviews_do_not_gate_or_override_vsitb(monkeypatch) -> None:
+def test_ignored_legacy_workflow_fields_are_rejected(monkeypatch) -> None:
     test_client = client(monkeypatch)
-    payload = workflow_payload() | {
-        "workflow_reviews": [
-            {
-                "variable": "Vsitb",
-                "direction": "N",
-                "final_value": 42.75,
-                "review_status": "accepted",
-            }
-        ]
-    }
+    obsolete_payloads = [
+        {"wind_region": "A2"},
+        {"regional_wind_speed_mps": 45},
+        {"wind_direction_multipliers": {"N": 1.0}},
+        {"workflow_reviews": []},
+    ]
 
-    response = test_client.post("/api/wind-workflow", json=payload)
+    for obsolete in obsolete_payloads:
+        response = test_client.post(
+            "/api/wind-workflow",
+            json=workflow_payload() | obsolete,
+        )
 
-    assert response.status_code == 200
-    body = response.json()
-    vsitb = next(
-        item
-        for item in body["variables"]
-        if item["variable"] == "Vsitb" and item["direction"] == "N"
-    )
-    assert vsitb["final_value"] is not None
-    assert vsitb["final_value"] != 42.75
-    assert vsitb["is_overridden"] is False
-    assert not vsitb["warnings"]
+        assert response.status_code == 422
+        assert "Extra inputs are not permitted" in response.text
 
 
 def test_override_requires_reason(monkeypatch) -> None:

@@ -8,13 +8,15 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape
 
 import folium
 import plotly.graph_objects as go
-from jinja2 import Template
+from jinja2 import Environment, select_autoescape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from shapely.errors import ShapelyError
 from shapely.geometry import GeometryCollection, mapping, shape
@@ -31,6 +33,10 @@ from openwind_au.models import (
     WindWorkflowResult,
 )
 from openwind_au.shielding import shielding_sector_polygon
+
+HTML_TEMPLATE_ENV = Environment(
+    autoescape=select_autoescape(default_for_string=True),
+)
 
 DEFAULT_MAP_DISPLAY_LIMIT = 500
 MAX_POLYGON_GEOJSON_PAYLOAD_BYTES = 2_500_000
@@ -65,6 +71,19 @@ MAP_ASSET_URL_REPLACEMENTS = {
     "https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/"
     "leaflet.awesome.rotate.min.css": "/static/vendor/folium/leaflet.awesome.rotate.min.css",
 }
+
+
+def _json_for_inline_script(value: Any) -> str:
+    """Serialize JSON without allowing data to terminate an inline script element."""
+
+    return (
+        json.dumps(value, ensure_ascii=True)
+        .replace("<", r"\u003c")
+        .replace(">", r"\u003e")
+        .replace("&", r"\u0026")
+        .replace("\u2028", r"\u2028")
+        .replace("\u2029", r"\u2029")
+    )
 
 
 @dataclass
@@ -115,7 +134,7 @@ class MapRenderDiagnostics:
         }
 
 
-REPORT_TEMPLATE = Template(
+REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     """
 <!doctype html>
 <html lang="en">
@@ -727,6 +746,8 @@ def _add_design_building_overlay(
         "offset_east_m": 0,
         "offset_north_m": 0,
         "user_modified": False,
+        "position_modified": False,
+        "orientation_modified": False,
         "orientation_options": [
             -90,
             -78.75,
@@ -751,11 +772,12 @@ def _add_design_building_overlay(
     (function() {{
       const mapName = "{fmap.get_name()}";
       const designLayerName = "{layer.get_name()}";
-      const state = {json.dumps(payload, ensure_ascii=True)};
+      const state = {_json_for_inline_script(payload)};
       let footprint = null;
       let bearingLine = null;
       let pointsLayer = null;
       let orientationDrag = null;
+      let buildingDragStart = null;
       let suppressOrientationClick = false;
       let map = null;
       let designLayer = null;
@@ -842,8 +864,10 @@ def _add_design_building_overlay(
         if (orientationDrag) orientationDrag.moved = true;
         state.orientation_deg = snapped;
         state.user_modified = true;
+        state.orientation_modified = true;
         redraw();
         notifyParent();
+        state.orientation_modified = false;
       }}
 
       function startOrientationDrag(event) {{
@@ -864,6 +888,14 @@ def _add_design_building_overlay(
           }}, 0);
         }}
         orientationDrag = null;
+        map.dragging.enable();
+        map.getContainer().style.cursor = "";
+      }}
+
+      function stopDesignInteraction() {{
+        stopOrientationDrag();
+        if (!buildingDragStart) return;
+        buildingDragStart = null;
         map.dragging.enable();
         map.getContainer().style.cursor = "";
       }}
@@ -889,8 +921,10 @@ def _add_design_building_overlay(
               if (orientationDrag || suppressOrientationClick) return;
               state.orientation_deg = Number(option);
               state.user_modified = true;
+              state.orientation_modified = true;
               redraw();
               notifyParent();
+              state.orientation_modified = false;
             }})
             .addTo(pointsLayer);
           if (active) {{
@@ -911,7 +945,7 @@ def _add_design_building_overlay(
             fillColor: "#fb923c",
             fillOpacity: 0.22,
           }}).addTo(designLayer);
-          enableCtrlDrag(footprint);
+          enableBuildingDrag(footprint);
         }} else {{
           footprint.setLatLngs(corners);
         }}
@@ -940,17 +974,17 @@ def _add_design_building_overlay(
         state.offset_east_m += east;
         state.offset_north_m += north;
         state.user_modified = true;
+        state.position_modified = true;
         redraw();
         notifyParent();
+        state.position_modified = false;
       }}
 
-      function enableCtrlDrag(layer) {{
-        let dragStart = null;
+      function enableBuildingDrag(layer) {{
         layer.on("mousedown", (event) => {{
-          if (!event.originalEvent.ctrlKey) return;
           L.DomEvent.preventDefault(event.originalEvent);
           L.DomEvent.stopPropagation(event.originalEvent);
-          dragStart = {{
+          buildingDragStart = {{
             latlng: event.latlng,
             east: state.offset_east_m,
             north: state.offset_north_m,
@@ -963,21 +997,20 @@ def _add_design_building_overlay(
             applyOrientationFromLatLng(event.latlng);
             return;
           }}
-          if (!dragStart) return;
-          const delta = metersDelta(dragStart.latlng, event.latlng);
-          state.offset_east_m = dragStart.east + delta.eastM;
-          state.offset_north_m = dragStart.north + delta.northM;
+          if (!buildingDragStart) return;
+          const delta = metersDelta(buildingDragStart.latlng, event.latlng);
+          state.offset_east_m = buildingDragStart.east + delta.eastM;
+          state.offset_north_m = buildingDragStart.north + delta.northM;
           state.user_modified = true;
+          state.position_modified = true;
           redraw();
           notifyParent();
+          state.position_modified = false;
         }});
-        map.on("mouseup", () => {{
-          stopOrientationDrag();
-          if (!dragStart) return;
-          dragStart = null;
-          map.dragging.enable();
-          map.getContainer().style.cursor = "";
-        }});
+        map.on("mouseup", stopDesignInteraction);
+        window.addEventListener("mouseup", stopDesignInteraction, true);
+        window.addEventListener("blur", stopDesignInteraction);
+        document.documentElement.addEventListener("mouseleave", stopDesignInteraction);
       }}
 
       function attachOverlay() {{
@@ -992,8 +1025,9 @@ def _add_design_building_overlay(
           setOrientation(value) {{
             const number = Number(value);
             if (Number.isFinite(number)) {{
-              state.orientation_deg = number;
-              redraw();
+            state.orientation_deg = number;
+            state.orientation_modified = false;
+            redraw();
               notifyParent();
             }}
           }},
@@ -1005,6 +1039,9 @@ def _add_design_building_overlay(
           }},
           nudge(eastM, northM) {{
             nudgeDesignBuilding(eastM, northM);
+          }},
+          endInteraction() {{
+            stopDesignInteraction();
           }},
           getState() {{
             return Object.assign({{}}, state);
@@ -1021,6 +1058,8 @@ def _add_design_building_overlay(
             state.offset_east_m = 0;
             state.offset_north_m = 0;
             state.user_modified = false;
+            state.position_modified = false;
+            state.orientation_modified = false;
             map.setView([state.latitude, state.longitude], 18);
             redraw();
             notifyParent();
@@ -1032,6 +1071,24 @@ def _add_design_building_overlay(
             return Object.assign({{}}, state);
           }},
         }};
+
+        window.addEventListener("message", (event) => {{
+          if (event.source !== window.parent || event.data?.type !== "openwind-map-command") return;
+          const payload = event.data.payload || {{}};
+          if (event.data.action === "set-site") {{
+            window.openWindWorkflowMap.setSite(payload.site);
+          }} else if (event.data.action === "set-dimensions") {{
+            window.openWindDesignBuilding.setDimensions(payload.width_m, payload.length_m);
+          }} else if (event.data.action === "set-orientation") {{
+            window.openWindDesignBuilding.setOrientation(payload.orientation_deg);
+          }} else if (event.data.action === "nudge") {{
+            window.openWindDesignBuilding.nudge(payload.east_m, payload.north_m);
+          }} else if (event.data.action === "end-interaction") {{
+            window.openWindDesignBuilding.endInteraction();
+          }} else if (event.data.action === "invalidate") {{
+            window.openWindWorkflowMap.invalidate();
+          }}
+        }});
 
         redraw();
         notifyParent();
@@ -1157,7 +1214,7 @@ def _add_explicit_shielding_footprint_loader(
     """Inject a direct Leaflet shielding footprint loader for iframe map reliability."""
 
     feature_collection = {"type": "FeatureCollection", "features": features}
-    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
+    feature_collection_json = _json_for_inline_script(feature_collection)
     map_name = fmap.get_name()
     layer_name = layer.get_name()
     script = f"""
@@ -1313,7 +1370,7 @@ def _add_nearby_obstruction_footprint_layer(
         return
 
     feature_collection = {"type": "FeatureCollection", "features": features}
-    feature_collection_json = json.dumps(feature_collection, ensure_ascii=True)
+    feature_collection_json = _json_for_inline_script(feature_collection)
     map_name = fmap.get_name()
     layer_name = layer.get_name()
     script = f"""
@@ -1435,12 +1492,330 @@ def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -
 
 
 def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
-    """Render an HTML AS/NZS 1170.2 site wind workflow report."""
+    """Render a concise HTML AS/NZS 1170.2 site wind workflow report."""
 
-    return WIND_WORKFLOW_REPORT_TEMPLATE.render(
+    return CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE.render(
         result=result,
+        report_warnings=concise_workflow_warnings(result),
+        basis_summary=_wind_report_basis(result),
         calculation_basis_reference=calculation_basis_report_reference(),
     )
+
+
+def concise_workflow_warnings(result: WindWorkflowResult, limit: int = 6) -> list[str]:
+    """Return unique, decision-relevant warnings without report boilerplate."""
+
+    omitted_prefixes = (
+        "Workflow values are calculated automatically",
+        "Pressure calculations are not included",
+        "VR values are table lookups for engineering review",
+        "Md values are automatically selected",
+        "Indicative Ms is preliminary",
+        "Selection rule:",
+        "Terrain category not confirmed",
+        "Mz,cat values are indicative only",
+        "Engineer review required",
+    )
+    candidates = [
+        *result.warnings,
+        *(warning for variable in result.variables for warning in variable.warnings),
+        *(warning for row in result.directional_vsitb for warning in row.warnings),
+    ]
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for warning in candidates:
+        cleaned = " ".join(str(warning).split())
+        if not cleaned or cleaned.startswith(omitted_prefixes) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        warnings.append(cleaned)
+    if len(warnings) <= limit:
+        return warnings
+    return [
+        *warnings[:limit],
+        f"{len(warnings) - limit} additional warning(s) remain in the workflow diagnostics.",
+    ]
+
+
+def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
+    """Render a compact site wind assessment PDF in memory."""
+
+    output = BytesIO()
+    doc = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        leftMargin=14 * mm,
+        rightMargin=14 * mm,
+        topMargin=18 * mm,
+        bottomMargin=16 * mm,
+        title="OpenWind-AU Site Wind Assessment",
+        author="OpenWind-AU",
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "WindReportTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=17,
+        leading=20,
+        textColor=colors.HexColor("#17324d"),
+        spaceAfter=3 * mm,
+    )
+    section_style = ParagraphStyle(
+        "WindReportSection",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=10.5,
+        leading=13,
+        textColor=colors.HexColor("#17324d"),
+        spaceBefore=4 * mm,
+        spaceAfter=2 * mm,
+    )
+    body_style = ParagraphStyle(
+        "WindReportBody",
+        parent=styles["BodyText"],
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor("#344054"),
+        spaceAfter=1.5 * mm,
+    )
+    muted_style = ParagraphStyle(
+        "WindReportMuted",
+        parent=body_style,
+        fontSize=7.5,
+        leading=9.5,
+        textColor=colors.HexColor("#667085"),
+    )
+    story = [
+        Paragraph("OpenWind-AU Site Wind Assessment", title_style),
+        Paragraph(
+            "Compact engineering review summary through Vsit,b. This is not a certified "
+            "design-pressure report.",
+            muted_style,
+        ),
+        Paragraph("Project and outcome", section_style),
+    ]
+    region = result.wind_region_assessment
+    speed = result.regional_wind_speed_assessment
+    site_label = result.input.address or result.site.display_name or "Not supplied"
+    summary_rows = [
+        ["Project", result.input.project_number or "Not supplied"],
+        ["Site", site_label],
+        [
+            "Coordinates",
+            f"{result.site.latitude:.6f}, {result.site.longitude:.6f} "
+            f"(RL {result.site.ground_elevation_m:.2f} m)",
+        ],
+        ["Building", _wind_report_building_summary(result)],
+        ["Wind region", region.wind_region if region else "Not available"],
+        ["AEP / ARI", result.input.annual_exceedance_probability],
+        [
+            "VR,ult",
+            f"{speed.vr_ult:.1f} m/s" if speed and speed.vr_ult is not None else "Not available",
+        ],
+        ["Governing result", _wind_report_governing_summary(result)],
+    ]
+    story.append(_wind_pdf_table(summary_rows, [38 * mm, 140 * mm], header=False))
+    story.extend(
+        [
+            Paragraph("Directional site wind speeds", section_style),
+            Paragraph("Vsit,b = VR x Md x Mz,cat x Ms x Mt", muted_style),
+        ]
+    )
+    direction_rows = [["Dir.", "Md", "Mz,cat", "Ms", "Mt", "Vsit,b"]]
+    for row in result.directional_vsitb:
+        direction_rows.append(
+            [
+                f"{row.direction}{' *' if row.is_governing else ''}",
+                _report_number(row.md),
+                _report_number(row.mzcat),
+                _report_number(row.ms),
+                _report_number(row.mt),
+                f"{row.final_vsitb:.3f} m/s" if row.final_vsitb is not None else "N/A",
+            ]
+        )
+    story.append(
+        _wind_pdf_table(
+            direction_rows,
+            [18 * mm, 25 * mm, 33 * mm, 25 * mm, 25 * mm, 52 * mm],
+            header=True,
+            governing_rows={
+                index + 1 for index, row in enumerate(result.directional_vsitb) if row.is_governing
+            },
+        )
+    )
+    warnings = concise_workflow_warnings(result)
+    if (
+        warnings
+        or result.overrides_applied
+        or result.input.class_multiplier_overrides
+        or result.engineer_notes
+    ):
+        story.append(Paragraph("Review items", section_style))
+    if warnings:
+        story.append(Paragraph("Warnings", body_style))
+        story.extend(Paragraph(f"- {escape(str(warning))}", body_style) for warning in warnings)
+    if result.overrides_applied or result.input.class_multiplier_overrides:
+        story.append(Paragraph("Overrides", body_style))
+        override_rows = [["Variable", "Direction", "Value", "Reason"]]
+        override_rows.extend(
+            [
+                override.variable,
+                override.direction or "All",
+                f"{override.override_value:.3f}",
+                override.reason,
+            ]
+            for override in result.overrides_applied
+        )
+        override_rows.extend(
+            [
+                "Reviewed classes",
+                override.direction,
+                _wind_class_override_summary(override),
+                override.reason,
+            ]
+            for override in result.input.class_multiplier_overrides
+        )
+        story.append(
+            _wind_pdf_table(
+                override_rows,
+                [30 * mm, 26 * mm, 25 * mm, 97 * mm],
+                header=True,
+            )
+        )
+    if result.engineer_notes:
+        story.append(Paragraph(f"Engineer notes: {escape(result.engineer_notes)}", body_style))
+    story.extend(
+        [
+            Paragraph("Basis and limitations", section_style),
+            Paragraph(escape(_wind_report_basis(result)), body_style),
+            Paragraph(
+                "No final design pressures, pressure coefficients, cladding pressures or "
+                "certification are included. Terrain, shielding and topographic inputs require "
+                "competent engineering review.",
+                body_style,
+            ),
+        ]
+    )
+    if reference := calculation_basis_report_reference():
+        story.append(Paragraph(escape(reference), muted_style))
+    doc.build(story, onFirstPage=_draw_wind_pdf_page, onLaterPages=_draw_wind_pdf_page)
+    return output.getvalue()
+
+
+def _wind_report_building_summary(result: WindWorkflowResult) -> str:
+    parts = [f"height {result.input.building_height_m:.2f} m"]
+    if result.input.building_width_m is not None and result.input.building_length_m is not None:
+        parts.append(
+            f"{result.input.building_width_m:.2f} m x {result.input.building_length_m:.2f} m"
+        )
+    if result.input.structure_class:
+        parts.append(result.input.structure_class)
+    return "; ".join(parts)
+
+
+def _wind_class_override_summary(override) -> str:
+    values = [
+        override.terrain_category,
+        override.shielding_class,
+        override.topographic_class,
+        f"Mz,cat {override.mzcat:.3f}" if override.mzcat is not None else None,
+        f"Ms {override.ms:.3f}" if override.ms is not None else None,
+        f"Mt {override.mt:.3f}" if override.mt is not None else None,
+    ]
+    return "; ".join(value for value in values if value) or "Reviewed input"
+
+
+def _wind_report_governing_summary(result: WindWorkflowResult) -> str:
+    if result.governing_vsitb is None:
+        return "Not available"
+    return f"{result.governing_direction or 'N/A'} - {result.governing_vsitb:.3f} m/s"
+
+
+def _wind_report_basis(result: WindWorkflowResult) -> str:
+    return (
+        "Wind region: configured Geoscience Australia 1170.2 GIS dataset. "
+        "VR: AS/NZS 1170.2:2021 Table 3.1(A). Md: Table 3.2(A). "
+        "Mz,cat: Table 4.1. Ms: Clause 4.3 and Table 4.2. Mt: Clause 4.4."
+    )
+
+
+def _report_number(value: float | None) -> str:
+    return f"{value:.3f}" if value is not None else "N/A"
+
+
+def _wind_pdf_table(
+    rows: list[list[Any]],
+    col_widths: list[float],
+    *,
+    header: bool,
+    governing_rows: set[int] | None = None,
+) -> Table:
+    body_style = ParagraphStyle(
+        "WindTableBody",
+        fontName="Helvetica",
+        fontSize=7.5,
+        leading=9.2,
+        textColor=colors.HexColor("#344054"),
+    )
+    label_style = ParagraphStyle(
+        "WindTableLabel",
+        parent=body_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#17324d"),
+    )
+    header_style = ParagraphStyle(
+        "WindTableHeader",
+        parent=body_style,
+        fontName="Helvetica-Bold",
+        textColor=colors.white,
+    )
+    rendered_rows = []
+    for row_index, row in enumerate(rows):
+        rendered_rows.append(
+            [
+                Paragraph(
+                    escape(str(value)),
+                    header_style
+                    if header and row_index == 0
+                    else label_style
+                    if not header and column_index == 0
+                    else body_style,
+                )
+                for column_index, value in enumerate(row)
+            ]
+        )
+    table = Table(rendered_rows, colWidths=col_widths, repeatRows=1 if header else 0, hAlign="LEFT")
+    commands: list[tuple] = [
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d0d5dd")),
+    ]
+    if header:
+        commands.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17324d")))
+    else:
+        commands.append(("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f2f4f7")))
+    for row_index in governing_rows or set():
+        commands.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#ecfdf3")))
+    table.setStyle(TableStyle(commands))
+    return table
+
+
+def _draw_wind_pdf_page(canvas, doc) -> None:
+    canvas.saveState()
+    width, height = A4
+    canvas.setStrokeColor(colors.HexColor("#d0d5dd"))
+    canvas.setLineWidth(0.5)
+    canvas.line(14 * mm, height - 13 * mm, width - 14 * mm, height - 13 * mm)
+    canvas.setFont("Helvetica", 7)
+    canvas.setFillColor(colors.HexColor("#667085"))
+    canvas.drawString(14 * mm, height - 10 * mm, "OpenWind-AU | Site Wind Assessment")
+    canvas.drawRightString(width - 14 * mm, 9 * mm, f"Page {doc.page}")
+    canvas.drawString(14 * mm, 9 * mm, "Preliminary engineering review output")
+    canvas.restoreState()
 
 
 def calculation_basis_report_reference() -> str | None:
@@ -1661,8 +2036,8 @@ def _add_obstruction_review_layers(
                     "fillOpacity": 0.18,
                 },
                 tooltip=(
-                    f"{excluded.object_id}: excluded, source={excluded.source}, "
-                    f"reason={excluded.reason}"
+                    f"{escape(excluded.object_id)}: excluded, "
+                    f"source={escape(excluded.source)}, reason={escape(excluded.reason)}"
                 ),
             ).add_to(excluded_layer)
 
@@ -1795,11 +2170,11 @@ def obstruction_display_feature(
         "type": "Feature",
         "geometry": geometry,
         "properties": {
-            "id": obstruction.obstruction_id,
-            "source": obstruction.footprint_source,
+            "id": escape(obstruction.obstruction_id),
+            "source": escape(obstruction.footprint_source),
             "height": f"{height:.1f} m" if height is not None else "missing",
-            "confidence": obstruction.confidence,
-            "classification": obstruction.classification,
+            "confidence": escape(obstruction.confidence),
+            "classification": escape(obstruction.classification),
             "map_layer": layer_key or obstruction_feature_group_key(obstruction),
         },
     }
@@ -1928,12 +2303,14 @@ def _add_obstruction_centroid_collection(
                 "coordinates": [record.centroid_longitude, record.centroid_latitude],
             },
             "properties": {
-                "id": record.obstruction_id,
-                "source": record.footprint_source,
+                # GeoJsonTooltip renders property values as HTML. Escape display strings
+                # before serialisation as well as relying on inline-script-safe JSON.
+                "id": escape(record.obstruction_id),
+                "source": escape(record.footprint_source),
                 "height": f"{(record.selected_height_m or record.height_m):.1f} m"
                 if (record.selected_height_m or record.height_m) is not None
                 else "missing",
-                "confidence": record.confidence,
+                "confidence": escape(record.confidence),
             },
         }
         for record in selected
@@ -1965,7 +2342,9 @@ def _add_map_diagnostics_banner(
 
     if not diagnostics.warnings and not diagnostics.fallback_mode:
         return
-    warning_text = "<br>".join(diagnostics.warnings or diagnostics.console_safe_errors)
+    warning_text = "<br>".join(
+        escape(str(warning)) for warning in diagnostics.warnings or diagnostics.console_safe_errors
+    )
     html = f"""
     <div style="position: fixed; bottom: 18px; left: 18px; z-index: 9999;
       max-width: 440px; padding: 10px 12px; background: #fff7ed; color: #7c2d12;
@@ -2013,7 +2392,7 @@ def _render_map_with_diagnostics(
 
     html = _localize_map_assets(fmap.get_root().render())
     diagnostics.map_html_size = len(html.encode("utf-8"))
-    diagnostics_json = json.dumps(diagnostics.as_dict(), ensure_ascii=True)
+    diagnostics_json = _json_for_inline_script(diagnostics.as_dict())
     diagnostics_panel = f"""
     <script>
       window.openWindMapDiagnostics = {diagnostics_json};
@@ -2028,7 +2407,11 @@ def _render_map_with_diagnostics(
           "border:1px solid #fdba74;border-radius:6px;font:13px/1.35 Arial,sans-serif;",
           "box-shadow:0 6px 20px rgba(16,24,40,.14)"
         ].join("");
-        notice.innerHTML = "<strong>OpenWind-AU map dependency failed</strong><br>" + message;
+        var heading = document.createElement("strong");
+        heading.textContent = "OpenWind-AU map dependency failed";
+        notice.appendChild(heading);
+        notice.appendChild(document.createElement("br"));
+        notice.appendChild(document.createTextNode(String(message)));
         document.body.appendChild(notice);
       }}
       window.addEventListener("error", function(event) {{
@@ -2102,13 +2485,13 @@ def _add_obstruction_centroid(layer: folium.FeatureGroup, obstruction) -> None:
         color=color,
         fill=True,
         popup=(
-            f"{obstruction.obstruction_id}<br>"
+            f"{escape(obstruction.obstruction_id)}<br>"
             f"Distance {obstruction.distance_m:.1f} m<br>"
             f"Bearing {obstruction.bearing_deg:.0f} deg<br>"
-            f"Classification {obstruction.classification}<br>"
-            f"Footprint source {obstruction.footprint_source}<br>"
-            f"Height source {obstruction.height_source}<br>"
-            f"Confidence {obstruction.confidence}"
+            f"Classification {escape(obstruction.classification)}<br>"
+            f"Footprint source {escape(obstruction.footprint_source)}<br>"
+            f"Height source {escape(obstruction.height_source)}<br>"
+            f"Confidence {escape(obstruction.confidence)}"
         ),
     ).add_to(layer)
 
@@ -2116,9 +2499,10 @@ def _add_obstruction_centroid(layer: folium.FeatureGroup, obstruction) -> None:
 def _obstruction_tooltip(obstruction) -> str:
     height = f"{obstruction.height_m:.1f} m" if obstruction.height_m is not None else "missing"
     return (
-        f"{obstruction.obstruction_id}: height={height}, "
-        f"source={obstruction.footprint_source}, "
-        f"height_source={obstruction.height_source}, confidence={obstruction.confidence}"
+        f"{escape(obstruction.obstruction_id)}: height={height}, "
+        f"source={escape(obstruction.footprint_source)}, "
+        f"height_source={escape(obstruction.height_source)}, "
+        f"confidence={escape(obstruction.confidence)}"
     )
 
 
@@ -2186,7 +2570,7 @@ def _terrain_category_color(suggested_range: str) -> str:
     return "#b42318"
 
 
-OBSTRUCTION_REPORT_TEMPLATE = Template(
+OBSTRUCTION_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     """
 <!doctype html>
 <html lang="en">
@@ -2439,7 +2823,7 @@ OBSTRUCTION_REPORT_TEMPLATE = Template(
 )
 
 
-TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
+TERRAIN_CATEGORY_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     """
 <!doctype html>
 <html lang="en">
@@ -2629,7 +3013,7 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = Template(
 )
 
 
-WIND_WORKFLOW_REPORT_TEMPLATE = Template(
+WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     """
 <!doctype html>
 <html lang="en">
@@ -3240,6 +3624,200 @@ WIND_WORKFLOW_REPORT_TEMPLATE = Template(
   <p>{{ calculation_basis_reference }}</p>
   {% endif %}
   </section>
+  </main>
+</body>
+</html>
+"""
+)
+
+
+CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
+    r"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenWind-AU Site Wind Assessment</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, Arial, sans-serif; color: #1d2939; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f2f4f7; }
+    header { padding: 22px 28px; background: #17324d; color: #fff; }
+    h1 { margin: 0; font-size: 1.45rem; }
+    header p { margin: 5px 0 0; color: #d0d5dd; }
+    main { max-width: 1040px; margin: 0 auto; padding: 22px; }
+    section {
+      margin-bottom: 14px;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      padding: 16px;
+      background: #fff;
+    }
+    h2 { margin: 0 0 12px; color: #17324d; font-size: 1.05rem; }
+    h3 { margin: 14px 0 8px; color: #344054; font-size: 0.9rem; }
+    p, li, td, th { font-size: 0.84rem; line-height: 1.4; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #d0d5dd; padding: 7px 8px; text-align: left; vertical-align: top; }
+    th { background: #f2f4f7; color: #344054; font-size: 0.75rem; text-transform: uppercase; }
+    .summary th { width: 180px; }
+    .governing { background: #ecfdf3; font-weight: 700; }
+    .note { color: #667085; }
+    .warning { border-left: 4px solid #b54708; padding-left: 12px; }
+    .limitation { border-left: 4px solid #b42318; background: #fffbfa; }
+    ul { margin: 7px 0 0; padding-left: 20px; }
+    @media print {
+      body { background: #fff; }
+      header {
+        padding: 14px 0;
+        background: #fff;
+        color: #17324d;
+        border-bottom: 2px solid #17324d;
+      }
+      header p { color: #667085; }
+      main { max-width: none; padding: 14px 0; }
+      section { break-inside: avoid; box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OpenWind-AU Site Wind Assessment</h1>
+    <p>Compact engineering review summary through Vsit,b</p>
+  </header>
+  <main>
+    <section>
+      <h2>Project and outcome</h2>
+      <table class="summary">
+        <tr>
+          <th>Project</th>
+          <td>
+            {{ result.input.project_number|e if result.input.project_number else "Not supplied" }}
+          </td>
+        </tr>
+        <tr>
+          <th>Site</th>
+          <td>{{ (result.input.address or result.site.display_name or "Not supplied")|e }}</td>
+        </tr>
+        <tr>
+          <th>Coordinates / RL</th>
+          <td>
+            {{ "%.6f"|format(result.site.latitude) }},
+            {{ "%.6f"|format(result.site.longitude) }};
+            {{ "%.2f"|format(result.site.ground_elevation_m) }} m
+          </td>
+        </tr>
+        <tr>
+          <th>Building</th>
+          <td>
+            Height {{ "%.2f"|format(result.input.building_height_m) }} m
+            {% if result.input.building_width_m is not none
+                  and result.input.building_length_m is not none %}
+            ; {{ "%.2f"|format(result.input.building_width_m) }} m x
+            {{ "%.2f"|format(result.input.building_length_m) }} m
+            {% endif %}
+            {% if result.input.structure_class %}; {{ result.input.structure_class|e }}{% endif %}
+          </td>
+        </tr>
+        <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability|e }}</td></tr>
+        <tr>
+          <th>Wind region</th>
+          <td>
+            {{ result.wind_region_assessment.wind_region
+               if result.wind_region_assessment else "Not available" }}
+          </td>
+        </tr>
+        <tr>
+          <th>VR,ult</th>
+          <td>
+            {% if result.regional_wind_speed_assessment
+                  and result.regional_wind_speed_assessment.vr_ult is not none %}
+            {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_ult) }} m/s
+            {% else %}Not available{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <th>Governing result</th>
+          <td>
+            {% if result.governing_vsitb is not none %}
+            {{ result.governing_direction }} - {{ "%.3f"|format(result.governing_vsitb) }} m/s
+            {% else %}Not available{% endif %}
+          </td>
+        </tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>Directional site wind speeds</h2>
+      <p class="note">Vsit,b = VR x Md x Mz,cat x Ms x Mt. The governing row is highlighted.</p>
+      <table>
+        <tr><th>Direction</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th><th>Vsit,b</th></tr>
+        {% for row in result.directional_vsitb %}
+        <tr class="{% if row.is_governing %}governing{% endif %}">
+          <td>{{ row.direction }}{% if row.is_governing %} *{% endif %}</td>
+          <td>{{ "%.3f"|format(row.md) if row.md is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.mzcat) if row.mzcat is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.ms) if row.ms is not none else "N/A" }}</td>
+          <td>{{ "%.3f"|format(row.mt) if row.mt is not none else "N/A" }}</td>
+          <td>
+            {{ ("%.3f m/s"|format(row.final_vsitb))
+               if row.final_vsitb is not none else "N/A" }}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </section>
+
+    {% if report_warnings or result.overrides_applied
+          or result.input.class_multiplier_overrides or result.engineer_notes %}
+    <section>
+      <h2>Review items</h2>
+      {% if report_warnings %}
+      <div class="warning">
+        <h3>Warnings</h3>
+        <ul>{% for warning in report_warnings %}<li>{{ warning|e }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+      {% if result.overrides_applied or result.input.class_multiplier_overrides %}
+      <h3>Overrides</h3>
+      <table>
+        <tr><th>Type</th><th>Direction</th><th>Selection / value</th><th>Reason</th></tr>
+        {% for override in result.overrides_applied %}
+        <tr>
+          <td>{{ override.variable }}</td><td>{{ override.direction or "All" }}</td>
+          <td>{{ "%.3f"|format(override.override_value) }}</td><td>{{ override.reason|e }}</td>
+        </tr>
+        {% endfor %}
+        {% for override in result.input.class_multiplier_overrides %}
+        <tr>
+          <td>Reviewed classes</td><td>{{ override.direction }}</td>
+          <td>
+            {% if override.terrain_category %}{{ override.terrain_category }}{% endif %}
+            {% if override.shielding_class %}; {{ override.shielding_class }}{% endif %}
+            {% if override.topographic_class %}; {{ override.topographic_class }}{% endif %}
+          </td>
+          <td>{{ override.reason|e }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+      {% if result.engineer_notes %}
+      <p><strong>Engineer notes:</strong> {{ result.engineer_notes|e }}</p>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    <section class="limitation">
+      <h2>Basis and limitations</h2>
+      <p>{{ basis_summary|e }}</p>
+      <p>
+        No final design pressures, pressure coefficients, cladding pressures or certification are
+        included. Terrain, shielding and topographic inputs require competent engineering review.
+      </p>
+      {% if calculation_basis_reference %}
+      <p class="note">{{ calculation_basis_reference|e }}</p>
+      {% endif %}
+    </section>
   </main>
 </body>
 </html>

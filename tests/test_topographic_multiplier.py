@@ -131,6 +131,19 @@ def test_region_a0_reduces_hill_shape_increment() -> None:
     assert "4.4(2)" in result.equation
 
 
+def test_topographic_multiplier_rejects_nonfinite_geometry() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        calculate_topographic_multiplier(
+            feature_type="hill",
+            h_m=float("nan"),
+            lu_m=50.0,
+            x_m=0.0,
+            z_m=10.0,
+            wind_region="A2",
+            site_elevation_m=100.0,
+        )
+
+
 def test_low_or_gentle_feature_has_no_hill_shape_increase() -> None:
     low = calculate_topographic_multiplier(
         feature_type="ridge",

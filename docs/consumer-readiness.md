@@ -7,7 +7,10 @@ validation before non-expert users should rely on the output.
 
 ## Current Position
 
-- `VR` and `Md` have packaged AS/NZS 1170.2:2021 lookup tables with review metadata.
+- `VR` has packaged AS/NZS 1170.2:2021 lookup data with review metadata.
+- The packaged `Md` data has reviewed rows for the Australian 2021 production regions `A0-A5`,
+  `B1`, `B2`, `C`, and `D`. Readiness checks the labels actually exposed by the configured GIS
+  dataset, so a custom generic or unknown region remains blocked unless it has a reviewed row.
 - `Mz,cat`, `Ms`, and `Mt` are still review workflows, not certified design outputs.
 - Reference calculation 7989 can be reproduced through `/api/reference-validation/7989`.
 - Applying reviewed class overrides for reference calculation 7989 matches all directional
@@ -16,21 +19,12 @@ validation before non-expert users should rely on the output.
 - The default public-data run still differs from the reference classes, which means the automated
   evidence-to-class logic is not ready to stand alone.
 
-## Local Standards Available For Verification
+## Licensed Standards Verification
 
-The relevant local standards library is under:
-
-```text
-Y:\Modos\_personal\Staff Resources\Codes & Standards\AUSTRALIAN STANDARDS
-```
-
-Relevant files found there:
-
-- `AS 1170.2.2021.pdf`
-- `AS 4055-2021 Wind Loads for Housing.pdf`
-
-Do not commit licensed standard PDFs, copied clauses, or bulk table excerpts. Derived lookup data
-should record the source standard, clause/table reference, reviewer, review date, and test coverage.
+Verification against licensed standards must happen in an access-controlled standards library
+outside the repository. Do not publish workstation paths, licensed standard PDFs, copied clauses,
+or bulk table excerpts. Derived lookup data should record the source standard, clause/table
+reference, reviewer, review date, and test coverage without exposing the licensed source material.
 
 ## Rebuildable Data Sources
 
@@ -43,6 +37,7 @@ third-party binary format.
 | Wind lookup data | AS/NZS 1170.2:2021 and AS 4055:2021 verified tables | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
 | Point elevation | Configured DEM first; Open-Meteo opt-in fallback/comparison provider | Source provenance in every report and clear warnings for external API data |
 | Map context | OSM, MapTiler/Stadia, ESRI imagery, or project-configured tiles | Attribution, key management, and offline/error behaviour |
+| Address search | Photon autocomplete plus deliberate Nominatim single-address resolution | Self-hosted or contracted provider capacity, caching, attribution, and outage handling |
 | Building footprints | Microsoft Building Footprints, reviewed project data, OSM/Overpass fallback | Coverage diagnostics, attribution, cache controls, and manual review workflow |
 
 ## Must-Fix Before Consumer Release
@@ -66,6 +61,7 @@ third-party binary format.
 
 A consumer-ready release should not be tagged until:
 
+- `GET /health` returns HTTP 200 with `status: "ready"` under the production configuration;
 - full test suite and lint pass;
 - reference validations pass for a representative project set;
 - all bundled lookup assets have source metadata and reviewer approval;

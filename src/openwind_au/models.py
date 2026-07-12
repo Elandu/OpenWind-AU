@@ -5,22 +5,51 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DISCLAIMER = (
     "OpenWind-AU provides preliminary terrain and topographic analysis only. "
     "Outputs must be reviewed by a competent engineer and are not a certified "
     "AS/NZS 1170.2 design assessment."
 )
+SUPPORTED_LATITUDE_RANGE = (-44.5, -9.0)
+SUPPORTED_LONGITUDE_RANGE = (112.0, 154.5)
+
+
+class GeocodeQueryRequest(BaseModel):
+    """Bounded address-search input kept out of access-log query strings."""
+
+    query: str = Field(min_length=3, max_length=300)
+    limit: int = Field(default=5, ge=1, le=10)
+
+    @field_validator("query")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError("query must contain at least three non-space characters")
+        return cleaned
 
 
 class SiteAnalysisRequest(BaseModel):
     """Input payload for a preliminary site wind terrain analysis."""
 
     address: str | None = Field(default=None, description="Street address to geocode.")
-    latitude: float | None = Field(default=None, ge=-44.5, le=-9.0)
-    longitude: float | None = Field(default=None, ge=112.0, le=154.5)
-    building_height_m: float = Field(gt=0, description="Building height in metres.")
+    latitude: float | None = Field(
+        default=None,
+        ge=SUPPORTED_LATITUDE_RANGE[0],
+        le=SUPPORTED_LATITUDE_RANGE[1],
+    )
+    longitude: float | None = Field(
+        default=None,
+        ge=SUPPORTED_LONGITUDE_RANGE[0],
+        le=SUPPORTED_LONGITUDE_RANGE[1],
+    )
+    building_height_m: float = Field(
+        gt=0,
+        le=500,
+        description="Building height in metres.",
+    )
     radius_m: int = Field(default=2000, description="Analysis radius in metres.")
     sample_interval_m: float = Field(default=50, ge=5, le=500)
     mzcat_recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
@@ -230,8 +259,8 @@ class ObstructionManualOverride(BaseModel):
     """Reviewed obstruction height data supplied by a user."""
 
     obstruction_id: str
-    height_m: float | None = Field(default=None, ge=0)
-    building_levels: float | None = Field(default=None, ge=0)
+    height_m: float | None = Field(default=None, ge=0, le=500)
+    building_levels: float | None = Field(default=None, ge=0, le=200)
     height_source: str = "manual_review"
     notes: str | None = None
 
@@ -250,8 +279,8 @@ class ReviewedFootprint(BaseModel):
         "mixed",
         "unknown",
     ] = "unknown"
-    height_m: float | None = Field(default=None, ge=0)
-    building_levels: float | None = Field(default=None, ge=0)
+    height_m: float | None = Field(default=None, ge=0, le=500)
+    building_levels: float | None = Field(default=None, ge=0, le=200)
     source: str = "reviewed obstruction JSON"
     obstruction_source_type: Literal["building", "vegetation", "other", "unknown"] = "unknown"
     source_dataset: str | None = None
@@ -307,16 +336,47 @@ class ObstructionDataQuality(BaseModel):
     pipeline_log: list[str] = Field(default_factory=list)
 
 
+class PublicObstructionDataQuality(BaseModel):
+    """Consumer-safe obstruction diagnostics without raw geometry or local paths."""
+
+    query_centre: dict[str, float] | None = None
+    query_radius_m: int | None = None
+    parsed_counts: dict[str, int] = Field(default_factory=dict)
+    total_osm_building_footprints_found: int = 0
+    total_microsoft_building_footprints_found: int = 0
+    total_vegetation_polygons_found: int = 0
+    microsoft_source_status: str = "unavailable"
+    microsoft_cache_status: str = "miss"
+    osm_fallback_used: bool = False
+    total_usable_obstruction_polygons: int = 0
+    number_excluded: int = 0
+    excluded_reasons: dict[str, int] = Field(default_factory=dict)
+    percentage_with_height_data: float = 0.0
+    percentage_requiring_manual_review: float = 0.0
+    source_summary: dict[str, int] = Field(default_factory=dict)
+    duplicate_overlap_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ObstructionInventoryRequest(BaseModel):
     """Input payload for building obstruction inventory."""
 
     address: str | None = Field(default=None, description="Street address to geocode.")
-    latitude: float | None = Field(default=None, ge=-44.5, le=-9.0)
-    longitude: float | None = Field(default=None, ge=112.0, le=154.5)
+    latitude: float | None = Field(
+        default=None,
+        ge=SUPPORTED_LATITUDE_RANGE[0],
+        le=SUPPORTED_LATITUDE_RANGE[1],
+    )
+    longitude: float | None = Field(
+        default=None,
+        ge=SUPPORTED_LONGITUDE_RANGE[0],
+        le=SUPPORTED_LONGITUDE_RANGE[1],
+    )
     radius_m: int = Field(default=500, ge=50, le=4000)
     building_height_m: float | None = Field(
         default=None,
         gt=0,
+        le=500,
         description="Subject building height for preliminary shielding-sector analysis.",
     )
     default_storey_height_m: float = Field(default=3.0, gt=0, le=6)
@@ -344,6 +404,28 @@ class ObstructionInventoryRequest(BaseModel):
         if (self.latitude is None) != (self.longitude is None):
             raise ValueError("Provide both latitude and longitude when using coordinates.")
         return self
+
+
+class PublicObstructionInventoryInput(BaseModel):
+    """Echoed inventory settings without repeating imported footprint geometry."""
+
+    address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    radius_m: int
+    building_height_m: float | None = None
+    default_storey_height_m: float
+    residential_storey_height_m: float
+    residential_two_storey_height_m: float
+    commercial_storey_height_m: float
+    manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
+    map_display_mode: Literal[
+        "nearest_500",
+        "shielding_candidates",
+        "all_footprints",
+        "centroids_only",
+    ]
+    map_max_display_obstructions: int
 
 
 class ObstructionRecord(BaseModel):
@@ -463,6 +545,22 @@ class ObstructionInventoryResult(BaseModel):
     )
 
 
+class PublicObstructionInventoryResult(BaseModel):
+    """Stable public inventory contract with private diagnostics removed."""
+
+    input: PublicObstructionInventoryInput
+    site: SiteLocation
+    obstructions: list[ObstructionRecord]
+    missing_height_count: int
+    reviewed_height_count: int
+    height_source_summary: dict[str, int] = Field(default_factory=dict)
+    data_quality: PublicObstructionDataQuality = Field(default_factory=PublicObstructionDataQuality)
+    shielding_sectors: list[ShieldingSectorResult] = Field(default_factory=list)
+    data_source_status: Literal["ok", "unavailable"] = "ok"
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer: str
+
+
 class CombinedMapRequest(SiteAnalysisRequest):
     """Request for the unified site + obstruction map with toggleable layers.
 
@@ -500,7 +598,6 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
 
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
-ReviewStatus = Literal["unreviewed", "accepted", "overridden"]
 AssessmentStatus = Literal["draft", "reviewed", "final"]
 TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
 ShieldingClassLabel = Literal["FS", "PS", "NS"]
@@ -513,8 +610,6 @@ WindRegionLabel = Literal[
     "A3",
     "A4",
     "A5",
-    "A6",
-    "A7",
     "B",
     "B1",
     "B2",
@@ -577,32 +672,22 @@ class DirectionMultiplierAssessment(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class WindVariableReview(BaseModel):
-    """Deprecated engineer review state for one wind workflow variable."""
-
-    variable: WindWorkflowVariable
-    direction: WindDirection | None = None
-    final_value: float | None = Field(default=None, gt=0)
-    final_label: str | None = None
-    reviewed_by: str | None = None
-    review_notes: str | None = None
-    review_status: ReviewStatus = "unreviewed"
-
-    @model_validator(mode="after")
-    def validate_final_value(self) -> WindVariableReview:
-        if self.review_status in {"accepted", "overridden"} and self.final_value is None:
-            raise ValueError("final_value is required when a workflow variable is reviewed.")
-        return self
-
-
 class WindVariableOverride(BaseModel):
     """Optional override for a calculated wind workflow variable."""
 
     variable: WindWorkflowVariable
     direction: WindDirection | None = None
-    override_value: float = Field(gt=0)
+    override_value: float = Field(gt=0, le=500)
     reason: str = Field(min_length=1)
     label: str | None = None
+
+    @model_validator(mode="after")
+    def validate_direction_scope(self) -> WindVariableOverride:
+        if self.variable == "VR" and self.direction is not None:
+            raise ValueError("VR is non-directional; omit direction for a VR override.")
+        if self.variable != "VR" and self.direction is None:
+            raise ValueError(f"direction is required for a {self.variable} override.")
+        return self
 
 
 class WindClassMultiplierOverride(BaseModel):
@@ -612,11 +697,25 @@ class WindClassMultiplierOverride(BaseModel):
     terrain_category: TerrainCategoryLabel | None = None
     shielding_class: ShieldingClassLabel | None = None
     topographic_class: TopographicClassLabel | None = None
-    mzcat: float | None = Field(default=None, gt=0)
-    ms: float | None = Field(default=None, gt=0)
-    mt: float | None = Field(default=None, gt=0)
+    mzcat: float | None = Field(default=None, gt=0, le=10)
+    ms: float | None = Field(default=None, gt=0, le=10)
+    mt: float | None = Field(default=None, gt=0, le=10)
     reason: str = Field(min_length=1)
     source_reference: str | None = None
+
+    @model_validator(mode="after")
+    def validate_class_value_pairs(self) -> WindClassMultiplierOverride:
+        if not any((self.terrain_category, self.shielding_class, self.topographic_class)):
+            raise ValueError(
+                "At least one reviewed terrain, shielding, or topographic class is required."
+            )
+        if self.mzcat is not None and self.terrain_category is None:
+            raise ValueError("terrain_category is required when mzcat is supplied.")
+        if self.ms is not None and self.shielding_class is None:
+            raise ValueError("shielding_class is required when ms is supplied.")
+        if self.mt is not None and self.topographic_class is None:
+            raise ValueError("topographic_class is required when mt is supplied.")
+        return self
 
 
 class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
@@ -626,7 +725,9 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     review and does not calculate pressures.
     """
 
-    wind_region: str = "A2"
+    model_config = ConfigDict(extra="forbid")
+
+    project_number: str | None = None
     annual_exceedance_probability: str = "1/500"
     importance_level: str | None = None
     user_assumptions: str | None = None
@@ -635,19 +736,26 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     building_dimensions: str | None = None
     structure_orientation_deg: float | None = Field(default=None, ge=-90, le=90)
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
-    building_width_m: float | None = Field(default=None, gt=0)
-    building_length_m: float | None = Field(default=None, gt=0)
+    building_width_m: float | None = Field(default=None, gt=0, le=5000)
+    building_length_m: float | None = Field(default=None, gt=0, le=5000)
     roof_pitch_deg: float | None = Field(default=None, ge=0, le=90)
-    average_height_m: float | None = Field(default=None, gt=0)
+    average_height_m: float | None = Field(default=None, gt=0, le=500)
     base_rl_m: float | None = None
-    design_life_years: int | None = Field(default=None, gt=0)
-    regional_wind_speed_mps: float | None = Field(default=None, gt=0)
-    wind_direction_multipliers: dict[WindDirection, float] = Field(default_factory=dict)
+    design_life_years: int | None = Field(default=None, gt=0, le=1000)
     assessment_status: AssessmentStatus = "draft"
     engineer_notes: str | None = None
     class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(default_factory=list)
     workflow_overrides: list[WindVariableOverride] = Field(default_factory=list)
-    workflow_reviews: list[WindVariableReview] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_unique_overrides(self) -> WindWorkflowRequest:
+        workflow_keys = [(item.variable, item.direction) for item in self.workflow_overrides]
+        if len(workflow_keys) != len(set(workflow_keys)):
+            raise ValueError("workflow_overrides contains duplicate variable/direction entries.")
+        class_directions = [item.direction for item in self.class_multiplier_overrides]
+        if len(class_directions) != len(set(class_directions)):
+            raise ValueError("class_multiplier_overrides contains duplicate directions.")
+        return self
 
 
 class WindVariableAssessment(BaseModel):

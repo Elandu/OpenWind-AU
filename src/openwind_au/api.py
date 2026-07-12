@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -18,13 +20,15 @@ from openwind_au.calculation_validation import (
     run_calculation_validation_cases,
 )
 from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider
-from openwind_au.geo import geocode_address_suggestions
+from openwind_au.geo import geocode_address, geocode_address_suggestions
 from openwind_au.models import (
     CombinedMapRequest,
+    GeocodeQueryRequest,
     MzCatAssessmentResult,
     MzCatReviewSelection,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
+    PublicObstructionInventoryResult,
     SiteAnalysisRequest,
     SiteAnalysisResult,
     SiteLocation,
@@ -54,10 +58,12 @@ from openwind_au.reports import (
     render_obstruction_report_html,
     render_pdf_report,
     render_terrain_category_report_html,
+    render_wind_workflow_pdf_report,
     render_wind_workflow_report_html,
     result_to_json,
     terrain_category_map_html,
 )
+from openwind_au.standard_calculations import DIRECTIONS, table_region_key
 from openwind_au.terrain_category import run_terrain_category_evidence
 from openwind_au.terrain_category_validation import (
     DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES,
@@ -70,16 +76,66 @@ from openwind_au.validation import (
     validation_report_to_json,
 )
 from openwind_au.wind_inputs import (
+    VERIFIED_LOOKUP_REVIEW_STATUS,
     direction_multiplier_assessment,
+    load_md_tables,
+    load_vr_tables,
     regional_wind_speed_assessment,
     run_wind_region_validation_cases,
     wind_region_map_html,
 )
-from openwind_au.wind_region import assess_wind_region, dataset_metadata, wind_region_debug
+from openwind_au.wind_region import (
+    REGION_LABELS,
+    assess_wind_region,
+    dataset_metadata,
+    wind_region_debug,
+)
 from openwind_au.wind_workflow import run_wind_workflow
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
+LOGGER = logging.getLogger(__name__)
+MAX_OBSTRUCTION_IMPORT_BYTES = 1_000_000
+DEBUG_ENDPOINTS_ENV = "OPENWIND_ENABLE_DEBUG_ENDPOINTS"
+
+
+async def _read_obstruction_import(
+    request: Request,
+    *,
+    accepted_media_types: set[str],
+) -> str:
+    """Read a bounded UTF-8 obstruction import with an explicit media type."""
+
+    media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    if media_type not in accepted_media_types:
+        expected = ", ".join(sorted(accepted_media_types))
+        raise HTTPException(
+            status_code=415,
+            detail=f"Content-Type must be one of: {expected}",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from exc
+        if declared_length > MAX_OBSTRUCTION_IMPORT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Import body exceeds {MAX_OBSTRUCTION_IMPORT_BYTES} bytes",
+            )
+
+    body = await request.body()
+    if len(body) > MAX_OBSTRUCTION_IMPORT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Import body exceeds {MAX_OBSTRUCTION_IMPORT_BYTES} bytes",
+        )
+    try:
+        return body.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Import body must be valid UTF-8") from exc
 
 
 def create_app() -> FastAPI:
@@ -114,9 +170,16 @@ def create_app() -> FastAPI:
     def validation_page() -> str:
         return (STATIC_DIR / "validation.html").read_text(encoding="utf-8")
 
-    @app.get("/health")
-    def health() -> dict[str, str]:
+    @app.get("/health/live")
+    def liveness() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health")
+    def health(response: Response) -> dict[str, Any]:
+        report = _readiness_report()
+        if report["status"] != "ready":
+            response.status_code = 503
+        return report
 
     @app.get("/vendor/plotly.min.js", include_in_schema=False)
     def plotly_javascript() -> Response:
@@ -126,13 +189,26 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
-    @app.get("/api/geocode/suggest")
-    def geocode_suggest(
-        q: str = Query(min_length=3),
-        limit: int = Query(default=5, ge=1, le=10),
-    ) -> dict:
+    @app.post("/api/geocode/suggest")
+    def geocode_suggest(request: GeocodeQueryRequest) -> dict:
         try:
-            return {"suggestions": geocode_address_suggestions(q, limit=limit)}
+            return {
+                "suggestions": geocode_address_suggestions(
+                    request.query,
+                    limit=request.limit,
+                )
+            }
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/api/geocode/resolve")
+    def geocode_resolve(request: GeocodeQueryRequest) -> dict:
+        """Resolve one supported Australian address without running terrain analysis."""
+
+        try:
+            return geocode_address(request.query)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -157,7 +233,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {
             "site_analysis": site_result,
-            "obstruction_inventory": obstruction_result,
+            "obstruction_inventory": _obstruction_inventory_public_data(obstruction_result),
             "terrain_category_evidence": evidence,
             "profile_plot_html": profile_plot_html(site_result),
             "terrain_category_map_html": terrain_category_map_html(
@@ -199,6 +275,38 @@ def create_app() -> FastAPI:
     def wind_workflow_report_html(request: WindWorkflowRequest) -> str:
         result = wind_workflow(request)
         return render_wind_workflow_report_html(result)
+
+    @app.post("/api/wind-workflow/result/report/html", response_class=HTMLResponse)
+    def wind_workflow_result_report_html(result: WindWorkflowResult) -> str:
+        """Render an already completed workflow without repeating external data calls."""
+
+        return render_wind_workflow_report_html(result)
+
+    @app.post("/api/wind-workflow/report/pdf")
+    def wind_workflow_report_pdf(request: WindWorkflowRequest) -> Response:
+        result = wind_workflow(request)
+        return _wind_workflow_pdf_response(result)
+
+    @app.post("/api/wind-workflow/result/report/pdf")
+    def wind_workflow_result_report_pdf(result: WindWorkflowResult) -> Response:
+        """Render an already completed workflow without repeating external data calls."""
+
+        return _wind_workflow_pdf_response(result)
+
+    def _wind_workflow_pdf_response(result: WindWorkflowResult) -> Response:
+        try:
+            content = render_wind_workflow_pdf_report(result)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {exc}") from exc
+        return Response(
+            content=content,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": (
+                    'attachment; filename="openwind-au-site-wind-assessment.pdf"'
+                )
+            },
+        )
 
     @app.post("/api/wind-workflow/map", response_class=HTMLResponse)
     def wind_workflow_map(request: WindWorkflowRequest) -> str:
@@ -301,7 +409,10 @@ def create_app() -> FastAPI:
         result = analyse(request)
         return map_html(result)
 
-    @app.post("/api/obstructions/inventory", response_model=ObstructionInventoryResult)
+    @app.post(
+        "/api/obstructions/inventory",
+        response_model=PublicObstructionInventoryResult,
+    )
     def obstruction_inventory(
         request: ObstructionInventoryRequest,
     ) -> ObstructionInventoryResult:
@@ -317,7 +428,7 @@ def create_app() -> FastAPI:
         result = obstruction_inventory(request)
         return obstruction_map_html(result)
 
-    @app.get("/api/obstructions/debug")
+    @app.get("/api/obstructions/debug", include_in_schema=False)
     def obstruction_debug(
         address: str | None = Query(default=None),
         latitude: float | None = Query(default=None),
@@ -325,6 +436,13 @@ def create_app() -> FastAPI:
         radius_m: int = Query(default=500, ge=50, le=4000),
         building_height_m: float | None = Query(default=None, gt=0),
     ) -> dict:
+        if os.environ.get(DEBUG_ENDPOINTS_ENV, "").strip().lower() not in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            raise HTTPException(status_code=404, detail="Not found")
         try:
             request = ObstructionInventoryRequest(
                 address=address,
@@ -363,9 +481,7 @@ def create_app() -> FastAPI:
     def map_combined(request: CombinedMapRequest) -> str:
         try:
             site_result = analyse(request)
-            obstruction_result = run_obstruction_inventory(
-                _obstruction_request_from_combined(request)
-            )
+            obstruction_result = _run_obstruction_inventory_for_site(request, site_result)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -449,8 +565,14 @@ def create_app() -> FastAPI:
 
     @app.post("/api/obstructions/import/csv")
     async def obstruction_import_csv(request: Request) -> Response:
-        content = (await request.body()).decode("utf-8")
-        overrides = parse_manual_overrides_csv(content)
+        content = await _read_obstruction_import(
+            request,
+            accepted_media_types={"application/csv", "text/csv"},
+        )
+        try:
+            overrides = parse_manual_overrides_csv(content)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return Response(
             content=json.dumps([override.model_dump() for override in overrides], indent=2),
             media_type="application/json",
@@ -458,8 +580,14 @@ def create_app() -> FastAPI:
 
     @app.post("/api/obstructions/import/json")
     async def obstruction_import_json(request: Request) -> Response:
-        content = (await request.body()).decode("utf-8")
-        overrides = manual_overrides_from_json(content)
+        content = await _read_obstruction_import(
+            request,
+            accepted_media_types={"application/json"},
+        )
+        try:
+            overrides = manual_overrides_from_json(content)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return Response(
             content=json.dumps([override.model_dump() for override in overrides], indent=2),
             media_type="application/json",
@@ -513,8 +641,9 @@ def create_app() -> FastAPI:
             class_multiplier_overrides=class_overrides,
         )
         site_result = run_site_analysis(request, _dem_provider())
-        obstruction_result = run_obstruction_inventory(
-            _obstruction_request_from_combined(request),
+        obstruction_result = _run_obstruction_inventory_for_site(
+            request,
+            site_result,
             footprints=reference_calc_7989_osm_footprints(),
         )
         terrain_result = run_terrain_category_evidence(site_result, obstruction_result)
@@ -538,7 +667,7 @@ def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
     site_result = run_site_analysis(request, _dem_provider())
-    obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
+    obstruction_result = _run_obstruction_inventory_for_site(request, site_result)
     evidence = run_terrain_category_evidence(site_result, obstruction_result)
     return site_result, obstruction_result, evidence
 
@@ -584,7 +713,7 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
             },
         )
 
-        obstruction_result = run_obstruction_inventory(_obstruction_request_from_combined(request))
+        obstruction_result = _run_obstruction_inventory_for_site(request, site_result)
         yield event(
             "obstructions",
             48,
@@ -645,6 +774,14 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
         yield event("error", 100, str(exc), {"status_code": 400})
     except RuntimeError as exc:
         yield event("error", 100, str(exc), {"status_code": 502})
+    except Exception:
+        LOGGER.exception("Unexpected wind workflow stream failure")
+        yield event(
+            "error",
+            100,
+            "Unexpected workflow failure. Check the server logs for the incident details.",
+            {"status_code": 500},
+        )
 
 
 def _optional_wind_region(site_result: SiteAnalysisResult) -> WindRegionAssessment | None:
@@ -661,6 +798,178 @@ def _dem_provider():
     if provider in {"open-meteo", "open_meteo", "openmeteo"}:
         return OpenMeteoElevationProvider()
     raise ValueError(f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'.")
+
+
+def _readiness_report() -> dict[str, Any]:
+    """Report whether required datasets and reviewed lookup rows are usable."""
+
+    checks: dict[str, dict[str, Any]] = {}
+    configured_region_names: list[str] = []
+    try:
+        metadata = dataset_metadata()
+        region_names = metadata.get("available_region_names")
+        dataset_ready = (
+            isinstance(metadata, dict)
+            and isinstance(metadata.get("polygon_count"), int)
+            and metadata["polygon_count"] > 0
+            and isinstance(region_names, list)
+            and bool(region_names)
+            and all(region in REGION_LABELS for region in region_names)
+            and not metadata.get("is_test_fixture")
+        )
+        if isinstance(region_names, list) and all(
+            isinstance(region, str) and region in REGION_LABELS for region in region_names
+        ):
+            configured_region_names = list(dict.fromkeys(region_names))
+        checks["wind_region_dataset"] = {
+            "ready": dataset_ready,
+            "dataset_name": metadata.get("dataset_name"),
+            "polygon_count": metadata.get("polygon_count", 0),
+            "available_region_names": region_names if isinstance(region_names, list) else [],
+            "message": (
+                "Production wind-region dataset is available."
+                if dataset_ready
+                else "Configure a non-test Geoscience Australia wind-region dataset."
+            ),
+        }
+    except Exception:
+        checks["wind_region_dataset"] = {
+            "ready": False,
+            "message": "Wind-region dataset is not usable; inspect the server logs.",
+        }
+
+    try:
+        md_data = load_md_tables()
+        if not isinstance(md_data, dict) or not isinstance(md_data.get("tables"), dict):
+            raise TypeError("Md lookup data must contain a tables object")
+        tables = md_data["tables"]
+        required_md_regions = configured_region_names or [
+            "A0",
+            "A1",
+            "A2",
+            "A3",
+            "A4",
+            "A5",
+            "B1",
+            "B2",
+            "C",
+            "D",
+        ]
+        missing_regions = [
+            region
+            for region in required_md_regions
+            if not all(
+                _valid_lookup_number(
+                    tables.get(table_region_key(region, tables), {}).get(direction)
+                    if isinstance(tables.get(table_region_key(region, tables)), dict)
+                    else None,
+                    minimum=0,
+                    maximum=10,
+                )
+                for direction in DIRECTIONS
+            )
+        ]
+        metadata_reviewed = (
+            isinstance(md_data.get("source"), dict)
+            and md_data["source"].get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS
+        )
+        md_ready = metadata_reviewed and not missing_regions
+        checks["direction_multiplier_table"] = {
+            "ready": md_ready,
+            "reviewed": metadata_reviewed,
+            "missing_regions": missing_regions,
+            "message": (
+                "Reviewed Md rows cover every configured wind-region label."
+                if md_ready
+                else "Reviewed Md rows are missing for one or more configured wind regions."
+            ),
+        }
+    except Exception:
+        checks["direction_multiplier_table"] = {
+            "ready": False,
+            "message": "Direction multiplier table is not usable; inspect the server logs.",
+        }
+
+    try:
+        vr_data = load_vr_tables()
+        if not isinstance(vr_data, dict) or not isinstance(vr_data.get("tables"), dict):
+            raise TypeError("VR lookup data must contain a tables object")
+        vr_tables = vr_data["tables"]
+        vr_reviewed = (
+            isinstance(vr_data.get("source"), dict)
+            and vr_data["source"].get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS
+        )
+        missing_vr_regions = [
+            region for region in ("A", "B", "C", "D") if not _valid_vr_table(vr_tables.get(region))
+        ]
+        vr_ready = vr_reviewed and not missing_vr_regions
+        checks["regional_wind_speed_table"] = {
+            "ready": vr_ready,
+            "reviewed": vr_reviewed,
+            "missing_regions": missing_vr_regions,
+            "message": (
+                "Reviewed VR tables cover Australian regions A-D."
+                if vr_ready
+                else "Reviewed VR lookup data is missing or invalid."
+            ),
+        }
+    except Exception:
+        checks["regional_wind_speed_table"] = {
+            "ready": False,
+            "message": "Regional wind speed table is not usable; inspect the server logs.",
+        }
+
+    try:
+        provider = _dem_provider()
+        cache_dir = getattr(provider, "cache_dir", None)
+        dem_ready = cache_dir is None or (
+            Path(cache_dir).is_dir() and os.access(cache_dir, os.W_OK)
+        )
+        checks["dem_provider"] = {
+            "ready": dem_ready,
+            "provider": provider.__class__.__name__,
+            "message": (
+                "DEM provider and cache are usable."
+                if dem_ready
+                else "DEM cache is not a writable directory."
+            ),
+        }
+    except Exception:
+        checks["dem_provider"] = {
+            "ready": False,
+            "message": "DEM provider configuration is not usable; inspect the server logs.",
+        }
+    ready = all(check["ready"] for check in checks.values())
+    return {
+        "status": "ready" if ready else "not_ready",
+        "checks": checks,
+    }
+
+
+def _valid_lookup_number(value: Any, *, minimum: float, maximum: float) -> bool:
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and minimum < float(value) <= maximum
+    )
+
+
+def _valid_vr_table(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    ultimate = value.get("ultimate")
+    serviceability = value.get("serviceability")
+    return (
+        isinstance(ultimate, dict)
+        and bool(ultimate)
+        and all(_valid_lookup_number(item, minimum=0, maximum=200) for item in ultimate.values())
+        and isinstance(serviceability, dict)
+        and bool(serviceability)
+        and all(
+            _valid_lookup_number(item, minimum=0, maximum=200) for item in serviceability.values()
+        )
+    )
 
 
 def _obstruction_request_from_combined(
@@ -680,6 +989,34 @@ def _obstruction_request_from_combined(
         reviewed_footprints=request.reviewed_footprints,
         map_display_mode=request.map_display_mode,
         map_max_display_obstructions=request.map_max_display_obstructions,
+    )
+
+
+def _run_obstruction_inventory_for_site(
+    request: CombinedMapRequest,
+    site_result: SiteAnalysisResult,
+    *,
+    footprints: list[dict[str, Any]] | None = None,
+) -> ObstructionInventoryResult:
+    """Reuse one resolved site for terrain and obstruction calculations."""
+
+    obstruction_request = _obstruction_request_from_combined(request)
+    if footprints is None:
+        result = run_obstruction_inventory(obstruction_request, resolved_site=site_result.site)
+    else:
+        result = run_obstruction_inventory(
+            obstruction_request,
+            footprints=footprints,
+            resolved_site=site_result.site,
+        )
+    return result
+
+
+def _obstruction_inventory_public_data(result: ObstructionInventoryResult) -> dict[str, Any]:
+    """Return the consumer payload without repeated raw geometry or local paths."""
+
+    return PublicObstructionInventoryResult.model_validate(result.model_dump()).model_dump(
+        mode="json"
     )
 
 

@@ -70,6 +70,28 @@ engineering review before project use. To use a proxy or test endpoint, set:
 $env:OPENWIND_OPEN_METEO_ELEVATION_URL="https://api.open-meteo.com/v1/elevation"
 ```
 
+The provider deduplicates and caches coordinate pairs in the application process. Uncached points
+are sent in batches of no more than 100 coordinate pairs per Open-Meteo request, matching the
+provider's multi-coordinate request limit. Large terrain runs may therefore make several bounded
+requests.
+
+## Address Search Provider
+
+Search-as-you-type address suggestions use Photon with an Australian bounding box. Public
+Nominatim is used only when the user deliberately resolves one complete address; it is not used
+for autocomplete. Teams can point suggestions at a self-hosted Photon-compatible service:
+
+```powershell
+$env:OPENWIND_PHOTON_URL="https://photon.example.com/api/"
+```
+
+Repeated suggestion queries are cached in the application process. Production deployments should
+use a provider capacity appropriate to their traffic or operate their own Photon instance.
+Address text is sent to the configured Photon service for suggestions and to OpenStreetMap
+Nominatim when resolving a complete free-text address. Use self-hosted services when project
+addresses are confidential. Browser-to-server lookups use POST so addresses are not placed in
+normal HTTP access-log query strings.
+
 ## Optional Microsoft Building Footprint Cache
 
 The obstruction inventory prefers
@@ -112,14 +134,23 @@ The index maps tile keys to downloadable files:
   "tiles": {
     "-34_151": {
       "url": "https://example.com/openwind-au/tiles/-34_151.geojsonl",
-      "file": "tiles/-34_151.geojsonl"
+      "file": "tiles/-34_151.geojsonl",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     }
   }
 }
 ```
 
 With an index configured, OpenWind-AU downloads only the tile keys touched by the site radius and
-stores them in the local cache.
+stores them in the local cache. Replace the example `sha256` with the tile's actual lowercase
+SHA-256 digest. The digest is optional for compatibility, but strongly recommended; when supplied,
+it is checked for both an existing cached tile and a new download.
+
+Remote index URLs, tile URLs, and their redirects must remain on HTTPS. A remote index is limited
+to 2 MiB and each tile to 50 MiB. Indexed filenames must remain inside the configured cache and use
+`.geojson`, `.json`, `.geojsonl`, or `.ndjson`. Downloads are streamed to a temporary file, checked
+for size, optional SHA-256, and a supported GeoJSON structure, then installed atomically. Invalid
+or empty downloads are rejected rather than retained as cache entries.
 
 ## Optional Wind Region GIS Dataset
 

@@ -38,6 +38,15 @@ openwind-au-mcp --transport streamable-http --host 127.0.0.1 --port 8001
 Connect an MCP client to `http://127.0.0.1:8001/mcp`. The equivalent environment variables are
 `OPENWIND_MCP_TRANSPORT`, `OPENWIND_MCP_HOST`, and `OPENWIND_MCP_PORT`.
 
+On a Windows mapped or UNC network drive, the generated console launcher can inherit a UNC Python
+path that prevents native `pywin32` modules from loading. Use the environment's interpreter
+directly in that case:
+
+```powershell
+.\.venv\Scripts\python.exe -m openwind_au.mcp_server `
+  --transport streamable-http --host 127.0.0.1 --port 8001
+```
+
 ## Tools
 
 - `calculate_regional_wind_speed`: Table 3.1(A) regional equation and prescribed rounding.

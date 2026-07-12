@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from openwind_au.models import SiteLocation
+from openwind_au.models import SiteLocation, WindRegionAssessment
 from openwind_au.wind_inputs import (
     MD_METADATA_WARNING,
     VR_METADATA_WARNING,
@@ -62,7 +62,7 @@ def test_dataset_metadata_flags_sample_fixture(monkeypatch) -> None:
     metadata = dataset_metadata()
 
     assert metadata["dataset_name"] == "wind_regions_sample"
-    assert metadata["polygon_count"] == 12
+    assert metadata["polygon_count"] == 10
     assert metadata["is_test_fixture"] is True
     assert metadata["available_region_names"] == [
         "A0",
@@ -71,8 +71,6 @@ def test_dataset_metadata_flags_sample_fixture(monkeypatch) -> None:
         "A3",
         "A4",
         "A5",
-        "A6",
-        "A7",
         "B1",
         "B2",
         "C",
@@ -184,8 +182,6 @@ def test_validation_diagnosis_accepts_bourke_a0(monkeypatch) -> None:
         (-34.43, 150.89, "A3"),
         (-37.81, 144.96, "A4"),
         (-42.88, 147.33, "A5"),
-        (-36.70, 147.10, "A6"),
-        (-34.35, 118.00, "A7"),
         (-27.47, 153.03, "B1"),
         (-20.30, 148.70, "B2"),
         (-12.46, 130.85, "C"),
@@ -217,6 +213,8 @@ def test_vr_lookup_from_editable_data(monkeypatch) -> None:
     assert speed.vr_serv == 37.0
     assert "Editable regional wind speed" in speed.selected_table
     assert parse_ari_years("1:1000") == 1000
+    assert parse_ari_years("1 in 500") == 500
+    assert parse_ari_years("ARI 500 years") == 500
     assert interpolated == pytest.approx(43.2, abs=0.1)
     assert "Interpolated" in note
 
@@ -249,6 +247,15 @@ def test_regional_equation_rejects_undefined_short_recurrence_interval() -> None
 def test_parse_ari_rejects_missing_years() -> None:
     with pytest.raises(ValueError, match="positive ARI"):
         parse_ari_years("not selected")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1 in 500 AS1170:2021", "AEP 1/500 AS1170:2021", "1/500 extra"],
+)
+def test_parse_ari_rejects_ambiguous_trailing_numbers(value) -> None:
+    with pytest.raises(ValueError, match="positive ARI"):
+        parse_ari_years(value)
 
 
 def test_missing_vr_table_value_warns(monkeypatch, tmp_path) -> None:
@@ -336,7 +343,27 @@ def test_missing_md_table_value_warns(monkeypatch, tmp_path) -> None:
 
     assert md.highest_md == 1.0
     assert next(row for row in md.directions if row.direction == "NE").md is None
-    assert any("Md table value missing for NE" in warning for warning in md.warnings)
+    assert any("directions NE, E, SE, S, SW, W, NW" in warning for warning in md.warnings)
+
+
+def test_md_lookup_blocks_custom_region_without_reviewed_table_row() -> None:
+    region = WindRegionAssessment(
+        latitude=-33.86,
+        longitude=151.21,
+        wind_region="A",
+        source="custom generic region",
+        confidence="low",
+    )
+
+    md = direction_multiplier_assessment(region)
+
+    assert region.wind_region == "A"
+    assert md.highest_md is None
+    assert all(row.md is None for row in md.directions)
+    assert any(
+        "unavailable for A directions N, NE, E, SE, S, SW, W, NW" in warning
+        for warning in md.warnings
+    )
 
 
 def test_unverified_md_table_metadata_warns(monkeypatch, tmp_path) -> None:

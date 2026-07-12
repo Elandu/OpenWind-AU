@@ -289,7 +289,23 @@ def test_steep_slope_building_below_subject_top_is_rejected() -> None:
     north = next(sector for sector in sectors if sector.direction == "N")
 
     assert north.ns == 0
-    assert north.rejection_reason_counts == {"steep_slope_below_subject": 1}
+    assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
+
+
+def test_steep_slope_building_above_subject_top_is_still_rejected() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("steep-tall", 0, 40, 20, 10, 30)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=300,
+    )
+    records[0] = records[0].model_copy(update={"ground_rl_m": -10.0})
+
+    sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.ns == 0
+    assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
 
 
 def test_missing_height_rejection_is_reported() -> None:
@@ -409,3 +425,5 @@ def test_ms_interpolation_thresholds() -> None:
     assert ms_from_shielding_parameter(3.0) == pytest.approx(0.8)
     assert ms_from_shielding_parameter(4.5) == pytest.approx(0.85)
     assert ms_from_shielding_parameter(12.0) == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="finite"):
+        ms_from_shielding_parameter(float("nan"))

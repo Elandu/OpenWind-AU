@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from typing import Any
 
@@ -49,6 +50,29 @@ def _result(
     }
 
 
+def _finite_value(
+    name: str,
+    value: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    minimum_inclusive: bool = True,
+) -> float:
+    """Validate a bounded finite numeric MCP input."""
+
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite.")
+    if minimum is not None:
+        invalid_minimum = number < minimum if minimum_inclusive else number <= minimum
+        if invalid_minimum:
+            operator = "at least" if minimum_inclusive else "greater than"
+            raise ValueError(f"{name} must be {operator} {minimum}.")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must not exceed {maximum}.")
+    return number
+
+
 @mcp.tool()
 def calculate_regional_wind_speed(wind_region: str, ari_years: int) -> dict[str, Any]:
     """Calculate Australian regional wind speed VR for a reviewed region and ARI."""
@@ -82,6 +106,7 @@ def calculate_terrain_height_multiplier(
 ) -> dict[str, Any]:
     """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
 
+    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
     mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
     return _result(
         clause="Clauses 4.2.2 and 4.2.3; Table 4.1",
@@ -105,10 +130,19 @@ def calculate_shielding_multiplier(
 ) -> dict[str, Any]:
     """Calculate Ms from a reviewed shielding parameter and building height."""
 
-    if shielding_parameter < 0:
-        raise ValueError("Shielding parameter s must not be negative.")
-    if building_height_m <= 0:
-        raise ValueError("Building height must be greater than zero.")
+    shielding_parameter = _finite_value(
+        "Shielding parameter s",
+        shielding_parameter,
+        minimum=0,
+        maximum=1_000_000,
+    )
+    building_height_m = _finite_value(
+        "Building height",
+        building_height_m,
+        minimum=0,
+        maximum=500,
+        minimum_inclusive=False,
+    )
     warnings: list[str] = []
     if building_height_m > 25.0:
         ms = 1.0
@@ -185,9 +219,25 @@ def calculate_site_wind_speed(
 ) -> dict[str, Any]:
     """Calculate site wind speed Vsit,b from reviewed multiplier inputs."""
 
-    values = {"vr_mps": vr_mps, "md": md, "mzcat": mzcat, "ms": ms, "mt": mt}
-    if any(value <= 0 for value in values.values()):
-        raise ValueError("VR and all multipliers must be greater than zero.")
+    values = {
+        "vr_mps": _finite_value(
+            "VR",
+            vr_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "md": _finite_value("Md", md, minimum=0, maximum=10, minimum_inclusive=False),
+        "mzcat": _finite_value(
+            "Mz,cat",
+            mzcat,
+            minimum=0,
+            maximum=10,
+            minimum_inclusive=False,
+        ),
+        "ms": _finite_value("Ms", ms, minimum=0, maximum=10, minimum_inclusive=False),
+        "mt": _finite_value("Mt", mt, minimum=0, maximum=10, minimum_inclusive=False),
+    }
     vsitb = vr_mps * md * mzcat * ms * mt
     return _result(
         clause="Clause 2.3",
@@ -217,10 +267,29 @@ def calculate_all_wind_variables(
     direction = direction.upper()
     if direction not in DIRECTIONS:
         raise ValueError(f"Direction must be one of: {', '.join(DIRECTIONS)}")
-    if building_height_m <= 0:
-        raise ValueError("Building height must be greater than zero.")
-    if shielding_parameter < 0:
-        raise ValueError("Shielding parameter s must not be negative.")
+    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
+    building_height_m = _finite_value(
+        "Building height",
+        building_height_m,
+        minimum=0,
+        maximum=500,
+        minimum_inclusive=False,
+    )
+    shielding_parameter = _finite_value(
+        "Shielding parameter s",
+        shielding_parameter,
+        minimum=0,
+        maximum=1_000_000,
+    )
+    h_m = _finite_value("Topographic H", h_m, minimum=0, maximum=100_000)
+    lu_m = _finite_value("Topographic Lu", lu_m, minimum=0, maximum=1_000_000)
+    x_m = _finite_value("Topographic x", x_m, minimum=0, maximum=1_000_000)
+    site_elevation_m = _finite_value(
+        "Site elevation",
+        site_elevation_m,
+        minimum=-500,
+        maximum=10_000,
+    )
 
     vr = regional_wind_speed(wind_region, ari_years)
     md = direction_multiplier_values(wind_region)[direction]

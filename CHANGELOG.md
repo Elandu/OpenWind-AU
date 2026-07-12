@@ -15,6 +15,29 @@ All notable project milestones are documented here.
 - Added stable-v1 MCP tools for `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b`, available over
   stdio or Streamable HTTP.
 - Added deterministic calculation, MCP registration, and end-to-end variable-product tests.
+- Replaced the repetitive site-wind report with a compact project/outcome, directional-results,
+  review-items, and basis/limitations structure.
+- Added a Documents-tab PDF preview backed by completed-result report endpoints, avoiding a
+  second terrain and obstruction workflow run when a report is generated.
+- Removed repeated Raw Data summaries and consolidated calculation provenance and warnings.
+- Made the design building directly draggable and persisted its updated coordinates for reruns.
+- Replaced the browser-dependent address datalist with an accessible autocomplete list, added a
+  lightweight address resolver, and made a newly entered address clear stale saved coordinates.
+- Filtered geocoder results to the same Australian coordinate bounds enforced by API requests.
+- Scoped saved map coordinates by project, cancelled stale autocomplete/workflow/report requests,
+  and replayed coordinates and orientation safely into sandboxed map frames after reload.
+- Added liveness/readiness separation and now validate `Md` coverage against the Australian region
+  labels actually present in the configured production GIS dataset.
+- Removed legacy New Zealand `A6/A7` labels from the AU region contract, corrected the Clause 4.3
+  steep-gradient exclusion, and stopped project class labels from inventing implicit `Ms`/`Mt`.
+- Added a public obstruction response schema that omits repeated imported footprints, raw provider
+  geometry/debug logs, and local cache paths from runtime responses and OpenAPI.
+- Hardened Microsoft footprint index/tile downloads with HTTPS, size/hash/structure validation,
+  atomic concurrent caching, and a bounded thread-safe query cache.
+- Batched Open-Meteo elevation requests to the documented 100-coordinate limit while preserving
+  support for custom single-point DEM providers.
+- Escaped report/map content, sandboxed generated HTML frames, and gated raw debug diagnostics
+  behind an explicit environment switch.
 
 These calculations remain engineering-review outputs. Automated GIS classification, public DEM
 geometry, obstruction data, jurisdictional variations, and final compliance are not certified.

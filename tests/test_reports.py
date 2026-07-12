@@ -354,6 +354,35 @@ def test_centroid_fallback_map_generation() -> None:
     assert "Centroids-only map display mode selected" in html
 
 
+def test_obstruction_map_escapes_hostile_inline_json_and_tooltip_content() -> None:
+    payload = "</script><img src=x onerror=alert(1)>&\u2028"
+    footprint = microsoft_footprint(1, 0, 0)
+    footprint["source_id"] = payload
+    footprint["source_provenance"] = [payload]
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            radius_m=500,
+            building_height_m=8,
+            map_display_mode="centroids_only",
+        ),
+        footprints=[footprint],
+    )
+
+    html = obstruction_map_html(result)
+    diagnostics = map_diagnostics(html)
+
+    assert diagnostics["selected_obstructions"] == 1
+    assert diagnostics["plotted_centroids"] == 1
+    assert "</script><img" not in html
+    assert "<img" not in html
+    assert payload not in html
+    # Folium's JSON escaping alone would produce ``\u003cimg`` and restore an
+    # active tag in GeoJsonTooltip. HTML entities remain inert after parsing.
+    assert r"\u0026lt;/script\u0026gt;\u0026lt;img" in html
+
+
 def test_display_limit_does_not_reduce_shielding_calculation_dataset() -> None:
     result = run_obstruction_inventory(
         ObstructionInventoryRequest(

@@ -150,6 +150,12 @@ def test_region_a0_uses_tc2_to_100_m_and_1_24_above() -> None:
     assert indicative_mzcat("TC1", 150, wind_region="A0") == pytest.approx(1.24)
 
 
+@pytest.mark.parametrize("height", [0, -1, float("nan"), float("inf")])
+def test_mzcat_rejects_invalid_height(height: float) -> None:
+    with pytest.raises(ValueError, match="finite number greater than zero"):
+        indicative_mzcat("TC3", height)
+
+
 def test_medium_confidence_gets_auto_recommendation_without_final_review_fields() -> None:
     assessment = direction_mzcat_assessment(
         evidence(suggested_range="TC2-TC2.5", confidence="medium", height_coverage=90),

@@ -72,6 +72,39 @@ def test_open_meteo_elevation_provider_rejects_missing_elevation(monkeypatch) ->
         provider.elevation(-27.520503, 152.936814)
 
 
+def test_open_meteo_elevation_provider_batches_and_caches_coordinates(monkeypatch) -> None:
+    calls = []
+
+    class Response:
+        def __init__(self, elevations: list[float]) -> None:
+            self._elevations = elevations
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"elevation": self._elevations}
+
+    def fake_get(url, params, timeout):
+        del url, timeout
+        latitude = params["latitude"]
+        count = len(str(latitude).split(",")) if isinstance(latitude, str) else 1
+        calls.append(params)
+        return Response([float(len(calls))] * count)
+
+    monkeypatch.setattr("openwind_au.dem.requests.get", fake_get)
+    provider = OpenMeteoElevationProvider(base_url="https://example.test/elevation")
+    points = [(-33.0 + index / 10_000, 151.0) for index in range(205)]
+
+    first = provider.elevations(points)
+    second = provider.elevations(points)
+
+    assert len(first) == 205
+    assert first == second
+    assert len(calls) == 3
+    assert [len(str(call["latitude"]).split(",")) for call in calls] == [100, 100, 5]
+
+
 def test_open_meteo_elevation_provider_falls_back_to_curl(monkeypatch) -> None:
     commands = []
 

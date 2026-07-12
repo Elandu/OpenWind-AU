@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260710-ux-cleanup-2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260711-address-state-fix-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -28,20 +28,31 @@
             />
           </label>
           <span class="dashboard-chevron">/</span>
-          <label class="dashboard-inline-field dashboard-address-field">
-            <span class="kicker">Address</span>
-            <input
-              id="dashboard-address"
-              class="dashboard-inline-input"
-              name="address"
-              form="workflow-form"
-              type="text"
-              list="dashboard-address-suggestions"
-              placeholder="1 Macquarie Street, Sydney NSW"
-              autocomplete="street-address"
-            />
-            <datalist id="dashboard-address-suggestions"></datalist>
-          </label>
+          <div class="dashboard-inline-field dashboard-address-field">
+            <label class="kicker" for="dashboard-address">Address</label>
+            <div class="address-autocomplete">
+              <input
+                id="dashboard-address"
+                class="dashboard-inline-input"
+                name="address"
+                form="workflow-form"
+                type="text"
+                placeholder="1 Macquarie Street, Sydney NSW"
+                autocomplete="off"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-controls="dashboard-address-suggestions"
+                aria-expanded="false"
+              />
+              <ul
+                id="dashboard-address-suggestions"
+                class="address-suggestions"
+                role="listbox"
+                aria-label="Australian address suggestions"
+                hidden
+              ></ul>
+            </div>
+          </div>
         </div>
         <div class="dashboard-kpis" aria-label="Current assessment summary">
           <div>
@@ -211,47 +222,56 @@
               <span class="kicker">Design orientation</span>
               <strong id="orientation-readout">0 deg</strong>
             </div>
+            <div class="orientation-readout map-coordinate-readout">
+              <span class="kicker">Building location</span>
+              <strong id="map-coordinate-readout">Not positioned</strong>
+            </div>
           </div>
-          <iframe id="workflow-map-frame" class="map-iframe" title="Interactive wind assessment map"></iframe>
+          <iframe
+            id="workflow-map-frame"
+            class="map-iframe"
+            title="Interactive wind assessment map"
+            sandbox="allow-scripts"
+          ></iframe>
           <iframe
             id="terrain-profile-frame"
             class="map-iframe profile-iframe"
             title="Terrain profile graph"
+            sandbox="allow-scripts"
             hidden
           ></iframe>
         </section>
       </section>
 
       <nav class="workspace-tabs" role="tablist" aria-label="Assessment views">
-        <button class="workspace-tab is-active" type="button" role="tab" aria-selected="true" tabindex="0" data-workspace-tab="map">Map</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="profile">Profile</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="raw-data">Raw Data</button>
-        <button class="workspace-tab" type="button" role="tab" aria-selected="false" tabindex="-1" data-workspace-tab="documents">Documents</button>
+        <button id="workspace-tab-map" class="workspace-tab is-active" type="button" role="tab" aria-controls="workspace-panel-map" aria-selected="true" tabindex="0" data-workspace-tab="map">Map</button>
+        <button id="workspace-tab-profile" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-profile" aria-selected="false" tabindex="-1" data-workspace-tab="profile">Profile</button>
+        <button id="workspace-tab-raw-data" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-raw-data" aria-selected="false" tabindex="-1" data-workspace-tab="raw-data">Raw Data</button>
+        <button id="workspace-tab-documents" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-documents" aria-selected="false" tabindex="-1" data-workspace-tab="documents">Documents</button>
       </nav>
 
-      <section class="workspace-panel is-active" role="tabpanel" data-workspace-panel="map">
+      <section id="workspace-panel-map" class="workspace-panel is-active" role="tabpanel" aria-labelledby="workspace-tab-map" data-workspace-panel="map">
         <div class="panel map-layer-summary">
           <h2>Map Layers</h2>
           <p class="note">The workspace map renders wind regions, Mz,cat sectors, shielding sectors, topographic circles, terrain profiles, obstruction footprints, and the Design building footprint.</p>
         </div>
       </section>
 
-      <section class="workspace-panel" role="tabpanel" data-workspace-panel="profile" hidden>
+      <section id="workspace-panel-profile" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-profile" data-workspace-panel="profile" hidden>
         <div class="panel terrain-profile-panel">
           <h2>Terrain Profile Graph</h2>
           <p class="note">The main workspace is showing the terrain profile graph for the current assessed site.</p>
         </div>
       </section>
 
-      <section class="workspace-panel" role="tabpanel" data-workspace-panel="raw-data" hidden>
+      <section id="workspace-panel-raw-data" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-raw-data" data-workspace-panel="raw-data" hidden>
       <div class="workflow-column raw-results-layout">
 
       <section id="resolved-wind-inputs" class="panel workflow-step" data-step="2">
-        <h2>Assessment Summary</h2>
-        <p class="note">Key site and wind inputs. Detailed calculation evidence is collapsed below.</p>
+        <h2>Assessment Basis</h2>
+        <p class="note">Region, return period and data confidence. Directional values appear once below.</p>
         <div id="wind-inputs-summary" class="workflow-card">
-          <h3>Wind Inputs Summary</h3>
-          <p class="note">Run the assessment to display wind region and VR.</p>
+          <p class="note">Run the assessment to display its basis.</p>
         </div>
       </section>
 
@@ -279,11 +299,11 @@
       </section>
 
       <details class="raw-detail-group">
-        <summary>Detailed calculation inputs and engineering review evidence</summary>
+        <summary>Engineering overrides</summary>
         <div class="raw-detail-stack">
       <section id="wind-region-vr" class="panel workflow-anchor workflow-step" data-step="4">
         <h2>Regional Wind Speed, VR</h2>
-        <p class="note">Displays ARI / importance level, source reference, and VR.</p>
+        <p class="note">Calculated regional speed available for engineering override.</p>
       </section>
 
       <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="5">
@@ -293,28 +313,40 @@
 
       <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="6">
         <h2>Terrain Category / Mz,cat</h2>
-        <p class="note">Displays Recommended TC, Final TC, Recommended Mz,cat, and Final Mz,cat.</p>
+        <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
 
       <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="7">
         <h2>Shielding Multiplier, Ms</h2>
-        <p class="note">Displays Recommended Ms, Final Ms, and shielding calculation details.</p>
+        <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
 
       <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="8">
         <h2>Topographic Multiplier, Mt</h2>
-        <p class="note">Displays Recommended Mt, Final Mt, and optional review evidence for candidate terrain features.</p>
+        <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
+        </div>
+      </details>
+
+      <details class="raw-detail-group">
+        <summary>Calculation provenance and warnings</summary>
+        <div id="raw-provenance" class="workflow-card">
+          <p class="note">Run the assessment to display unique calculation sources and warnings.</p>
         </div>
       </details>
 
       </div>
       </section>
 
-      <section class="workspace-panel" role="tabpanel" data-workspace-panel="documents" hidden>
+      <section id="workspace-panel-documents" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-documents" data-workspace-panel="documents" hidden>
         <section id="workflow-reporting" class="panel workflow-step" data-step="9">
-          <h2>Report and Diagnostics</h2>
-          <button id="workflow-report" type="button">Open Site Wind Assessment Report</button>
+          <h2>Reports</h2>
+          <p class="note">Generate a concise assessment summary without raw calculation repetition.</p>
+          <div class="report-actions">
+            <button id="workflow-pdf" type="button" disabled>Generate PDF Report</button>
+            <button id="workflow-report" class="secondary-action" type="button" disabled>Open HTML Report</button>
+          </div>
+          <p id="report-status" class="note" role="status" aria-live="polite"></p>
           <details class="diagnostic-details">
             <summary>Workflow diagnostics</summary>
             <pre id="workflow-summary">Run the assessment to review variables.</pre>
@@ -323,6 +355,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260710-ux-cleanup-3"></script>
+    <script src="/static/wind_workflow.js?v=20260711-address-state-fix-1"></script>
   </body>
 </html>

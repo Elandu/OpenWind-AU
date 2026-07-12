@@ -73,13 +73,24 @@ values.
 
 ```text
 POST /api/wind-workflow/report/html
+POST /api/wind-workflow/report/pdf
+POST /api/wind-workflow/result/report/html
+POST /api/wind-workflow/result/report/pdf
 ```
 
-The site wind assessment report includes Wind Region Assessment, Regional Wind Speed Assessment, and
-Direction Multiplier Assessment sections. Wind region is derived from the configured local
-Geoscience Australia 1170.2 Wind Regions GIS dataset. `VR` and `Md` values are table-derived from
-editable JSON lookup files and include source-reference text and warnings when manual input is
-required.
+The `/result/report/*` routes accept an already completed `WindWorkflowResult`. The browser uses
+these routes so opening a report does not repeat elevation, terrain, or obstruction data calls.
+
+The HTML and PDF outputs use the same compact report structure:
+
+- project, site, building, region, AEP/ARI, `VR,ult`, and governing result;
+- one eight-direction table for `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b`;
+- deduplicated decision-relevant warnings, overrides, and engineer notes when present; and
+- a short calculation-basis and limitations statement.
+
+Raw calculation inputs, repeated per-variable summaries, map/profile placeholders, verbose source
+metadata, and duplicated disclaimers are intentionally omitted. Those diagnostics remain available
+in the application raw-data and diagnostics views.
 
 The site wind assessment report does not include pressure calculations, `Cpe`, `Cpi`, or final
 design pressures.

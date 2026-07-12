@@ -12,6 +12,7 @@ from openwind_au.mcp_server import (
     calculate_shielding_multiplier,
     calculate_site_wind_speed,
     calculate_terrain_height_multiplier,
+    calculate_topographic_wind_multiplier,
     get_direction_multipliers,
     mcp,
 )
@@ -77,3 +78,29 @@ def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
 
     assert result["outputs"]["ms"] == 1.0
     assert any("h > 25 m" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize(
+    ("call", "error"),
+    [
+        (lambda: calculate_site_wind_speed(float("nan"), 1, 1, 1, 1), "finite"),
+        (lambda: calculate_site_wind_speed(45, float("inf"), 1, 1, 1), "finite"),
+        (lambda: calculate_terrain_height_multiplier("TC3", float("nan"), "A2"), "finite"),
+        (lambda: calculate_shielding_multiplier(float("nan"), 10), "finite"),
+        (
+            lambda: calculate_topographic_wind_multiplier(
+                "hill",
+                20,
+                50,
+                0,
+                float("inf"),
+                "A2",
+                100,
+            ),
+            "finite",
+        ),
+    ],
+)
+def test_mcp_tools_reject_nonfinite_inputs(call, error: str) -> None:
+    with pytest.raises(ValueError, match=error):
+        call()

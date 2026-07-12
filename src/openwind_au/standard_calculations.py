@@ -73,6 +73,8 @@ def direction_multiplier_values(region: str) -> dict[str, float]:
 def ms_from_shielding_parameter(s: float) -> float:
     """Return Ms by linear interpolation from AS/NZS 1170.2:2021 Table 4.2."""
 
+    if not math.isfinite(s):
+        raise ValueError("Shielding parameter s must be finite.")
     if s < 0:
         raise ValueError("Shielding parameter s must not be negative.")
     if s <= 1.5:

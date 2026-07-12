@@ -72,8 +72,10 @@ def run_wind_workflow(
         )
     )
     vsitb_rows = vsitb_directional_rows(variables)
+    vsitb_variables = vsitb_assessments(vsitb_rows, overrides)
+    vsitb_rows = apply_vsitb_assessments_to_rows(vsitb_rows, vsitb_variables)
     vsitb_rows = mark_governing_vsitb(vsitb_rows)
-    variables.extend(vsitb_assessments(vsitb_rows, overrides))
+    variables.extend(vsitb_variables)
     warnings = [
         (
             "Workflow values are calculated automatically and remain preliminary until "
@@ -155,10 +157,6 @@ def vr_assessment(
 ) -> WindVariableAssessment:
     value = regional_speed.vr_ult
     warnings = list(regional_speed.warnings)
-    if request.regional_wind_speed_mps is not None:
-        warnings.append(
-            "Legacy regional_wind_speed_mps input ignored; use workflow_overrides with a reason."
-        )
     assessment = WindVariableAssessment(
         variable="VR",
         label="Regional wind speed, VR",
@@ -376,24 +374,32 @@ def ms_assessments(
     assessments = []
     for sector in obstruction_result.shielding_sectors:
         class_override = class_overrides.get(sector.direction)
-        value = sector.indicative_ms
+        calculated_value = sector.indicative_ms
+        value = calculated_value
         confidence = _confidence(sector.overall_confidence)
+        final_label = "Calculated Ms"
         source_reference = "Shielding sector diagnostics from obstruction inventory."
         class_inputs: list[str] = []
         class_details: list[str] = []
         warnings = ["Indicative Ms is preliminary.", *sector.warnings]
         if class_override and class_override.shielding_class:
-            value = class_override.ms or ms_from_shielding_class(class_override.shielding_class)
-            confidence = "high" if class_override.ms else "medium"
             source_reference = class_override.source_reference or source_reference
             class_inputs = [
                 f"Reviewed shielding class: {class_override.shielding_class}",
                 f"Review reason: {class_override.reason}",
             ]
             if class_override.ms is not None:
+                value = class_override.ms
+                confidence = "high"
+                final_label = f"Reviewed shielding class {class_override.shielding_class}"
                 class_inputs.append(f"Reviewed Ms: {class_override.ms:.3f}")
-            class_details = ["Reviewed shielding class override applied.", *class_inputs]
-            warnings.append("Ms uses reviewed shielding class override.")
+                class_details = ["Reviewed numeric Ms override applied.", *class_inputs]
+                warnings.append("Ms uses an explicit reviewed numeric override.")
+            else:
+                class_details = ["Reviewed shielding class recorded for provenance.", *class_inputs]
+                warnings.append(
+                    "Shielding class recorded without a numeric Ms; calculated Ms retained."
+                )
         assessment = WindVariableAssessment(
             variable="Ms",
             label="Shielding multiplier, Ms",
@@ -401,17 +407,20 @@ def ms_assessments(
             recommended_value=value,
             recommended_label=(
                 f"Reviewed {class_override.shielding_class}; Ms {value:.3f}"
+                if class_override
+                and class_override.shielding_class
+                and class_override.ms is not None
+                else (
+                    f"Calculated Ms {value:.3f}; reviewed class "
+                    f"{class_override.shielding_class} recorded"
+                )
                 if class_override and class_override.shielding_class
                 else f"Recommended Ms {sector.indicative_ms:.3f}"
             ),
             confidence=confidence,
-            calculated_value=value,
+            calculated_value=calculated_value,
             final_value=value,
-            final_label=(
-                f"Reviewed shielding class {class_override.shielding_class}"
-                if class_override and class_override.shielding_class
-                else "Calculated Ms"
-            ),
+            final_label=final_label,
             warnings=warnings,
             evidence_link="#shielding-ms",
             source_reference=source_reference,
@@ -493,25 +502,34 @@ def mt_assessments(
             warnings.append(
                 "Mt is calculated from public DEM geometry and requires engineering review."
             )
-        value = None if unresolved_geometry else round(calculation.mt, 3)
+        calculated_value = None if unresolved_geometry else round(calculation.mt, 3)
+        value = calculated_value
         confidence = "medium" if no_significant_feature else "low"
         final_label = None if unresolved_geometry else "Calculated Mt from terrain profile"
         source_reference = "AS/NZS 1170.2:2021 Clause 4.4 and sampled DEM terrain profile."
         class_inputs: list[str] = []
         class_details: list[str] = []
         if class_override and class_override.topographic_class:
-            value = class_override.mt or mt_from_topographic_class(class_override.topographic_class)
-            confidence = "high" if class_override.mt else "medium"
-            final_label = f"Reviewed topographic class {class_override.topographic_class}"
             source_reference = class_override.source_reference or source_reference
             class_inputs = [
                 f"Reviewed topographic class: {class_override.topographic_class}",
                 f"Review reason: {class_override.reason}",
             ]
             if class_override.mt is not None:
+                value = class_override.mt
+                confidence = "high"
+                final_label = f"Reviewed topographic class {class_override.topographic_class}"
                 class_inputs.append(f"Reviewed Mt: {class_override.mt:.3f}")
-            class_details = ["Reviewed topographic class override applied.", *class_inputs]
-            warnings.append("Mt uses reviewed topographic class override.")
+                class_details = ["Reviewed numeric Mt override applied.", *class_inputs]
+                warnings.append("Mt uses an explicit reviewed numeric override.")
+            else:
+                class_details = [
+                    "Reviewed topographic class recorded for provenance.",
+                    *class_inputs,
+                ]
+                warnings.append(
+                    "Topographic class recorded without a numeric Mt; Clause 4.4 value retained."
+                )
         assessment = WindVariableAssessment(
             variable="Mt",
             label="Topographic multiplier, Mt",
@@ -519,6 +537,14 @@ def mt_assessments(
             recommended_value=value,
             recommended_label=(
                 f"Reviewed {class_override.topographic_class}; Mt {value:.3f}"
+                if class_override
+                and class_override.topographic_class
+                and class_override.mt is not None
+                and value is not None
+                else (
+                    f"Calculated Mt {value:.3f}; reviewed class "
+                    f"{class_override.topographic_class} recorded"
+                )
                 if class_override and class_override.topographic_class and value is not None
                 else (
                     f"Calculated Mt {value:.3f}"
@@ -527,7 +553,7 @@ def mt_assessments(
                 )
             ),
             confidence=confidence,
-            calculated_value=value,
+            calculated_value=calculated_value,
             final_value=value,
             final_label=final_label,
             warnings=warnings,
@@ -536,7 +562,7 @@ def mt_assessments(
             detail_label="Show details",
             formula_basis=(
                 "Clause 4.4 calculation blocked because the DEM profile does not resolve Lu."
-                if unresolved_geometry and not (class_override and class_override.topographic_class)
+                if unresolved_geometry and not (class_override and class_override.mt is not None)
                 else calculation.equation
             ),
             calculation_inputs=[
@@ -690,6 +716,21 @@ def mark_governing_vsitb(rows: list[SiteWindSpeedRow]) -> list[SiteWindSpeedRow]
     ]
 
 
+def apply_vsitb_assessments_to_rows(
+    rows: list[SiteWindSpeedRow],
+    assessments: list[WindVariableAssessment],
+) -> list[SiteWindSpeedRow]:
+    """Keep summary rows consistent with any reviewed directional Vsit,b overrides."""
+
+    by_direction = {assessment.direction: assessment for assessment in assessments}
+    return [
+        row.model_copy(update={"final_vsitb": by_direction[row.direction].final_value})
+        if row.direction in by_direction
+        else row
+        for row in rows
+    ]
+
+
 def variable_for(
     variables: list[WindVariableAssessment],
     variable: WindWorkflowVariable,
@@ -703,29 +744,6 @@ def variable_for(
 
 def _confidence(value: str) -> str:
     return value if value in {"high", "medium", "low"} else "low"
-
-
-def ms_from_shielding_class(shielding_class: str) -> float:
-    """Return a preliminary Ms default for a reviewed shielding class."""
-
-    return {
-        "FS": 0.85,
-        "PS": 0.95,
-        "NS": 1.0,
-    }.get(shielding_class, 1.0)
-
-
-def mt_from_topographic_class(topographic_class: str) -> float:
-    """Return a preliminary Mt default for a reviewed topographic class."""
-
-    return {
-        "T0": 1.0,
-        "T1": 1.08,
-        "T2": 1.16,
-        "T3": 1.24,
-        "T4": 1.32,
-        "T5": 1.40,
-    }.get(topographic_class, 1.0)
 
 
 def _product(values: list[float | None]) -> float:
