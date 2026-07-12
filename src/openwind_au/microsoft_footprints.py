@@ -13,7 +13,7 @@ import uuid
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import requests
@@ -313,18 +313,27 @@ def safe_indexed_tile_target(cache_root: Path, relative_file: Any) -> Path:
     if not isinstance(relative_file, str) or not relative_file.strip():
         raise ValueError("Microsoft footprint index tile file must be a relative path")
     relative = Path(relative_file)
-    if relative.is_absolute():
+    if relative.is_absolute() or PureWindowsPath(relative_file).is_absolute():
         raise ValueError("Microsoft footprint index tile file must be relative to the cache")
     root = cache_root.resolve()
     target = (root / relative).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("Microsoft footprint index tile file escapes the cache directory") from exc
+    root_for_comparison = normalized_path_for_comparison(root)
+    target_for_comparison = normalized_path_for_comparison(target)
+    if os.path.commonpath([root_for_comparison, target_for_comparison]) != root_for_comparison:
+        raise ValueError("Microsoft footprint index tile file escapes the cache directory")
     if target.suffix.lower() not in MICROSOFT_TILE_SUFFIXES:
         allowed = ", ".join(sorted(MICROSOFT_TILE_SUFFIXES))
         raise ValueError(f"Microsoft footprint tile must use one of: {allowed}")
     return target
+
+
+def normalized_path_for_comparison(path: Path) -> str:
+    """Normalize platform-specific absolute path forms for containment checks."""
+
+    normalized = os.path.normcase(os.path.normpath(os.fspath(path)))
+    if normalized.startswith("\\\\?\\"):
+        normalized = normalized[4:]
+    return normalized
 
 
 def download_tile_response(

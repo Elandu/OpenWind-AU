@@ -417,7 +417,12 @@ def test_concurrent_microsoft_queries_download_an_indexed_tile_once(
 
 @pytest.mark.parametrize(
     "unsafe_file",
-    ["../../outside.geojsonl", "tiles/../../../outside.geojson", "C:/outside.geojson"],
+    [
+        "../../outside.geojsonl",
+        "tiles/../../../outside.geojson",
+        "C:/outside.geojson",
+        r"\\server\share\outside.geojson",
+    ],
 )
 def test_microsoft_index_cannot_write_outside_cache(
     tmp_path,
