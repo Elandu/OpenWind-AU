@@ -658,7 +658,6 @@ class WindRegionAssessment(BaseModel):
     longitude: float
     wind_region: WindRegionLabel
     region_subclassification: str | None = None
-    dataset_path: str | None = None
     dataset_name: str | None = None
     polygon_count: int | None = None
     available_region_names: list[str] = Field(default_factory=list)
@@ -666,7 +665,11 @@ class WindRegionAssessment(BaseModel):
     confidence: Literal["high", "medium", "low"]
     distance_to_boundary_m: float | None = None
     near_boundary: bool = False
-    region_polygon: dict[str, Any] | None = None
+    region_polygon: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description="Internal GIS geometry used by server-rendered map endpoints.",
+    )
     warnings: list[str] = Field(default_factory=list)
 
 

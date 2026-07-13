@@ -108,7 +108,21 @@ def test_health_reports_missing_production_inputs(monkeypatch) -> None:
     assert "dataset_path" not in response.text
 
 
-def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
+def test_health_distinguishes_missing_and_invalid_result_signing_keys(monkeypatch) -> None:
+    monkeypatch.delenv("OPENWIND_RESULT_SIGNING_KEY", raising=False)
+    missing = api_module.result_signing_readiness()
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "too-short")
+    invalid = api_module.result_signing_readiness()
+
+    assert missing["ready"] is False
+    assert missing["configured"] is False
+    assert "ephemeral development key" in missing["detail"]
+    assert invalid["ready"] is False
+    assert invalid["configured"] is True
+    assert "fewer than 32" in invalid["detail"]
+
+
+def test_health_handles_malformed_lookup_configuration(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         api_module,
         "dataset_metadata",
@@ -125,7 +139,8 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "load_ms_table", lambda: {"values": []})
     client = TestClient(api_module.create_app())
 
-    response = client.get("/health")
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.get("/health")
 
     assert response.status_code == 503
     body = response.json()
@@ -134,6 +149,8 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
     assert body["checks"]["terrain_height_multiplier_table"]["ready"] is False
     assert body["checks"]["shielding_multiplier_table"]["ready"] is False
     assert "inspect the server logs" in response.text
+    assert "Direction multiplier readiness check failed" in caplog.text
+    assert "Regional wind speed readiness check failed" in caplog.text
 
 
 def test_lookup_readiness_logs_loader_failures(caplog) -> None:
@@ -231,6 +248,35 @@ def test_pdf_report_endpoint_returns_in_memory_download(monkeypatch, tmp_path) -
     assert response.headers["content-type"] == "application/pdf"
     assert response.content.startswith(b"%PDF-")
     assert not (tmp_path / "reports").exists()
+
+
+def test_pdf_report_failure_hides_internal_details_and_logs_incident(
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fail_pdf(_result):
+        raise RuntimeError(r"C:\private\project\font-cache failure")
+
+    monkeypatch.setattr(api_module, "render_pdf_report", fail_pdf)
+    client = TestClient(api_module.create_app())
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.post(
+            "/api/report/pdf",
+            json={
+                "latitude": -33.86,
+                "longitude": 151.21,
+                "building_height_m": 10,
+                "radius_m": 500,
+                "sample_interval_m": 100,
+            },
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == ("Failed to generate PDF report; inspect the server logs.")
+    assert "private" not in response.text
+    assert "font-cache failure" in caplog.text
 
 
 def test_vendored_map_assets_are_served() -> None:
@@ -386,6 +432,7 @@ def test_validation_endpoints(monkeypatch) -> None:
 
 def test_wind_region_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv(api_module.DEBUG_ENDPOINTS_ENV, "1")
     monkeypatch.setenv(
         "OPENWIND_WIND_REGION_DATASET",
         str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
@@ -411,7 +458,9 @@ def test_wind_region_endpoints(monkeypatch) -> None:
     assert assessment.json()["wind_region"] == "A2"
     assert assessment.json()["dataset_name"] == "wind_regions_sample"
     assert assessment.json()["polygon_count"] == 10
-    assert assessment.json()["region_polygon"]
+    assert "dataset_path" not in assessment.json()
+    assert "region_polygon" not in assessment.json()
+    assert "local path" not in assessment.text
     assert fmap.status_code == 200
     assert "Selected Wind Region A2" in fmap.text
     assert validation.status_code == 200
@@ -424,6 +473,56 @@ def test_wind_region_endpoints(monkeypatch) -> None:
     assert metadata.json()["is_test_fixture"] is True
     assert debug.status_code == 200
     assert debug.json()["selected_polygon"]["region_name"] == "A3"
+
+
+def test_wind_region_debug_endpoints_are_hidden_by_default(monkeypatch) -> None:
+    monkeypatch.delenv(api_module.DEBUG_ENDPOINTS_ENV, raising=False)
+    client = TestClient(api_module.create_app())
+
+    responses = [
+        client.get("/api/debug/wind-region/dataset"),
+        client.get(
+            "/api/debug/wind-region",
+            params={"latitude": -33.86, "longitude": 151.21},
+        ),
+        client.post(
+            "/api/debug/wind-region",
+            json={
+                "latitude": -33.86,
+                "longitude": 151.21,
+                "building_height_m": 10,
+                "radius_m": 500,
+            },
+        ),
+    ]
+
+    assert all(response.status_code == 404 for response in responses)
+    paths = client.get("/openapi.json").json()["paths"]
+    assert not any(path.startswith("/api/debug/") for path in paths)
+
+
+def test_wind_region_configuration_failure_hides_local_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    missing_path = tmp_path / "private-dataset" / "missing-regions.gpkg"
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(missing_path))
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-region",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Configured wind-region dataset does not exist."
+    assert "private-dataset" not in response.text
 
 
 def test_wind_workflow_stream_endpoint(monkeypatch) -> None:

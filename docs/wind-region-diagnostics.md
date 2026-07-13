@@ -37,7 +37,13 @@ Bourke is classified as A0 / Interior by the production Geoscience Australia dat
 
 ## Debug Endpoints
 
-Use these endpoints to inspect the active dataset and point-selection rule:
+Debug routes are hidden by default. Enable them only for a trusted local troubleshooting session:
+
+```powershell
+$env:OPENWIND_ENABLE_DEBUG_ENDPOINTS="1"
+```
+
+Then use these endpoints to inspect the active dataset and point-selection rule:
 
 ```text
 GET /api/debug/wind-region/dataset
@@ -46,4 +52,5 @@ POST /api/debug/wind-region
 ```
 
 The debug response includes dataset metadata, matched polygons, polygon areas, neighbouring
-polygons, selected polygon, and the selection rule.
+polygons, selected polygon, and the selection rule. Never expose these routes on a public
+deployment; normal assessment responses deliberately omit local paths and raw region geometry.

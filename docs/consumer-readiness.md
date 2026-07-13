@@ -22,6 +22,8 @@ validation before non-expert users should rely on the output.
 - Completed-result report routes verify a server-issued HMAC token and deployment readiness
   requires a durable shared signing key, so a modified browser/API payload cannot be rendered as
   an authentic completed result.
+- Public assessment JSON omits local wind-region dataset paths and raw region geometry; diagnostic
+  routes are hidden unless explicitly enabled for a trusted local session.
 - Reference calculation 7989 can be reproduced through `/api/reference-validation/7989`.
 - Applying reviewed class overrides for reference calculation 7989 matches all directional
   `Mz,cat`, `Ms`, and `Mt` comparison points, which confirms the workflow can carry reviewed

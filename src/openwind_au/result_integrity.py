@@ -30,18 +30,21 @@ def result_signing_key_is_configured() -> bool:
 def result_signing_readiness() -> dict[str, object]:
     """Return consumer-safe readiness details for completed-result sealing."""
 
-    configured = result_signing_key_is_configured()
+    configured = os.getenv(RESULT_SIGNING_KEY_ENV) is not None
+    ready = result_signing_key_is_configured()
+    if ready:
+        detail = "A durable result-signing key is configured."
+    elif configured:
+        detail = f"{RESULT_SIGNING_KEY_ENV} is configured but contains fewer than 32 UTF-8 bytes."
+    else:
+        detail = (
+            f"{RESULT_SIGNING_KEY_ENV} must contain at least 32 UTF-8 bytes for durable "
+            "completed-result verification. An ephemeral development key is active."
+        )
     return {
-        "ready": configured,
+        "ready": ready,
         "configured": configured,
-        "detail": (
-            "A durable result-signing key is configured."
-            if configured
-            else (
-                f"{RESULT_SIGNING_KEY_ENV} must contain at least 32 UTF-8 bytes for "
-                "durable completed-result verification. An ephemeral development key is active."
-            )
-        ),
+        "detail": detail,
     }
 
 

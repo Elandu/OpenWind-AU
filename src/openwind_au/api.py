@@ -111,6 +111,24 @@ MAX_OBSTRUCTION_IMPORT_BYTES = 1_000_000
 DEBUG_ENDPOINTS_ENV = "OPENWIND_ENABLE_DEBUG_ENDPOINTS"
 
 
+def debug_endpoints_enabled() -> bool:
+    """Return whether trusted local diagnostic routes are enabled."""
+
+    return os.environ.get(DEBUG_ENDPOINTS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def require_debug_endpoints_enabled() -> None:
+    """Hide diagnostic routes unless the deployment explicitly enables them."""
+
+    if not debug_endpoints_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 async def _read_obstruction_import(
     request: Request,
     *,
@@ -322,7 +340,11 @@ def create_app() -> FastAPI:
         try:
             content = render_wind_workflow_pdf_report(result)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {exc}") from exc
+            LOGGER.exception("Failed to generate site-wind workflow PDF")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate PDF report; inspect the server logs.",
+            ) from exc
         return Response(
             content=content,
             media_type="application/pdf",
@@ -352,36 +374,38 @@ def create_app() -> FastAPI:
     def wind_region_assessment(request: SiteAnalysisRequest) -> WindRegionAssessment:
         try:
             site_result = analyse(request)
+            return assess_wind_region(site_result.site)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return assess_wind_region(site_result.site)
 
     @app.post("/api/wind-region/map", response_class=HTMLResponse)
     def wind_region_map(request: SiteAnalysisRequest) -> str:
         try:
             site_result = analyse(request)
+            assessment = assess_wind_region(site_result.site)
+            return wind_region_map_html(site_result.site, assessment)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        assessment = assess_wind_region(site_result.site)
-        return wind_region_map_html(site_result.site, assessment)
 
-    @app.get("/api/debug/wind-region/dataset")
+    @app.get("/api/debug/wind-region/dataset", include_in_schema=False)
     def wind_region_dataset_debug() -> dict:
+        require_debug_endpoints_enabled()
         try:
             return dataset_metadata()
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/api/debug/wind-region")
+    @app.get("/api/debug/wind-region", include_in_schema=False)
     def wind_region_debug_get(
         address: str | None = Query(default=None),
         latitude: float | None = Query(default=None),
         longitude: float | None = Query(default=None),
     ) -> dict:
+        require_debug_endpoints_enabled()
         try:
             site = _wind_region_debug_site(address, latitude, longitude)
             return wind_region_debug(site)
@@ -390,8 +414,9 @@ def create_app() -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    @app.post("/api/debug/wind-region")
+    @app.post("/api/debug/wind-region", include_in_schema=False)
     def wind_region_debug_post(request: SiteAnalysisRequest) -> dict:
+        require_debug_endpoints_enabled()
         try:
             site_result = analyse(request)
             return wind_region_debug(site_result.site)
@@ -417,7 +442,11 @@ def create_app() -> FastAPI:
         try:
             content = render_pdf_report(result)
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {exc}") from exc
+            LOGGER.exception("Failed to generate site-analysis PDF")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate PDF report; inspect the server logs.",
+            ) from exc
         return Response(
             content=content,
             media_type="application/pdf",
@@ -461,13 +490,7 @@ def create_app() -> FastAPI:
         radius_m: int = Query(default=500, ge=50, le=4000),
         building_height_m: float | None = Query(default=None, gt=0),
     ) -> dict:
-        if os.environ.get(DEBUG_ENDPOINTS_ENV, "").strip().lower() not in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }:
-            raise HTTPException(status_code=404, detail="Not found")
+        require_debug_endpoints_enabled()
         try:
             request = ObstructionInventoryRequest(
                 address=address,
@@ -872,6 +895,7 @@ def _readiness_report() -> dict[str, Any]:
             ),
         }
     except Exception:
+        LOGGER.exception("Wind-region dataset readiness check failed")
         checks["wind_region_dataset"] = {
             "ready": False,
             "message": "Wind-region dataset is not usable; inspect the server logs.",
@@ -921,6 +945,7 @@ def _readiness_report() -> dict[str, Any]:
             ),
         }
     except Exception:
+        LOGGER.exception("Direction multiplier readiness check failed")
         checks["direction_multiplier_table"] = {
             "ready": False,
             "message": "Direction multiplier table is not usable; inspect the server logs.",
@@ -947,6 +972,7 @@ def _readiness_report() -> dict[str, Any]:
             ),
         }
     except Exception:
+        LOGGER.exception("Regional wind speed readiness check failed")
         checks["regional_wind_speed_table"] = {
             "ready": False,
             "message": "Regional wind speed table is not usable; inspect the server logs.",
@@ -979,6 +1005,7 @@ def _readiness_report() -> dict[str, Any]:
             ),
         }
     except Exception:
+        LOGGER.exception("DEM provider readiness check failed")
         checks["dem_provider"] = {
             "ready": False,
             "message": "DEM provider configuration is not usable; inspect the server logs.",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -310,7 +311,8 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     schemas = test_client.get("/openapi.json").json()["components"]["schemas"]
 
     request_properties = schemas["WindWorkflowRequest"]["properties"]
-    result_properties = schemas["WindWorkflowResult"]["properties"]
+    result_properties = schemas["WindWorkflowResult-Output"]["properties"]
+    wind_region_properties = schemas["WindRegionAssessment-Output"]["properties"]
 
     assert request_properties["assessment_status"]["enum"] == ["draft", "reviewed"]
     assert "reviewed_by" in request_properties
@@ -318,6 +320,8 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     assert "reviewed_by" not in result_properties
     assert "engineer_notes" not in result_properties
     assert "overrides_applied" not in result_properties
+    assert "dataset_path" not in wind_region_properties
+    assert "region_polygon" not in wind_region_properties
 
 
 def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> None:
@@ -521,6 +525,30 @@ def test_wind_workflow_pdf_escapes_untrusted_project_text(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.content.startswith(b"%PDF-")
     assert len(response.content) > 2_000
+
+
+def test_wind_workflow_pdf_failure_hides_internal_details_and_logs_incident(
+    monkeypatch,
+    caplog,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow_response.status_code == 200
+
+    def fail_pdf(_result):
+        raise RuntimeError(r"C:\private\project\report-assets failure")
+
+    monkeypatch.setattr(api_module, "render_wind_workflow_pdf_report", fail_pdf)
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = test_client.post(
+            "/api/wind-workflow/result/report/pdf",
+            json=workflow_response.json(),
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == ("Failed to generate PDF report; inspect the server logs.")
+    assert "private" not in response.text
+    assert "report-assets failure" in caplog.text
 
 
 def test_completed_workflow_pdf_endpoint_does_not_rerun_analysis(monkeypatch) -> None:
@@ -879,6 +907,8 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
     body = response.json()
     assert body["governing_direction"] is not None
     assert body["governing_vsitb"] is not None
+    assert "dataset_path" not in body["wind_region_assessment"]
+    assert "region_polygon" not in body["wind_region_assessment"]
     north = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
     assert north["status"] == "calculated"
     assert north["final_vsitb"] is not None

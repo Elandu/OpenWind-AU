@@ -25,6 +25,11 @@ All notable project milestones are documented here.
   report routes, preventing modified workflow payloads from being rendered as authentic results.
 - Removed the unused legacy workflow report renderer and documented the breaking completed-result
   payload transition from `0.7.x`; clients must rerun workflows before using `0.8.0` report routes.
+- Hid all wind-region and obstruction diagnostic routes by default, removed local GIS paths and
+  full region polygons from normal JSON responses, and sanitised PDF failures while retaining
+  detailed server-side incident logs.
+- Added CI construction, required-file inspection, isolated installation smoke tests, and retained
+  distribution artifacts for the consumer wheel and source package.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 

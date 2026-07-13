@@ -24,11 +24,13 @@ provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_read
 consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
 assessment traffic.
 
-Raw obstruction-provider diagnostics are intentionally absent from OpenAPI and disabled by
-default. For a trusted local troubleshooting session only, set
-`OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable
-`GET /api/obstructions/debug`. Do not expose that route on a public deployment because it includes
-provider queries, cache diagnostics, and pipeline details.
+Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
+disabled by default. For a trusted local troubleshooting session only, set
+`OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable `/api/debug/*` and
+`GET /api/obstructions/debug`. Do not expose those routes on a public deployment because they can
+include local dataset paths, polygon attributes, provider queries, cache diagnostics, and pipeline
+details. Normal assessment responses omit the local wind-region dataset path and full GIS polygon;
+use the dedicated map endpoint for rendered geometry.
 
 ## Analyse A Site
 

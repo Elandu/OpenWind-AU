@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from functools import lru_cache
@@ -12,6 +13,8 @@ import geopandas as gpd
 from shapely.geometry import Point, mapping
 
 from openwind_au.models import SiteLocation, WindRegionAssessment, WindRegionLabel
+
+LOGGER = logging.getLogger(__name__)
 
 GA_WIND_REGION_METADATA_URL = (
     "https://ecat.ga.gov.au/geonetwork/srv/api/records/74dfa021-95cd-4090-9e25-a7a8efde5454"
@@ -63,7 +66,7 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
     dataset_path = require_dataset_path()
     gdf = load_wind_region_geodataframe(dataset_path)
     if gdf.empty:
-        raise ValueError(f"Wind-region GIS dataset contains no features: {dataset_path}")
+        raise ValueError("Configured wind-region GIS dataset contains no features.")
 
     point = Point(site.longitude, site.latitude)
     matches = gdf[gdf.geometry.covers(point)]
@@ -120,11 +123,10 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
         longitude=site.longitude,
         wind_region=region,
         region_subclassification=None,
-        dataset_path=metadata["dataset_path"],
         dataset_name=metadata["dataset_name"],
         polygon_count=metadata["polygon_count"],
         available_region_names=metadata["available_region_names"],
-        source=f"{GA_WIND_REGION_SOURCE}; local path: {dataset_path}",
+        source=GA_WIND_REGION_SOURCE,
         confidence=confidence,
         distance_to_boundary_m=round(distance_to_boundary_m, 1),
         near_boundary=near_boundary,
@@ -140,7 +142,7 @@ def configured_dataset_path() -> Path | None:
     if configured:
         path = Path(configured)
         if not path.exists():
-            raise ValueError(f"Configured wind-region dataset does not exist: {path}")
+            raise ValueError("Configured wind-region dataset does not exist.")
         return path
     for candidate in PRODUCTION_DATASET_CANDIDATES:
         path = Path.cwd() / candidate
@@ -160,7 +162,7 @@ def require_dataset_path() -> Path:
             "1170.2 Wind Regions for Australia dataset."
         )
     if not path.exists():
-        raise ValueError(f"Configured wind-region dataset does not exist: {path}")
+        raise ValueError("Configured wind-region dataset does not exist.")
     return path
 
 
@@ -295,7 +297,10 @@ def _load_wind_region_geodataframe(
     try:
         gdf = gpd.read_file(path, layer=layer) if layer else gpd.read_file(path)
     except Exception as exc:
-        raise ValueError(f"Failed to read wind-region GIS dataset {path}: {exc}") from exc
+        LOGGER.exception("Failed to read configured wind-region GIS dataset")
+        raise ValueError(
+            "Failed to read configured wind-region GIS dataset; inspect the server logs."
+        ) from exc
     gdf = gdf.set_crs("EPSG:4326") if gdf.crs is None else gdf.to_crs("EPSG:4326")
     gdf = gdf[gdf.geometry.notna()].copy()
     return gdf
