@@ -9,12 +9,15 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from openwind_au.mzcat import indicative_mzcat
+from openwind_au.mzcat import indicative_mzcat, mzcat_lookup_warnings
 from openwind_au.standard_calculations import (
     DIRECTIONS,
     direction_multiplier_values,
     ms_from_shielding_parameter,
     regional_wind_speed,
+    shielding_lookup_warnings,
+    shielding_reduction_height_limit_m,
+    site_wind_speed,
 )
 from openwind_au.topographic_multiplier import (
     calculate_topographic_multiplier as calculate_mt,
@@ -106,7 +109,7 @@ def calculate_terrain_height_multiplier(
 ) -> dict[str, Any]:
     """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
 
-    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
+    height_m = _finite_value("Height", height_m, minimum=0, maximum=200, minimum_inclusive=False)
     mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
     return _result(
         clause="Clauses 4.2.2 and 4.2.3; Table 4.1",
@@ -118,7 +121,8 @@ def calculate_terrain_height_multiplier(
         outputs={"mzcat": round(mzcat, 6)},
         warnings=[
             "The terrain category and any mixed-fetch weighted averaging must be "
-            "reviewed separately."
+            "reviewed separately.",
+            *mzcat_lookup_warnings(),
         ],
     )
 
@@ -140,13 +144,14 @@ def calculate_shielding_multiplier(
         "Building height",
         building_height_m,
         minimum=0,
-        maximum=500,
+        maximum=200,
         minimum_inclusive=False,
     )
-    warnings: list[str] = []
-    if building_height_m > 25.0:
+    warnings = shielding_lookup_warnings()
+    height_limit_m = shielding_reduction_height_limit_m()
+    if building_height_m > height_limit_m:
         ms = 1.0
-        warnings.append("Clause 4.3.1 requires Ms = 1.0 when h > 25 m.")
+        warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     else:
         ms = ms_from_shielding_parameter(shielding_parameter)
     return _result(
@@ -167,6 +172,7 @@ def calculate_topographic_wind_multiplier(
     lu_m: float,
     x_m: float,
     z_m: float,
+    average_roof_height_m: float,
     wind_region: str,
     site_elevation_m: float,
     site_is_downwind: bool = True,
@@ -179,10 +185,16 @@ def calculate_topographic_wind_multiplier(
         lu_m=lu_m,
         x_m=x_m,
         z_m=z_m,
+        average_roof_height_m=average_roof_height_m,
         wind_region=wind_region,
         site_elevation_m=site_elevation_m,
         site_is_downwind=site_is_downwind,
     )
+    if not calculation.geometry_resolved:
+        raise ValueError(
+            "Topographic Lu is required for a qualifying hill, ridge, or escarpment; "
+            "Mt and Vsit,b are blocked until geometry is resolved."
+        )
     return _result(
         clause="Clause 4.4",
         inputs={
@@ -191,6 +203,7 @@ def calculate_topographic_wind_multiplier(
             "lu_m": lu_m,
             "x_m": x_m,
             "z_m": z_m,
+            "average_roof_height_m": average_roof_height_m,
             "wind_region": wind_region,
             "site_elevation_m": site_elevation_m,
             "site_is_downwind": site_is_downwind,
@@ -201,6 +214,8 @@ def calculate_topographic_wind_multiplier(
             "mlee": round(calculation.mlee, 6),
             "elevation_factor": round(calculation.elevation_factor, 6),
             "slope_parameter": round(calculation.slope_parameter, 6),
+            "minimum_feature_height_m": calculation.minimum_feature_height_m,
+            "geometry_resolved": calculation.geometry_resolved,
             "l1_m": calculation.l1_m,
             "l2_m": calculation.l2_m,
             "equation": calculation.equation,
@@ -238,7 +253,13 @@ def calculate_site_wind_speed(
         "ms": _finite_value("Ms", ms, minimum=0, maximum=10, minimum_inclusive=False),
         "mt": _finite_value("Mt", mt, minimum=0, maximum=10, minimum_inclusive=False),
     }
-    vsitb = vr_mps * md * mzcat * ms * mt
+    vsitb = site_wind_speed(
+        values["vr_mps"],
+        values["md"],
+        values["mzcat"],
+        values["ms"],
+        values["mt"],
+    )
     return _result(
         clause="Clause 2.3",
         inputs=values,
@@ -267,14 +288,22 @@ def calculate_all_wind_variables(
     direction = direction.upper()
     if direction not in DIRECTIONS:
         raise ValueError(f"Direction must be one of: {', '.join(DIRECTIONS)}")
-    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
+    height_m = _finite_value(
+        "Reference height",
+        height_m,
+        minimum=0,
+        maximum=200,
+        minimum_inclusive=False,
+    )
     building_height_m = _finite_value(
         "Building height",
         building_height_m,
         minimum=0,
-        maximum=500,
+        maximum=200,
         minimum_inclusive=False,
     )
+    if height_m > building_height_m:
+        raise ValueError("Reference height must not exceed the overall building height.")
     shielding_parameter = _finite_value(
         "Shielding parameter s",
         shielding_parameter,
@@ -294,21 +323,36 @@ def calculate_all_wind_variables(
     vr = regional_wind_speed(wind_region, ari_years)
     md = direction_multiplier_values(wind_region)[direction]
     mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
-    ms = 1.0 if building_height_m > 25.0 else ms_from_shielding_parameter(shielding_parameter)
+    height_limit_m = shielding_reduction_height_limit_m()
+    ms = (
+        1.0
+        if building_height_m > height_limit_m
+        else ms_from_shielding_parameter(shielding_parameter)
+    )
     mt_calculation = calculate_mt(
         feature_type=feature_type,
         h_m=h_m,
         lu_m=lu_m,
         x_m=x_m,
         z_m=height_m,
+        average_roof_height_m=building_height_m,
         wind_region=wind_region,
         site_elevation_m=site_elevation_m,
         site_is_downwind=site_is_downwind,
     )
-    vsitb = vr * md * mzcat * ms * mt_calculation.mt
-    warnings = list(mt_calculation.warnings)
-    if building_height_m > 25.0:
-        warnings.append("Clause 4.3.1 requires Ms = 1.0 when h > 25 m.")
+    if not mt_calculation.geometry_resolved:
+        raise ValueError(
+            "Topographic Lu is required for a qualifying hill, ridge, or escarpment; "
+            "Mt and Vsit,b are blocked until geometry is resolved."
+        )
+    vsitb = site_wind_speed(vr, md, mzcat, ms, mt_calculation.mt)
+    warnings = [
+        *mzcat_lookup_warnings(),
+        *shielding_lookup_warnings(),
+        *mt_calculation.warnings,
+    ]
+    if building_height_m > height_limit_m:
+        warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     warnings.append(
         "Terrain, shielding, topographic geometry, wind region, and jurisdictional variations "
         "must be independently reviewed."

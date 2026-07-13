@@ -7,11 +7,21 @@ validation before non-expert users should rely on the output.
 
 ## Current Position
 
-- `VR` has packaged AS/NZS 1170.2:2021 lookup data with review metadata.
-- The packaged `Md` data has reviewed rows for the Australian 2021 production regions `A0-A5`,
-  `B1`, `B2`, `C`, and `D`. Readiness checks the labels actually exposed by the configured GIS
-  dataset, so a custom generic or unknown region remains blocked unless it has a reviewed row.
+- `VR` has packaged AS/NZS 1170.2:2021 lookup data and source metadata; named independent
+  reviewer/date sign-off remains pending.
+- The packaged `Md` data has rows for the Australian 2021 production regions `A0-A5`, `B1`,
+  `B2`, `C`, and `D`, but named independent reviewer/date sign-off remains pending. Readiness
+  checks both that sign-off and the labels actually exposed by the configured GIS dataset, so a
+  custom generic or unknown region remains blocked unless it has an approved row.
+- `Mz,cat` Table 4.1 and `Ms` Table 4.2 values now have structured packaged assets, source/table
+  metadata, canonical value digests, deployment overrides, deterministic snapshots, and readiness
+  checks. Independent named reviewer/date sign-off is still required before a certified release.
 - `Mz,cat`, `Ms`, and `Mt` are still review workflows, not certified design outputs.
+- Workflow reports are always marked preliminary, reject a final/certified issue state, and require
+  reviewer identity plus notes before accepting `reviewed` status.
+- Completed-result report routes verify a server-issued HMAC token and deployment readiness
+  requires a durable shared signing key, so a modified browser/API payload cannot be rendered as
+  an authentic completed result.
 - Reference calculation 7989 can be reproduced through `/api/reference-validation/7989`.
 - Applying reviewed class overrides for reference calculation 7989 matches all directional
   `Mz,cat`, `Ms`, and `Mt` comparison points, which confirms the workflow can carry reviewed
@@ -42,16 +52,16 @@ third-party binary format.
 
 ## Must-Fix Before Consumer Release
 
-1. Create authoritative lookup assets for `Mz,cat`, `Ms`, `Mt`, AS 4055 classes, pressure
-   coefficients, and any height/terrain interpolation rules that are intended to be automated.
-2. Add a standard-table verification workflow that checks every derived lookup table against a
-   reviewer-approved source snapshot without exposing licensed source text.
+1. Create authoritative lookup assets for the remaining `Mt`, AS 4055 classes, pressure
+   coefficients, and any further rules intended to be automated.
+2. Add independent named reviewer/date sign-off to every derived lookup and extend the current
+   deterministic snapshots and digests to all remaining tables without exposing licensed text.
 3. Expand reference validation beyond job 7989 to cover multiple regions, terrain categories,
    shielding states, heights, and topographic classes.
 4. Promote `Mz,cat`, `Ms`, and `Mt` from indicative to reviewed/certified only after the lookup
    tables, class selection logic, and edge cases have independent engineering sign-off.
-5. Add consumer-facing guardrails: project setup wizard, explicit standard/version selection,
-   required engineer review states, report watermarking, and blocked export when critical inputs
+5. Complete consumer-facing guardrails beyond the implemented review states and report watermark:
+   add project setup, explicit standard/version selection, and blocked export when critical inputs
    are missing.
 6. Replace live-network assumptions with cache-first data services and visible data-source health
    checks.

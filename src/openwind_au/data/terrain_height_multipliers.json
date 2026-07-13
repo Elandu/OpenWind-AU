@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "source": {
+    "title": "Editable terrain/height multiplier lookup table",
+    "standard": "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2",
+    "clause": "Clauses 4.2.2 and 4.2.3",
+    "table": "Table 4.1",
+    "standard_reference": "AS/NZS 1170.2:2021 Clauses 4.2.2 and 4.2.3, Table 4.1",
+    "status": "review data; not a substitute for the Standard",
+    "review_status": "pending_independent_review",
+    "reviewed_by": null,
+    "reviewed_on": null,
+    "review_note": "Packaged values have deterministic regression snapshots; independent named reviewer and review date are pending. User must hold appropriate rights to verify the source standard."
+  },
+  "values": {
+    "categories": [1.0, 2.0, 2.5, 3.0, 4.0],
+    "heights_m": [3.0, 5.0, 10.0, 15.0, 20.0, 30.0, 40.0, 50.0, 75.0, 100.0, 150.0, 200.0],
+    "rows": [
+      [0.97, 0.91, 0.87, 0.83, 0.75],
+      [1.01, 0.91, 0.87, 0.83, 0.75],
+      [1.08, 1.00, 0.92, 0.83, 0.75],
+      [1.12, 1.05, 0.97, 0.89, 0.75],
+      [1.14, 1.08, 1.01, 0.94, 0.75],
+      [1.18, 1.12, 1.06, 1.00, 0.80],
+      [1.21, 1.16, 1.10, 1.04, 0.85],
+      [1.23, 1.18, 1.13, 1.07, 0.90],
+      [1.27, 1.22, 1.17, 1.12, 0.98],
+      [1.31, 1.24, 1.20, 1.16, 1.03],
+      [1.36, 1.27, 1.24, 1.21, 1.11],
+      [1.39, 1.29, 1.27, 1.24, 1.16]
+    ],
+    "height_bounds": {"minimum_m": 3.0, "maximum_m": 200.0},
+    "interpolation": "linear_in_height_and_category",
+    "a0_rule": {
+      "category_at_or_below_100_m": 2.0,
+      "constant_above_height_m": 100.0,
+      "constant_above_value": 1.24
+    }
+  },
+  "values_sha256": "0a89849ef40a1ad376c1dabb11614095afbdb27c7278a331aec31ab5182275b5"
+}

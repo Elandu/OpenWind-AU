@@ -83,7 +83,10 @@ These checks are designed to be stable without external DEM, geocoding, Microsof
 Overpass data. They validate covered implementation details such as:
 
 - indicative `Ms` interpolation thresholds;
+- Table 4.1 nodes, combined height/category interpolation, and Region A0 rules;
 - the prior Modos 04625 Region A2 serviceability regional wind speed reference of 37 m/s;
+- Clause 4.4 `Mt` calculations including Region A0 and high-elevation Region A4 adjustments;
+- a full-precision `VR x Md x Mz,cat x Ms x Mt` product that rounds only the reported `Vsit,b`;
 - shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
 - topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
 - threshold behaviour where sub-5 m relief is screened out.

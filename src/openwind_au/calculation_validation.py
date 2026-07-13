@@ -17,11 +17,13 @@ from openwind_au.models import (
     TerrainProfile,
     WindRegionAssessment,
 )
+from openwind_au.mzcat import indicative_mzcat
 from openwind_au.shielding import (
     footprint_breadth_normal_to_wind,
-    ms_from_shielding_parameter,
     run_shielding_sector_analysis,
 )
+from openwind_au.standard_calculations import ms_from_shielding_parameter, site_wind_speed
+from openwind_au.topographic_multiplier import calculate_topographic_multiplier
 from openwind_au.topography import analyse_profile_topography
 from openwind_au.wind_inputs import regional_wind_speed_assessment
 
@@ -74,7 +76,10 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
 
     results = [
         _wind_region_a2_serviceability_reference_case(),
+        _terrain_height_multiplier_reference_case(),
         _shielding_ms_interpolation_case(),
+        _topographic_multiplier_reference_case(),
+        _site_wind_speed_precision_case(),
         _shielding_sector_reference_case(),
         _shielding_height_rejection_case(),
         _topography_flat_threshold_case(),
@@ -152,6 +157,84 @@ def _shielding_ms_interpolation_case() -> CalculationValidationCaseResult:
     )
 
 
+def _terrain_height_multiplier_reference_case() -> CalculationValidationCaseResult:
+    checks = [
+        _check_close("TC3 at 10 m", indicative_mzcat("TC3", 10.0), 0.83),
+        _check_close("TC1.5 at 12.5 m", indicative_mzcat("TC1.5", 12.5), 1.0625),
+        _check_close("A0 at 50 m uses TC2", indicative_mzcat("TC4", 50.0, wind_region="A0"), 1.18),
+        _check_close(
+            "A0 above 100 m is constant",
+            indicative_mzcat("TC1", 150.0, wind_region="A0"),
+            1.24,
+        ),
+    ]
+    return _case_result(
+        case_id="terrain-height-table-interpolation",
+        calculation_area="wind_inputs",
+        description="Validates Table 4.1 nodes, combined interpolation, and Region A0 rules.",
+        checks=checks,
+    )
+
+
+def _topographic_multiplier_reference_case() -> CalculationValidationCaseResult:
+    common = {
+        "feature_type": "ridge",
+        "h_m": 30.0,
+        "lu_m": 75.0,
+        "x_m": 20.0,
+        "z_m": 10.0,
+        "average_roof_height_m": 10.0,
+        "site_elevation_m": 0.0,
+    }
+    region_a2 = calculate_topographic_multiplier(**common, wind_region="A2")
+    region_a0 = calculate_topographic_multiplier(**common, wind_region="A0")
+    region_a4 = calculate_topographic_multiplier(
+        **(common | {"site_elevation_m": 600.0}),
+        wind_region="A4",
+    )
+    checks = [
+        _check_close("A2 ridge Mh", region_a2.mh, 1.1887601887601889),
+        _check_close("A2 ridge Mt", region_a2.mt, 1.1887601887601889),
+        _check_close("A0 adjusted Mt", region_a0.mt, 1.0943800943800944),
+        _check_close("A4 elevation factor", region_a4.elevation_factor, 1.09),
+        _check_close("A4 adjusted Mt", region_a4.mt, 1.2957486057486058),
+    ]
+    return _case_result(
+        case_id="topographic-multiplier-clause-4-4-reference",
+        calculation_area="topography",
+        description="Validates Clause 4.4 ridge, Region A0, and Region A4 multiplier paths.",
+        checks=checks,
+    )
+
+
+def _site_wind_speed_precision_case() -> CalculationValidationCaseResult:
+    mt = calculate_topographic_multiplier(
+        feature_type="ridge",
+        h_m=30.0,
+        lu_m=75.0,
+        x_m=20.0,
+        z_m=10.0,
+        average_roof_height_m=10.0,
+        wind_region="A2",
+        site_elevation_m=0.0,
+    ).mt
+    result = site_wind_speed(45.0, 0.85, 0.83, 0.85, mt)
+    checks = [
+        _check_close("full-precision Mt input", mt, 1.1887601887601889),
+        _check_close("full-precision Vsit,b product", result, 32.07913947876448),
+        _check_close("reported Vsit,b at 3 decimals", round(result, 3), 32.079),
+    ]
+    return _case_result(
+        case_id="site-wind-speed-full-precision-product",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates that Vsit,b uses full-precision multipliers and rounds only the "
+            "reported result."
+        ),
+        checks=checks,
+    )
+
+
 def _shielding_sector_reference_case() -> CalculationValidationCaseResult:
     records = [_obstruction_record("north-reference", 0, 100, 20, 10, 12)]
     north = next(
@@ -221,7 +304,11 @@ def _shielding_height_rejection_case() -> CalculationValidationCaseResult:
 
 
 def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 101, 104.9, 101, 100]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 101, 104.9, 101, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "no significant feature"),
         _check_close("reported H", feature.h_m, 0.0),
@@ -236,7 +323,11 @@ def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
 
 
 def _topography_ridge_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 105, 125, 105, 100]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 105, 125, 105, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "ridge"),
         _check_close("crest RL", feature.crest_rl_m, 125.0),
@@ -255,7 +346,11 @@ def _topography_ridge_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_escarpment_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 100, 130, 132, 132]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 100, 130, 132, 132]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "escarpment"),
         _check_close("H", feature.h_m, 30.0),
@@ -273,7 +368,11 @@ def _topography_escarpment_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_valley_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([120, 110, 90, 110, 120]), 100)
+    feature = analyse_profile_topography(
+        _profile([120, 110, 90, 110, 120]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "valley"),
         _check_close("base RL", feature.base_rl_m, 90.0),
@@ -290,7 +389,11 @@ def _topography_valley_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_hill_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 105, 112, 122, 135]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 105, 112, 122, 135]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "hill"),
         _check_close("crest RL", feature.crest_rl_m, 135.0),

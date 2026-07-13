@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260711-address-state-fix-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260712-review-controls-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -201,6 +201,50 @@
             </label>
             </div>
           </details>
+          <details class="form-details">
+            <summary>Review and issue status</summary>
+            <div class="workflow-review">
+              <label>
+                Assessment status
+                <select
+                  id="assessment_status"
+                  name="assessment_status"
+                  aria-controls="review-metadata-fields"
+                  aria-expanded="false"
+                >
+                  <option value="draft" selected>Draft preliminary</option>
+                  <option value="reviewed">Reviewed preliminary</option>
+                </select>
+              </label>
+              <div id="review-metadata-fields" class="workflow-review" hidden>
+                <label>
+                  Reviewed by
+                  <input
+                    id="reviewed_by"
+                    name="reviewed_by"
+                    type="text"
+                    maxlength="200"
+                    autocomplete="name"
+                    disabled
+                  />
+                </label>
+                <label>
+                  Engineer notes
+                  <textarea
+                    id="engineer_notes"
+                    name="engineer_notes"
+                    maxlength="5000"
+                    rows="4"
+                    disabled
+                  ></textarea>
+                </label>
+                <p class="note">
+                  Reviewed status records a human review of this preliminary assessment. It does
+                  not certify the result or issue final design pressures.
+                </p>
+              </div>
+            </div>
+          </details>
           <button class="assessment-submit" type="submit">Run assessment</button>
             </form>
             <p class="disclaimer">
@@ -277,7 +321,7 @@
 
       <section id="vsitb-summary" class="panel workflow-step" data-step="3">
         <h2>Directional Site Wind Speed, Vsit,b</h2>
-        <p class="note">Final directional summary: VR x Md x Mz,cat x Ms x Mt.</p>
+        <p class="note">Selected calculation summary: VR x Md x Mz,cat x Ms x Mt.</p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -355,6 +399,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260711-address-state-fix-1"></script>
+    <script src="/static/wind_workflow.js?v=20260712-review-controls-1"></script>
   </body>
 </html>

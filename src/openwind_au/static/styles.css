@@ -1158,6 +1158,10 @@ tr:last-child td {
   min-width: 220px;
 }
 
+.workflow-review[hidden] {
+  display: none;
+}
+
 .workflow-review button {
   margin-top: 0;
 }

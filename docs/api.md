@@ -18,8 +18,9 @@ GET /health
 API process can answer requests.
 
 `/health` is a deployment-readiness probe. It returns HTTP 200 with `status: "ready"` only when a
-non-test wind-region dataset, reviewed and complete `Md` and `VR` lookup data, and the configured
-DEM provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
+non-test wind-region dataset, reviewed and complete `VR`, `Md`, `Mz,cat`, and `Ms` lookup data,
+matching `Mz,cat`/`Ms` lookup digests, a durable `OPENWIND_RESULT_SIGNING_KEY`, and the configured DEM
+provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
 consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
 assessment traffic.
 
@@ -181,6 +182,16 @@ Use the two explicit override collections instead:
 
 These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
 and do not certify the automated GIS evidence or final design outcome.
+
+`assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
+both `reviewed_by` and non-empty `engineer_notes`. `final` is rejected because this service does
+not issue certified assessments. HTML and PDF reports remain marked `PRELIMINARY - NOT FOR
+CERTIFICATION` in either state.
+
+The response fields named `final_value` and `final_vsitb` are retained for API compatibility. They
+mean the selected calculated or explicitly overridden value used in the current preliminary
+workflow; they are not a certification state. Review metadata and override collections have one
+source of truth under `input` and are not repeated at the result top level.
 
 ## Validation
 

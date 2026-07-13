@@ -30,8 +30,9 @@ Use this checklist before relying on OpenWind-AU outputs.
 ## Independent Code Work
 
 - Confirm AS/NZS calculations independently.
-- Confirm the packaged `VR` and `Md` lookup tables remain tested against independently defined
-  AS/NZS 1170.2:2021 expected values.
+- Confirm the packaged `VR`, `Md`, `Mz,cat`, and `Ms` lookup tables remain tested against
+  independently defined AS/NZS 1170.2:2021 expected values and that their review metadata and
+  digests are current.
 - Confirm topographic multipliers independently.
 - Confirm terrain category and shielding multipliers independently.
 - Treat vegetation and non-building shielding as planned context only; it is not a certified `Ms`

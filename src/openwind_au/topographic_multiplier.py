@@ -5,6 +5,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from openwind_au.standard_calculations import SUPPORTED_AU_WIND_REGIONS
+
+SUPPORTED_FEATURE_TYPES = {
+    "hill",
+    "ridge",
+    "escarpment",
+    "valley",
+    "no significant feature",
+}
+
 
 @dataclass(frozen=True)
 class TopographicMultiplierCalculation:
@@ -19,6 +29,9 @@ class TopographicMultiplierCalculation:
     l2_m: float | None
     x_m: float
     z_m: float
+    average_roof_height_m: float
+    minimum_feature_height_m: float
+    geometry_resolved: bool
     equation: str
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -30,6 +43,7 @@ def calculate_topographic_multiplier(
     lu_m: float,
     x_m: float,
     z_m: float,
+    average_roof_height_m: float,
     wind_region: str,
     site_elevation_m: float,
     site_is_downwind: bool = True,
@@ -46,12 +60,19 @@ def calculate_topographic_multiplier(
         "Lu": lu_m,
         "x": x_m,
         "z": z_m,
+        "average roof height": average_roof_height_m,
         "site elevation": site_elevation_m,
     }
     if any(not math.isfinite(value) for value in dimensions.values()):
         raise ValueError("Topographic dimensions and elevations must be finite numbers.")
-    if z_m < 0:
-        raise ValueError("Reference height z must not be negative.")
+    if feature_type not in SUPPORTED_FEATURE_TYPES:
+        raise ValueError(f"Unsupported topographic feature type: {feature_type}")
+    if wind_region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if z_m < 0 or z_m > 200:
+        raise ValueError("Reference height z must be non-negative and at most 200 m.")
+    if average_roof_height_m <= 0 or average_roof_height_m > 200:
+        raise ValueError("Average roof height h must be greater than zero and at most 200 m.")
     if h_m < 0 or lu_m < 0 or x_m < 0:
         raise ValueError("Topographic dimensions H, Lu, and x must not be negative.")
 
@@ -60,18 +81,21 @@ def calculate_topographic_multiplier(
     slope_parameter = 0.0
     l1_m: float | None = None
     l2_m: float | None = None
+    minimum_feature_height_m = min(0.4 * average_roof_height_m, 5.0)
+    geometry_resolved = True
     equation = "Mh = 1.0 (no qualifying local topographic speed-up)"
 
-    qualifying_feature = feature_type in {"hill", "ridge", "escarpment"}
     if feature_type == "valley":
         warnings.append("Valley screening does not create a Clause 4.4 hill-shape increase.")
     elif feature_type == "no significant feature":
         pass
-    elif not qualifying_feature:
-        warnings.append(f"Unsupported topographic feature type {feature_type!r}; Mh set to 1.0.")
-    elif h_m < 10.0:
-        warnings.append("Feature height H is less than 10 m; Clause 4.4.2 sets Mh to 1.0.")
+    elif h_m < minimum_feature_height_m:
+        warnings.append(
+            "Feature height H is less than min(0.4h, 5 m); Clause 4.4.2 sets Mh to 1.0."
+        )
+        equation = "Mh = 1.0 because H < min(0.4h, 5 m)"
     elif lu_m <= 0:
+        geometry_resolved = False
         warnings.append("Lu is unavailable; Mh cannot exceed 1.0 without resolved geometry.")
     else:
         slope_parameter = h_m / (2.0 * lu_m)
@@ -115,6 +139,9 @@ def calculate_topographic_multiplier(
         l2_m=l2_m,
         x_m=x_m,
         z_m=z_m,
+        average_roof_height_m=average_roof_height_m,
+        minimum_feature_height_m=minimum_feature_height_m,
+        geometry_resolved=geometry_resolved,
         equation=equation,
         warnings=tuple(warnings),
     )

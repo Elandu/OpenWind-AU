@@ -47,6 +47,12 @@ from openwind_au.models import (
     SiteLocation,
 )
 from openwind_au.shielding import run_shielding_sector_analysis
+from openwind_au.standard_calculations import (
+    load_ms_table,
+    shielding_lookup_issues,
+    shielding_lookup_warnings,
+)
+from openwind_au.standard_lookup_tables import lookup_provenance_snapshot
 
 LOGGER = logging.getLogger(__name__)
 
@@ -92,6 +98,7 @@ def run_obstruction_inventory(
     dtm_provider: ElevationProvider | None = None,
     *,
     resolved_site: SiteLocation | None = None,
+    ms_lookup_data: dict[str, Any] | None = None,
 ) -> ObstructionInventoryResult:
     """Build a review inventory of nearby obstructions."""
 
@@ -268,8 +275,21 @@ def run_obstruction_inventory(
         if inventory_radius_m != request.radius_m
         else request
     )
+    ms_lookup = None
+    if request.building_height_m is not None:
+        ms_lookup = ms_lookup_data if ms_lookup_data is not None else load_ms_table()
+        lookup_issues = shielding_lookup_issues(ms_lookup, require_reviewed=False)
+        if lookup_issues:
+            raise ValueError(f"Invalid Table 4.2 lookup data: {'; '.join(lookup_issues)}")
+        warnings.extend(shielding_lookup_warnings(ms_lookup))
     shielding_sectors = (
-        run_shielding_sector_analysis(site, records, request.building_height_m)
+        run_shielding_sector_analysis(
+            site,
+            records,
+            request.building_height_m,
+            subject_base_rl_m=request.subject_base_rl_m,
+            lookup_data=ms_lookup,
+        )
         if request.building_height_m is not None
         else []
     )
@@ -298,6 +318,9 @@ def run_obstruction_inventory(
         height_source_summary=height_source_summary(records),
         data_quality=data_quality,
         shielding_sectors=shielding_sectors,
+        ms_lookup_provenance=(
+            lookup_provenance_snapshot(ms_lookup) if ms_lookup is not None else None
+        ),
         data_source_status=data_source_status,
         warnings=warnings,
     )

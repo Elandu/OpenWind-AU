@@ -18,8 +18,19 @@ from openwind_au.models import (
     WindWorkflowResult,
     WindWorkflowVariable,
 )
-from openwind_au.mzcat import indicative_mzcat
+from openwind_au.mzcat import (
+    indicative_mzcat,
+    load_mzcat_table,
+    mzcat_lookup_issues,
+    mzcat_lookup_warnings,
+    mzcat_source_reference,
+)
+from openwind_au.result_integrity import seal_workflow_result
 from openwind_au.shielding import DIRECTION_AZIMUTHS
+from openwind_au.standard_calculations import (
+    MS_METADATA_WARNING,
+    site_wind_speed,
+)
 from openwind_au.topographic_multiplier import calculate_topographic_multiplier
 from openwind_au.wind_inputs import direction_multiplier_assessment, regional_wind_speed_assessment
 from openwind_au.wind_region import assess_wind_region
@@ -36,12 +47,17 @@ def run_wind_workflow(
     wind_region: WindRegionAssessment | None = None,
     regional_speed: RegionalWindSpeedAssessment | None = None,
     direction_multipliers: DirectionMultiplierAssessment | None = None,
+    mzcat_lookup_data: dict | None = None,
 ) -> WindWorkflowResult:
     """Assemble reviewable AS/NZS 1170.2 site wind variables through Vsit,b."""
 
     overrides = override_lookup(request.workflow_overrides)
     class_overrides = class_override_lookup(request.class_multiplier_overrides)
     variables: list[WindVariableAssessment] = []
+    mzcat_lookup = mzcat_lookup_data if mzcat_lookup_data is not None else load_mzcat_table()
+    mzcat_issues = mzcat_lookup_issues(mzcat_lookup, require_reviewed=False)
+    if mzcat_issues:
+        raise ValueError(f"Invalid Table 4.1 lookup data: {'; '.join(mzcat_issues)}")
     wind_region = wind_region or assess_wind_region(site_result.site)
     regional_speed = regional_speed or regional_wind_speed_assessment(
         wind_region,
@@ -59,6 +75,7 @@ def run_wind_workflow(
             wind_region,
             overrides,
             class_overrides,
+            mzcat_lookup,
         )
     )
     variables.extend(ms_assessments(obstruction_result, overrides, class_overrides))
@@ -86,15 +103,18 @@ def run_wind_workflow(
     warnings.extend(wind_region.warnings)
     warnings.extend(regional_speed.warnings)
     warnings.extend(direction_multipliers.warnings)
-    return WindWorkflowResult(
+    warnings.extend(mzcat_lookup_warnings(mzcat_lookup))
+    if (
+        obstruction_result.ms_lookup_provenance is not None
+        and not obstruction_result.ms_lookup_provenance.independent_review_recorded
+    ):
+        warnings.append(MS_METADATA_WARNING)
+    result = WindWorkflowResult(
         input=request,
         site=site_result.site,
         wind_region_assessment=wind_region,
         regional_wind_speed_assessment=regional_speed,
         direction_multiplier_assessment=direction_multipliers,
-        assessment_status=request.assessment_status,
-        engineer_notes=request.engineer_notes,
-        overrides_applied=request.workflow_overrides,
         variables=variables,
         directional_vsitb=vsitb_rows,
         governing_direction=next(
@@ -113,6 +133,7 @@ def run_wind_workflow(
         ],
         warnings=warnings,
     )
+    return seal_workflow_result(result)
 
 
 def override_lookup(
@@ -254,7 +275,9 @@ def mzcat_assessments(
     wind_region: WindRegionAssessment,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
     class_overrides: dict[WindDirection, WindClassMultiplierOverride],
+    lookup_data: dict | None = None,
 ) -> list[WindVariableAssessment]:
+    lookup = lookup_data if lookup_data is not None else load_mzcat_table()
     assessments = []
     for item in terrain_result.mzcat_assessment:
         class_override = class_overrides.get(item.direction)
@@ -262,8 +285,9 @@ def mzcat_assessments(
         value = (
             indicative_mzcat(
                 item.recommended_terrain_category,
-                request.building_height_m,
+                request.reference_height_m,
                 wind_region=wind_region.wind_region,
+                lookup_data=lookup,
             )
             if item.recommended_terrain_category
             else None
@@ -275,13 +299,14 @@ def mzcat_assessments(
         )
         class_inputs: list[str] = []
         class_details: list[str] = []
-        source_reference = "AS/NZS 1170.2:2021 Table 4.1 and directional terrain-category inputs."
+        source_reference = mzcat_source_reference(lookup)
         confidence = item.recommendation_confidence
         if class_override and class_override.terrain_category:
             value = class_override.mzcat or indicative_mzcat(
                 class_override.terrain_category,
-                request.building_height_m,
+                request.reference_height_m,
                 wind_region=wind_region.wind_region,
+                lookup_data=lookup,
             )
             final_label = f"Reviewed TC {class_override.terrain_category}"
             confidence = "high" if class_override.mzcat else "medium"
@@ -378,10 +403,17 @@ def ms_assessments(
         value = calculated_value
         confidence = _confidence(sector.overall_confidence)
         final_label = "Calculated Ms"
-        source_reference = "Shielding sector diagnostics from obstruction inventory."
+        source_reference = (
+            obstruction_result.ms_lookup_provenance.source_reference
+            if obstruction_result.ms_lookup_provenance is not None
+            else "Shielding lookup provenance unavailable."
+        )
         class_inputs: list[str] = []
         class_details: list[str] = []
-        warnings = ["Indicative Ms is preliminary.", *sector.warnings]
+        warnings = [
+            "Indicative Ms is preliminary.",
+            *sector.warnings,
+        ]
         if class_override and class_override.shielding_class:
             source_reference = class_override.source_reference or source_reference
             class_inputs = [
@@ -482,13 +514,14 @@ def mt_assessments(
             feature.feature_type in {"hill", "ridge", "escarpment"}
             and not feature.mt_geometry_resolved
         )
-        reference_height_m = request.average_height_m or request.building_height_m
+        reference_height_m = request.reference_height_m
         calculation = calculate_topographic_multiplier(
             feature_type=feature.feature_type,
             h_m=feature.h_m,
             lu_m=feature.lu_m,
             x_m=feature.x_m,
             z_m=reference_height_m,
+            average_roof_height_m=reference_height_m,
             wind_region=wind_region.wind_region,
             site_elevation_m=site_result.site.ground_elevation_m,
         )
@@ -502,7 +535,7 @@ def mt_assessments(
             warnings.append(
                 "Mt is calculated from public DEM geometry and requires engineering review."
             )
-        calculated_value = None if unresolved_geometry else round(calculation.mt, 3)
+        calculated_value = None if unresolved_geometry else calculation.mt
         value = calculated_value
         confidence = "medium" if no_significant_feature else "low"
         final_label = None if unresolved_geometry else "Calculated Mt from terrain profile"
@@ -625,7 +658,7 @@ def vsitb_directional_rows(variables: list[WindVariableAssessment]) -> list[Site
             warnings.append(
                 "Vsit,b could not be calculated because one or more inputs are missing."
             )
-        final_vsitb = _product(values) if complete else None
+        final_vsitb = site_wind_speed(*(float(value) for value in values)) if complete else None
         rows.append(
             SiteWindSpeedRow(
                 direction=direction,
@@ -744,13 +777,6 @@ def variable_for(
 
 def _confidence(value: str) -> str:
     return value if value in {"high", "medium", "low"} else "low"
-
-
-def _product(values: list[float | None]) -> float:
-    result = 1.0
-    for value in values:
-        result *= float(value)
-    return round(result, 3)
 
 
 def _format_ids(values: list[str]) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import geopandas as gpd
 import numpy as np
@@ -531,6 +531,8 @@ def _fraction(value: float, total: float) -> float:
 def run_terrain_category_evidence(
     site_result: SiteAnalysisResult,
     obstruction_result: ObstructionInventoryResult,
+    *,
+    mzcat_lookup_data: dict[str, Any] | None = None,
 ) -> TerrainCategoryEvidenceResult:
     """Generate directional terrain category evidence without assigning a final category."""
 
@@ -560,12 +562,14 @@ def run_terrain_category_evidence(
         site=site_result.site,
         directions=directions,
         recommendation_mode=getattr(site_result.input, "mzcat_recommendation_mode", "conservative"),
+        lookup_data=mzcat_lookup_data,
     )
     return TerrainCategoryEvidenceResult(
         input=site_result.input,
         site=site_result.site,
         directions=directions,
         mzcat_assessment=mzcat_assessment.directions,
+        mzcat_lookup_provenance=mzcat_assessment.lookup_provenance,
         warnings=warnings,
     )
 

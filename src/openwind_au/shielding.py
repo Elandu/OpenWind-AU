@@ -7,7 +7,12 @@ from typing import Any
 
 from openwind_au.geo import EARTH_RADIUS_M, destination_point
 from openwind_au.models import ObstructionRecord, ShieldingSectorResult, SiteLocation
-from openwind_au.standard_calculations import ms_from_shielding_parameter
+from openwind_au.standard_calculations import (
+    load_ms_table,
+    ms_from_shielding_parameter,
+    shielding_lookup_issues,
+    shielding_reduction_height_limit_m,
+)
 
 DIRECTION_AZIMUTHS: tuple[tuple[str, float], ...] = (
     ("N", 0.0),
@@ -26,9 +31,16 @@ def run_shielding_sector_analysis(
     site: SiteLocation,
     obstructions: list[ObstructionRecord],
     subject_height_m: float,
+    *,
+    subject_base_rl_m: float | None = None,
+    lookup_data: dict[str, Any] | None = None,
 ) -> list[ShieldingSectorResult]:
     """Calculate preliminary 45-degree upwind shielding sectors."""
 
+    lookup = lookup_data if lookup_data is not None else load_ms_table()
+    issues = shielding_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
     sector_radius_m = 20.0 * subject_height_m
     return [
         shielding_sector_result(
@@ -38,6 +50,8 @@ def run_shielding_sector_analysis(
             obstructions=obstructions,
             subject_height_m=subject_height_m,
             sector_radius_m=sector_radius_m,
+            subject_base_rl_m=subject_base_rl_m,
+            lookup_data=lookup,
         )
         for direction, azimuth in DIRECTION_AZIMUTHS
     ]
@@ -50,19 +64,33 @@ def shielding_sector_result(
     obstructions: list[ObstructionRecord],
     subject_height_m: float,
     sector_radius_m: float,
+    subject_base_rl_m: float | None = None,
+    lookup_data: dict[str, Any] | None = None,
 ) -> ShieldingSectorResult:
     """Calculate shielding quantities for one wind direction."""
 
+    lookup = lookup_data if lookup_data is not None else load_ms_table()
+    issues = shielding_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
     half_width = SECTOR_WIDTH_DEG / 2
+    resolved_subject_base_rl_m = (
+        subject_base_rl_m if subject_base_rl_m is not None else site.ground_elevation_m
+    )
+    subject_top_rl_m = resolved_subject_base_rl_m + subject_height_m
+    subject_rl_source = (
+        "reviewed_base_rl" if subject_base_rl_m is not None else "site_ground_elevation"
+    )
     sector_candidates = [
         obstruction
         for obstruction in obstructions
         if _is_in_sector(obstruction, wind_direction_deg, sector_radius_m, half_width)
     ]
-    if subject_height_m > 25.0:
+    height_limit_m = shielding_reduction_height_limit_m(lookup)
+    if subject_height_m > height_limit_m:
         warning = (
             "AS/NZS 1170.2:2021 Clause 4.3.1 requires Ms = 1.0 for structures "
-            "greater than 25 m high."
+            f"greater than {height_limit_m:g} m high."
         )
         return ShieldingSectorResult(
             direction=direction,  # type: ignore[arg-type]
@@ -71,6 +99,9 @@ def shielding_sector_result(
             sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
             sector_radius_m=sector_radius_m,
             subject_height_m=subject_height_m,
+            subject_base_rl_m=resolved_subject_base_rl_m,
+            subject_top_rl_m=subject_top_rl_m,
+            subject_rl_source=subject_rl_source,
             total_obstructions_in_sector=len(sector_candidates),
             ns=0,
             indicative_ms=1.0,
@@ -83,6 +114,7 @@ def shielding_sector_result(
     rejection_reason_counts: dict[str, int] = {}
     usable_height_count = 0
     ground_gradient_unchecked: list[str] = []
+    steep_gradient_exception_ids: list[str] = []
     for obstruction in sector_candidates:
         if (
             obstruction.obstruction_source_type == "vegetation"
@@ -121,14 +153,17 @@ def shielding_sector_result(
                 abs(obstruction.ground_rl_m - site.ground_elevation_m) / obstruction.distance_m
             )
             if average_ground_gradient > 0.2:
-                _record_rejection(
-                    rejected,
-                    rejection_reason_counts,
-                    obstruction,
-                    "steep_upwind_ground_gradient",
-                    height,
-                )
-                continue
+                obstruction_top_rl_m = shielding_top_rl_m(obstruction, height)
+                if obstruction_top_rl_m is None or obstruction_top_rl_m <= subject_top_rl_m:
+                    _record_rejection(
+                        rejected,
+                        rejection_reason_counts,
+                        obstruction,
+                        "steep_upwind_ground_gradient",
+                        height,
+                    )
+                    continue
+                steep_gradient_exception_ids.append(obstruction.obstruction_id)
         included.append(obstruction)
     ns = len(included)
     unknown_height_count = rejection_reason_counts.get("height_missing", 0)
@@ -151,6 +186,9 @@ def shielding_sector_result(
             sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
             sector_radius_m=sector_radius_m,
             subject_height_m=subject_height_m,
+            subject_base_rl_m=resolved_subject_base_rl_m,
+            subject_top_rl_m=subject_top_rl_m,
+            subject_rl_source=subject_rl_source,
             total_obstructions_in_sector=len(sector_candidates),
             usable_height_count=usable_height_count,
             rejected_height_below_z_count=rejection_reason_counts.get("height_below_subject", 0),
@@ -187,7 +225,7 @@ def shielding_sector_result(
     average_bs = sum(breadths) / ns
     ls = subject_height_m * ((10.0 / ns) + 5.0)
     s = ls / math.sqrt(average_hs * average_bs) if average_hs > 0 and average_bs > 0 else None
-    indicative_ms = ms_from_shielding_parameter(s) if s is not None else 1.0
+    indicative_ms = ms_from_shielding_parameter(s, lookup) if s is not None else 1.0
 
     warnings = []
     estimated = [
@@ -241,6 +279,12 @@ def shielding_sector_result(
             "Average upwind ground gradient could not be checked for shielding buildings: "
             + ", ".join(ground_gradient_unchecked)
         )
+    if steep_gradient_exception_ids:
+        warnings.append(
+            "Steep-slope shielding candidates were retained because their overall height above "
+            "the common datum exceeds the subject building under Clause 4.3.1 and Figure 4.2; "
+            "competent engineering review is required: " + ", ".join(steep_gradient_exception_ids)
+        )
     warnings.extend(_sector_confidence_warnings(included, unknown_height_count))
     overall_confidence = _overall_shielding_confidence(included, unknown_height_count)
 
@@ -251,6 +295,9 @@ def shielding_sector_result(
         sector_end_deg=_normalise_bearing(wind_direction_deg + half_width),
         sector_radius_m=sector_radius_m,
         subject_height_m=subject_height_m,
+        subject_base_rl_m=resolved_subject_base_rl_m,
+        subject_top_rl_m=subject_top_rl_m,
+        subject_rl_source=subject_rl_source,
         total_obstructions_in_sector=len(sector_candidates),
         usable_height_count=usable_height_count,
         rejected_height_below_z_count=rejection_reason_counts.get("height_below_subject", 0),
@@ -322,6 +369,23 @@ def shielding_height_m(obstruction: ObstructionRecord) -> float | None:
         if obstruction.selected_height_m is not None
         else obstruction.height_m
     )
+
+
+def shielding_top_rl_m(
+    obstruction: ObstructionRecord,
+    shielding_height: float,
+) -> float | None:
+    """Return obstruction top RL on the best available common datum."""
+
+    if (
+        obstruction.height_source == "DSM_DTM"
+        and obstruction.surface_rl_m is not None
+        and math.isfinite(obstruction.surface_rl_m)
+    ):
+        return obstruction.surface_rl_m
+    if obstruction.ground_rl_m is not None and math.isfinite(obstruction.ground_rl_m):
+        return obstruction.ground_rl_m + shielding_height
+    return None
 
 
 def shielding_sector_polygon(

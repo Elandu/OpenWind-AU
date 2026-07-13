@@ -25,6 +25,10 @@ const orientationReadout = document.getElementById("orientation-readout");
 const mapCoordinateReadout = document.getElementById("map-coordinate-readout");
 const buildingWidthControl = document.getElementById("building_width_m");
 const buildingLengthControl = document.getElementById("building_length_m");
+const assessmentStatusControl = document.getElementById("assessment_status");
+const reviewMetadataFields = document.getElementById("review-metadata-fields");
+const reviewedByControl = document.getElementById("reviewed_by");
+const engineerNotesControl = document.getElementById("engineer_notes");
 const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
 const DESIGN_LOCATION_STORAGE_KEY = "openwindDesignBuildingLocation";
 const PROJECT_NUMBER_STORAGE_KEY = "openwindProjectNumber";
@@ -159,6 +163,11 @@ workflowForm.addEventListener("input", () => {
 });
 
 workflowForm.addEventListener("change", updateReportAvailability);
+
+assessmentStatusControl?.addEventListener("change", syncReviewControls);
+reviewedByControl?.addEventListener("input", syncReviewControls);
+engineerNotesControl?.addEventListener("input", syncReviewControls);
+syncReviewControls();
 
 renderInitialMapFrame("Run an assessment to load the project site map.");
 syncDesignBuildingOverlay();
@@ -308,6 +317,12 @@ workflowPdf?.addEventListener("click", async () => {
 });
 
 async function runWorkflow() {
+  syncReviewControls();
+  if (!workflowForm.reportValidity()) {
+    setWorkflowProgress(0, "Complete the required assessment inputs", "error");
+    workflowSummary.textContent = "Complete the required assessment inputs before running the assessment.";
+    return;
+  }
   cancelAddressResolution();
   closeAddressSuggestions();
   cancelActiveWorkflow();
@@ -453,9 +468,14 @@ function workflowPayload() {
     roof_pitch_deg: optionalNumber("roof_pitch_deg"),
     average_height_m: optionalNumber("average_height_m"),
     base_rl_m: optionalNumber("base_rl_m"),
+    assessment_status: data.get("assessment_status") || "draft",
     mzcat_recommendation_mode: "conservative",
     workflow_overrides: workflowOverrides,
   };
+  if (payload.assessment_status === "reviewed") {
+    payload.reviewed_by = String(data.get("reviewed_by") || "").trim();
+    payload.engineer_notes = String(data.get("engineer_notes") || "").trim();
+  }
   if (locationMode === "coordinates" && coordinateOverride) {
     payload.latitude = coordinateOverride.latitude;
     payload.longitude = coordinateOverride.longitude;
@@ -476,6 +496,25 @@ function workflowPayload() {
     if (payload[key] === null || Number.isNaN(payload[key])) delete payload[key];
   });
   return payload;
+}
+
+function syncReviewControls() {
+  const reviewed = assessmentStatusControl?.value === "reviewed";
+  if (assessmentStatusControl) {
+    assessmentStatusControl.setAttribute("aria-expanded", String(reviewed));
+  }
+  if (reviewMetadataFields) reviewMetadataFields.hidden = !reviewed;
+  [reviewedByControl, engineerNotesControl].forEach((control) => {
+    if (!control) return;
+    control.disabled = !reviewed;
+    control.required = reviewed;
+  });
+  reviewedByControl?.setCustomValidity(
+    reviewed && !reviewedByControl.value.trim() ? "Enter the reviewer name." : "",
+  );
+  engineerNotesControl?.setCustomValidity(
+    reviewed && !engineerNotesControl.value.trim() ? "Enter engineer review notes." : "",
+  );
 }
 
 function assessmentFingerprint() {
@@ -590,7 +629,7 @@ async function postJson(url, payload, options = {}) {
 function renderWorkflow(workflow) {
   workflowSummary.textContent = JSON.stringify({
     site: workflow.site,
-    overrides_applied: workflow.overrides_applied?.length || 0,
+    overrides_applied: workflow.input?.workflow_overrides?.length || 0,
     warnings: visibleWarnings(workflow.warnings),
     vsitb_status: workflow.directional_vsitb.map((row) => ({
       direction: row.direction,
@@ -1621,7 +1660,7 @@ function renderMdProgress(md) {
           </tbody>
         </table>
       </div>
-      <p class="note">Md values loaded from the selected region table. Final editable values are available once directional variables are calculated.</p>
+      <p class="note">Md values loaded from the selected region table. Selected values can be edited once directional variables are calculated.</p>
     </article>
   `);
 }
@@ -1886,7 +1925,7 @@ function variableRow(row) {
       <td>${escapeHtml(row.direction || "all")}</td>
       <td>${recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
-      <td>${inlineFinalValueCell(row)}</td>
+      <td>${inlineAssessmentValueCell(row)}</td>
     </tr>
   `;
 }
@@ -1957,7 +1996,7 @@ function renderRawProvenance(variables) {
   `;
 }
 
-function inlineFinalValueCell(row) {
+function inlineAssessmentValueCell(row) {
   const key = overrideKey(row.variable, row.direction);
   const existing = overrideForKey(key);
   const finalValue = existing?.override_value ?? row.override_value ?? "";
@@ -2005,7 +2044,7 @@ async function updateOverride(button) {
   const valueInput = panel.querySelector("[data-override-field='override_value']");
   const reasonInput = panel.querySelector("[data-override-field='reason']");
   const overrideValue = valueInput.value === "" ? null : Number(valueInput.value);
-  const reason = reasonInput.value.trim() || "Inline final value edited in Site Wind Assessment.";
+  const reason = reasonInput.value.trim() || "Inline assessment value edited in Site Wind Assessment.";
   if (overrideValue === null || !Number.isFinite(overrideValue) || overrideValue <= 0) {
     workflowSummary.textContent = "Override value must be a number greater than zero.";
     return;
@@ -2059,7 +2098,6 @@ function badge(status, text) {
     blocked: "badge-fail",
     draft: "badge-neutral",
     reviewed: "badge-warn",
-    final: "badge-pass",
   };
   return `<span class="badge ${classes[status] || "badge-neutral"}">${escapeHtml(text)}</span>`;
 }

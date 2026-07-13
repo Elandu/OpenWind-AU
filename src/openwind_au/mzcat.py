@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 from openwind_au.models import (
     MzCatAssessmentResult,
@@ -11,28 +12,152 @@ from openwind_au.models import (
     SiteLocation,
     TerrainCategoryDirectionEvidence,
 )
+from openwind_au.standard_calculations import SUPPORTED_AU_WIND_REGIONS
+from openwind_au.standard_lookup_tables import (
+    MZCAT_DATA_FILE,
+    MZCAT_EXPECTED_SHA256_ENV,
+    MZCAT_TABLE_ENV,
+    TRUSTED_PACKAGED_VALUES_SHA256,
+    finite_lookup_number,
+    load_lookup_data,
+    load_packaged_lookup_data,
+    lookup_metadata_warnings,
+    lookup_provenance_issues,
+    lookup_provenance_snapshot,
+    source_reference,
+    trusted_values_sha256,
+)
 
 SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = ("TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4")
-
-# AS/NZS 1170.2:2021 Table 4.1 values for fully developed terrain in all
-# Australian wind regions except A0. Intermediate heights and terrain
-# categories are linearly interpolated as required by Clause 4.2.2.
-INDICATIVE_MZCAT_REFERENCE: dict[float, dict[str, float]] = {
-    3.0: {"TC1": 0.97, "TC2": 0.91, "TC2.5": 0.87, "TC3": 0.83, "TC4": 0.75},
-    5.0: {"TC1": 1.01, "TC2": 0.91, "TC2.5": 0.87, "TC3": 0.83, "TC4": 0.75},
-    10.0: {"TC1": 1.08, "TC2": 1.00, "TC2.5": 0.92, "TC3": 0.83, "TC4": 0.75},
-    15.0: {"TC1": 1.12, "TC2": 1.05, "TC2.5": 0.97, "TC3": 0.89, "TC4": 0.75},
-    20.0: {"TC1": 1.14, "TC2": 1.08, "TC2.5": 1.01, "TC3": 0.94, "TC4": 0.75},
-    30.0: {"TC1": 1.18, "TC2": 1.12, "TC2.5": 1.06, "TC3": 1.00, "TC4": 0.80},
-    40.0: {"TC1": 1.21, "TC2": 1.16, "TC2.5": 1.10, "TC3": 1.04, "TC4": 0.85},
-    50.0: {"TC1": 1.23, "TC2": 1.18, "TC2.5": 1.13, "TC3": 1.07, "TC4": 0.90},
-    75.0: {"TC1": 1.27, "TC2": 1.22, "TC2.5": 1.17, "TC3": 1.12, "TC4": 0.98},
-    100.0: {"TC1": 1.31, "TC2": 1.24, "TC2.5": 1.20, "TC3": 1.16, "TC4": 1.03},
-    150.0: {"TC1": 1.36, "TC2": 1.27, "TC2.5": 1.24, "TC3": 1.21, "TC4": 1.11},
-    200.0: {"TC1": 1.39, "TC2": 1.29, "TC2.5": 1.27, "TC3": 1.24, "TC4": 1.16},
+TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
+TABLE_HEIGHTS_M: tuple[float, ...] = (
+    3.0,
+    5.0,
+    10.0,
+    15.0,
+    20.0,
+    30.0,
+    40.0,
+    50.0,
+    75.0,
+    100.0,
+    150.0,
+    200.0,
+)
+MZCAT_METADATA_WARNING = (
+    "Mz,cat lookup table does not have complete independent reviewer/date metadata."
+)
+MZCAT_SOURCE_CLAUSE = "Clauses 4.2.2 and 4.2.3"
+MZCAT_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clauses 4.2.2 and 4.2.3, Table 4.1"
+EXPECTED_A0_RULE = {
+    "category_at_or_below_100_m": 2.0,
+    "constant_above_height_m": 100.0,
+    "constant_above_value": 1.24,
 }
 
-TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
+
+def load_mzcat_table() -> dict[str, Any]:
+    """Load editable terrain/height-multiplier lookup data."""
+
+    return load_lookup_data(MZCAT_TABLE_ENV, MZCAT_DATA_FILE)
+
+
+def mzcat_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 4.1 structure and provenance validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=MZCAT_DATA_FILE,
+            expected_digest_env=MZCAT_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[MZCAT_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=MZCAT_SOURCE_CLAUSE,
+            expected_standard_reference=MZCAT_STANDARD_REFERENCE,
+            expected_table="Table 4.1",
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+        )
+    )
+    values = data.get("values")
+    if not isinstance(values, dict):
+        return [*issues, "values must be an object"]
+    categories = values.get("categories")
+    heights = values.get("heights_m")
+    if categories != list(TABLE_TERRAIN_CATEGORIES):
+        issues.append("categories must contain the Table 4.1 category nodes in order")
+    if heights != list(TABLE_HEIGHTS_M):
+        issues.append("heights_m must contain the Table 4.1 height nodes in order")
+    rows = values.get("rows")
+    if not isinstance(rows, list) or len(rows) != len(TABLE_HEIGHTS_M):
+        issues.append("rows must contain one row for every Table 4.1 height")
+    else:
+        for row_index, row in enumerate(rows):
+            if not isinstance(row, list) or len(row) != len(TABLE_TERRAIN_CATEGORIES):
+                issues.append(
+                    f"rows[{row_index}] must contain one value for every terrain category"
+                )
+                continue
+            if not all(finite_lookup_number(value, minimum=0, maximum=10) for value in row):
+                issues.append(f"rows[{row_index}] contains an invalid multiplier")
+    if values.get("height_bounds") != {"minimum_m": 3.0, "maximum_m": 200.0}:
+        issues.append("height_bounds must match the first and last Table 4.1 rows")
+    if values.get("interpolation") != "linear_in_height_and_category":
+        issues.append("interpolation must be linear_in_height_and_category")
+    if values.get("a0_rule") != EXPECTED_A0_RULE:
+        issues.append("a0_rule must match the normative A0 Table 4.1 rule")
+    return issues
+
+
+def terrain_height_multiplier_reference(
+    data: dict[str, Any] | None = None,
+) -> dict[float, dict[str, float]]:
+    """Return a validated height/category mapping from Table 4.1 lookup data."""
+
+    lookup = data if data is not None else load_mzcat_table()
+    issues = mzcat_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.1 lookup data: {'; '.join(issues)}")
+    values = lookup["values"]
+    categories = [float(category) for category in values["categories"]]
+    return {
+        float(height): {
+            f"TC{category:g}": float(multiplier)
+            for category, multiplier in zip(categories, row, strict=True)
+        }
+        for height, row in zip(values["heights_m"], values["rows"], strict=True)
+    }
+
+
+def mzcat_lookup_warnings(data: dict[str, Any] | None = None) -> list[str]:
+    """Return source-review warnings for the active Table 4.1 lookup."""
+
+    lookup = data if data is not None else load_mzcat_table()
+    return lookup_metadata_warnings(lookup, MZCAT_METADATA_WARNING)
+
+
+def mzcat_source_reference(data: dict[str, Any] | None = None) -> str:
+    """Return the active Table 4.1 source reference."""
+
+    lookup = data if data is not None else load_mzcat_table()
+    return source_reference(lookup)
+
+
+# Backwards-compatible snapshot of the packaged table. Calculations load the
+# active configured data so deployment overrides are not silently ignored.
+INDICATIVE_MZCAT_REFERENCE = terrain_height_multiplier_reference(
+    load_packaged_lookup_data(MZCAT_DATA_FILE)
+)
 
 
 def run_mzcat_assessment(
@@ -41,14 +166,20 @@ def run_mzcat_assessment(
     site: SiteLocation,
     directions: list[TerrainCategoryDirectionEvidence],
     recommendation_mode: str = "conservative",
+    lookup_data: dict[str, Any] | None = None,
 ) -> MzCatAssessmentResult:
     """Return indicative Mz,cat evidence for all directional evidence sectors."""
 
+    lookup = lookup_data if lookup_data is not None else load_mzcat_table()
+    issues = mzcat_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.1 lookup data: {'; '.join(issues)}")
     assessments = [
         direction_mzcat_assessment(
             direction,
-            request.building_height_m,
+            request.reference_height_m,
             recommendation_mode=recommendation_mode,
+            lookup_data=lookup,
         )
         for direction in directions
     ]
@@ -57,6 +188,7 @@ def run_mzcat_assessment(
         "Mz,cat values are indicative only.",
         "Engineer review required.",
     ]
+    warnings.extend(mzcat_lookup_warnings(lookup))
     if any(assessment.confidence == "low" for assessment in assessments):
         warnings.append("Significant uncertainty in obstruction coverage or category evidence.")
     return MzCatAssessmentResult(
@@ -64,6 +196,7 @@ def run_mzcat_assessment(
         site=site,
         directions=assessments,
         recommendation_mode=recommendation_mode,  # type: ignore[arg-type]
+        lookup_provenance=lookup_provenance_snapshot(lookup),
         warnings=warnings,
     )
 
@@ -73,12 +206,21 @@ def direction_mzcat_assessment(
     assessment_height_m: float,
     *,
     recommendation_mode: str = "conservative",
+    lookup_data: dict[str, Any] | None = None,
 ) -> MzCatDirectionAssessment:
     """Convert one terrain-category evidence sector into an indicative Mz,cat range."""
 
     lower_category, upper_category = category_bounds(evidence.suggested_category_range)
-    lower_value = indicative_mzcat(lower_category, assessment_height_m)
-    upper_value = indicative_mzcat(upper_category, assessment_height_m)
+    lower_value = indicative_mzcat(
+        lower_category,
+        assessment_height_m,
+        lookup_data=lookup_data,
+    )
+    upper_value = indicative_mzcat(
+        upper_category,
+        assessment_height_m,
+        lookup_data=lookup_data,
+    )
     confidence = mzcat_confidence(evidence, lower_category, upper_category)
     warnings = mzcat_warnings(evidence, confidence)
     recommendation = mzcat_recommendation(
@@ -98,8 +240,8 @@ def direction_mzcat_assessment(
         lower_category_bound=lower_category,  # type: ignore[arg-type]
         upper_category_bound=upper_category,  # type: ignore[arg-type]
         assessment_height_m=assessment_height_m,
-        lower_indicative_mzcat=round(min(lower_value, upper_value), 3),
-        upper_indicative_mzcat=round(max(lower_value, upper_value), 3),
+        lower_indicative_mzcat=min(lower_value, upper_value),
+        upper_indicative_mzcat=max(lower_value, upper_value),
         confidence=confidence,  # type: ignore[arg-type]
         recommended_terrain_category=recommendation["category"],
         recommended_mzcat=recommendation["mzcat"],
@@ -144,7 +286,7 @@ def mzcat_recommendation(
         )
     return {
         "category": category,
-        "mzcat": round(value, 3),
+        "mzcat": value,
         "confidence": confidence,
         "reasoning": [
             mode_reason,
@@ -196,39 +338,47 @@ def indicative_mzcat(
     assessment_height_m: float,
     *,
     wind_region: str | None = None,
+    lookup_data: dict[str, Any] | None = None,
 ) -> float:
     """Return Table 4.1 Mz,cat using linear height/category interpolation."""
 
     if not math.isfinite(assessment_height_m) or assessment_height_m <= 0:
         raise ValueError("Assessment height must be a finite number greater than zero.")
-    height = max(3.0, min(200.0, assessment_height_m))
+    if assessment_height_m > 200:
+        raise ValueError(
+            "Assessment height exceeds the 200 m scope and Table 4.1 range of AS/NZS 1170.2."
+        )
+    if wind_region is not None and wind_region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    data = lookup_data if lookup_data is not None else load_mzcat_table()
+    reference = terrain_height_multiplier_reference(data)
+    _terrain_category_number(category)
+    values = data["values"]
+    minimum_height = float(values["height_bounds"]["minimum_m"])
+    height = max(minimum_height, assessment_height_m)
     if wind_region == "A0":
-        if height > 100.0:
-            return 1.24
-        category = "TC2"
-    heights = sorted(INDICATIVE_MZCAT_REFERENCE)
+        a0_rule = values["a0_rule"]
+        if height > float(a0_rule["constant_above_height_m"]):
+            return float(a0_rule["constant_above_value"])
+        category = f"TC{float(a0_rule['category_at_or_below_100_m']):g}"
+    heights = sorted(reference)
     if height <= heights[0]:
-        return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[heights[0]], category)
+        return _mzcat_for_category(reference[heights[0]], category)
     if height >= heights[-1]:
-        return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[heights[-1]], category)
+        return _mzcat_for_category(reference[heights[-1]], category)
     for lower_height, upper_height in zip(heights, heights[1:], strict=True):
         if lower_height <= height <= upper_height:
-            lower_value = _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[lower_height], category)
-            upper_value = _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[upper_height], category)
+            lower_value = _mzcat_for_category(reference[lower_height], category)
+            upper_value = _mzcat_for_category(reference[upper_height], category)
             ratio = (height - lower_height) / (upper_height - lower_height)
             return lower_value + (upper_value - lower_value) * ratio
-    return _mzcat_for_category(INDICATIVE_MZCAT_REFERENCE[10.0], category)
+    raise RuntimeError("Validated Table 4.1 lookup did not contain the assessment height.")
 
 
 def _mzcat_for_category(row: dict[str, float], category: str) -> float:
     """Linearly interpolate a Table 4.1 row for an intermediate category."""
 
-    try:
-        category_number = float(category.removeprefix("TC"))
-    except ValueError as exc:
-        raise ValueError(f"Unsupported terrain category: {category}") from exc
-    if not TABLE_TERRAIN_CATEGORIES[0] <= category_number <= TABLE_TERRAIN_CATEGORIES[-1]:
-        raise ValueError(f"Unsupported terrain category: {category}")
+    category_number = _terrain_category_number(category)
     exact_key = f"TC{category_number:g}"
     if exact_key in row:
         return row[exact_key]
@@ -243,6 +393,16 @@ def _mzcat_for_category(row: dict[str, float], category: str) -> float:
             ratio = (category_number - lower_category) / (upper_category - lower_category)
             return lower_value + (upper_value - lower_value) * ratio
     raise ValueError(f"Unsupported terrain category: {category}")
+
+
+def _terrain_category_number(category: str) -> float:
+    try:
+        category_number = float(category.removeprefix("TC"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"Unsupported terrain category: {category}") from exc
+    if not TABLE_TERRAIN_CATEGORIES[0] <= category_number <= TABLE_TERRAIN_CATEGORIES[-1]:
+        raise ValueError(f"Unsupported terrain category: {category}")
+    return category_number
 
 
 def mzcat_confidence(

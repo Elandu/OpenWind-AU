@@ -2,6 +2,30 @@
 
 All notable project milestones are documented here.
 
+## v0.8.0 - Standards Provenance And Preliminary-Issue Guardrails
+
+- Moved Table 4.1 `Mz,cat` and Table 4.2 `Ms` values into structured, digest-protected packaged
+  lookup assets with deployment overrides, explicit pending-review status, and readiness checks.
+- Centralised `Vsit,b` multiplication across the web workflow and MCP tools, preserving full
+  multiplier and product precision for governing-direction selection while formatting reports
+  to three decimal places.
+- Corrected Clause 4.4 screening to use `H >= min(0.4h, 5 m)`, applied one reference height to
+  `Mz,cat` and `Mt`, rejected out-of-scope heights above 200 m, and blocked unresolved qualifying
+  topographic geometry instead of returning a complete site wind speed.
+- Corrected steep-slope shielding to retain the Clause 4.3.1/Figure 4.2 common-datum exception
+  when the upwind building top exceeds the subject building, with an explicit review warning.
+- Rejected unknown wind regions in direct `Mz,cat` and `Mt` calculations instead of silently
+  applying the ordinary Australian-region path.
+- Restricted workflow issue states to draft or reviewed preliminary output. Reviewed output now
+  requires a reviewer and notes; final/certified status is rejected on calculation and report
+  routes.
+- Added prominent preliminary/not-for-certification markings to HTML and PDF reports and removed
+  duplicated status, notes, and override collections from workflow result payloads.
+- Added browser reviewer/notes controls and server-issued integrity tokens for completed-result
+  report routes, preventing modified workflow payloads from being rendered as authentic results.
+- Removed the unused legacy workflow report renderer and documented the breaking completed-result
+  payload transition from `0.7.x`; clients must rerun workflows before using `0.8.0` report routes.
+
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 
 - Replaced sparse packaged-table interpolation for Australian `VR` with the Table 3.1(A)

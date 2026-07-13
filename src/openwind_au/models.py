@@ -47,7 +47,7 @@ class SiteAnalysisRequest(BaseModel):
     )
     building_height_m: float = Field(
         gt=0,
-        le=500,
+        le=200,
         description="Building height in metres.",
     )
     radius_m: int = Field(default=2000, description="Analysis radius in metres.")
@@ -67,6 +67,13 @@ class SiteAnalysisRequest(BaseModel):
         if self.radius_m not in {500, 1000, 2000, 4000}:
             raise ValueError("radius_m must be one of 500, 1000, 2000, or 4000.")
         return self
+
+    @property
+    def reference_height_m(self) -> float:
+        """Return the common AS/NZS reference height z / average roof height h."""
+
+        average_height = getattr(self, "average_height_m", None)
+        return float(average_height or self.building_height_m)
 
 
 class SiteLocation(BaseModel):
@@ -225,6 +232,19 @@ class MzCatReviewSelection(BaseModel):
         return self
 
 
+class LookupProvenance(BaseModel):
+    """Source identity for one immutable calculation lookup snapshot."""
+
+    schema_version: int
+    standard_reference: str
+    review_status: str
+    reviewed_by: str | None = None
+    reviewed_on: str | None = None
+    values_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    independent_review_recorded: bool
+    source_reference: str
+
+
 class MzCatAssessmentResult(BaseModel):
     """Indicative Mz,cat assessment result for all review directions."""
 
@@ -232,6 +252,7 @@ class MzCatAssessmentResult(BaseModel):
     site: SiteLocation
     directions: list[MzCatDirectionAssessment]
     recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
+    lookup_provenance: LookupProvenance
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Indicative Mz,cat evidence is provided for engineering review only. OpenWind-AU does "
@@ -247,6 +268,7 @@ class TerrainCategoryEvidenceResult(BaseModel):
     site: SiteLocation
     directions: list[TerrainCategoryDirectionEvidence]
     mzcat_assessment: list[MzCatDirectionAssessment] = Field(default_factory=list)
+    mzcat_lookup_provenance: LookupProvenance
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Terrain category evidence is provided for engineering review only. OpenWind-AU does "
@@ -376,8 +398,12 @@ class ObstructionInventoryRequest(BaseModel):
     building_height_m: float | None = Field(
         default=None,
         gt=0,
-        le=500,
+        le=200,
         description="Subject building height for preliminary shielding-sector analysis.",
+    )
+    subject_base_rl_m: float | None = Field(
+        default=None,
+        description="Reviewed subject-building base RL on the obstruction common datum.",
     )
     default_storey_height_m: float = Field(default=3.0, gt=0, le=6)
     residential_storey_height_m: float = Field(default=3.0, gt=0, le=6)
@@ -502,6 +528,11 @@ class ShieldingSectorResult(BaseModel):
     sector_end_deg: float
     sector_radius_m: float
     subject_height_m: float
+    subject_base_rl_m: float | None = None
+    subject_top_rl_m: float | None = None
+    subject_rl_source: Literal["reviewed_base_rl", "site_ground_elevation"] = (
+        "site_ground_elevation"
+    )
     total_obstructions_in_sector: int = 0
     usable_height_count: int = 0
     rejected_height_below_z_count: int = 0
@@ -536,6 +567,7 @@ class ObstructionInventoryResult(BaseModel):
     height_source_summary: dict[str, int] = Field(default_factory=dict)
     data_quality: ObstructionDataQuality = Field(default_factory=ObstructionDataQuality)
     shielding_sectors: list[ShieldingSectorResult] = Field(default_factory=list)
+    ms_lookup_provenance: LookupProvenance | None = None
     data_source_status: Literal["ok", "unavailable"] = "ok"
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
@@ -556,6 +588,7 @@ class PublicObstructionInventoryResult(BaseModel):
     height_source_summary: dict[str, int] = Field(default_factory=dict)
     data_quality: PublicObstructionDataQuality = Field(default_factory=PublicObstructionDataQuality)
     shielding_sectors: list[ShieldingSectorResult] = Field(default_factory=list)
+    ms_lookup_provenance: LookupProvenance | None = None
     data_source_status: Literal["ok", "unavailable"] = "ok"
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str
@@ -598,7 +631,7 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
 
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
-AssessmentStatus = Literal["draft", "reviewed", "final"]
+AssessmentStatus = Literal["draft", "reviewed"]
 TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
 ShieldingClassLabel = Literal["FS", "PS", "NS"]
 TopographicClassLabel = Literal["T0", "T1", "T2", "T3", "T4", "T5"]
@@ -739,13 +772,31 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     building_width_m: float | None = Field(default=None, gt=0, le=5000)
     building_length_m: float | None = Field(default=None, gt=0, le=5000)
     roof_pitch_deg: float | None = Field(default=None, ge=0, le=90)
-    average_height_m: float | None = Field(default=None, gt=0, le=500)
+    average_height_m: float | None = Field(default=None, gt=0, le=200)
     base_rl_m: float | None = None
     design_life_years: int | None = Field(default=None, gt=0, le=1000)
     assessment_status: AssessmentStatus = "draft"
-    engineer_notes: str | None = None
+    reviewed_by: str | None = Field(default=None, max_length=200)
+    engineer_notes: str | None = Field(default=None, max_length=5000)
     class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(default_factory=list)
     workflow_overrides: list[WindVariableOverride] = Field(default_factory=list)
+
+    @field_validator("assessment_status", mode="before")
+    @classmethod
+    def reject_final_issue_status(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip().lower() == "final":
+            raise ValueError(
+                "Final or certified issue is not supported. Use draft or reviewed; all "
+                "OpenWind-AU workflow outputs remain preliminary."
+            )
+        return value
+
+    @field_validator("reviewed_by", "engineer_notes", mode="before")
+    @classmethod
+    def normalize_review_text(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
 
     @model_validator(mode="after")
     def validate_unique_overrides(self) -> WindWorkflowRequest:
@@ -755,6 +806,12 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         class_directions = [item.direction for item in self.class_multiplier_overrides]
         if len(class_directions) != len(set(class_directions)):
             raise ValueError("class_multiplier_overrides contains duplicate directions.")
+        if self.assessment_status == "reviewed" and not self.reviewed_by:
+            raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
+        if self.assessment_status == "reviewed" and not self.engineer_notes:
+            raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if self.average_height_m is not None and self.average_height_m > self.building_height_m:
+            raise ValueError("Average roof height must not exceed the overall building height.")
         return self
 
 
@@ -803,18 +860,21 @@ class SiteWindSpeedRow(BaseModel):
 class WindWorkflowResult(BaseModel):
     """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
 
+    model_config = ConfigDict(extra="forbid")
+
     input: WindWorkflowRequest
     site: SiteLocation
     wind_region_assessment: WindRegionAssessment | None = None
     regional_wind_speed_assessment: RegionalWindSpeedAssessment | None = None
     direction_multiplier_assessment: DirectionMultiplierAssessment | None = None
-    assessment_status: AssessmentStatus = "draft"
-    engineer_notes: str | None = None
-    overrides_applied: list[WindVariableOverride] = Field(default_factory=list)
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
     governing_direction: WindDirection | None = None
     governing_vsitb: float | None = None
+    integrity_token: str | None = Field(
+        default=None,
+        description="Server-issued integrity token required by completed-result report routes.",
+    )
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (

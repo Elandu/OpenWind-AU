@@ -59,7 +59,8 @@ Project-supplied override tables retain exact lookup and logarithmic interpolati
 
 The serviceability value currently reported by the app is the 25-year serviceability row where
 available. Lookup metadata is checked so packaged or override JSON must include
-`source.review_status == "verified_against_standard"` to avoid a warning.
+`source.review_status == "verified_against_standard"`, a named `source.reviewed_by`, and a valid
+ISO `source.reviewed_on` date to avoid a warning.
 
 ### Output Fields
 
@@ -89,7 +90,8 @@ variations, and any override source before using the value in design decisions.
 OpenWind-AU selects the region-specific direction multiplier row and returns values for N, NE, E,
 SE, S, SW, W, and NW. It identifies the highest value in the row and marks all matching directions
 as governing directions. Lookup metadata is checked so packaged or override JSON must include
-`source.review_status == "verified_against_standard"` to avoid a warning.
+`source.review_status == "verified_against_standard"`, a named `source.reviewed_by`, and a valid
+ISO `source.reviewed_on` date to avoid a warning.
 
 ### Output Fields
 
@@ -113,6 +115,8 @@ including any cases where the standard requires a different value or all directi
 - Public DEM sampling from SRTM through the configured DEM workflow.
 - Site location, building height, radius, and sample interval.
 - Obstruction inventory evidence for built-up and vegetation coverage.
+- Packaged `src/openwind_au/data/terrain_height_multipliers.json` Table 4.1 values.
+- Optional reviewed override supplied with `OPENWIND_MZCAT_TABLE_PATH`.
 
 ### Processing Method
 
@@ -206,6 +210,8 @@ manual assumptions before relying on obstruction evidence.
 - Subject building height.
 - Obstruction inventory records.
 - Obstruction footprint geometry and selected obstruction heights.
+- Packaged `src/openwind_au/data/shielding_multipliers.json` Table 4.2 values.
+- Optional reviewed override supplied with `OPENWIND_MS_TABLE_PATH`.
 
 ### Processing Method
 
@@ -217,8 +223,11 @@ indicative shielding multiplier workflow.
 
 Vegetation is excluded because Clause 4.3 does not permit trees or vegetation to provide
 shielding. For structures higher than 25 m, `Ms` is fixed at 1.0. Where ground levels are
-available, an upwind building on an average ground gradient greater than 0.2 is rejected. Missing
-ground levels are reported for review.
+available, an upwind building on an average ground gradient greater than 0.2 is rejected unless
+its overall height above the common datum exceeds the subject building, as shown by Clause 4.3.1
+and Figure 4.2. Candidates retained through that steep-slope exception are explicitly warned for
+competent review because Clause 4.3.2 also requires careful interpretation. Missing ground levels
+are reported for review.
 
 Indicative `Ms` values are not certified design values.
 
@@ -307,8 +316,10 @@ produce certified design wind pressures.
 | Output | Primary Dataset | Fallback Dataset | Review Status |
 | --- | --- | --- | --- |
 | Wind Region | Geoscience Australia AS1170 wind region polygons | Configured test fixture or alternate user-supplied GIS dataset | Requires engineer confirmation, especially near boundaries |
-| VR | Packaged `regional_wind_speeds.json` for AS/NZS 1170.2:2021 Table 3.1(A) | `OPENWIND_VR_TABLE_PATH` override JSON | Packaged table has verified metadata; overrides warn if not verified |
-| Md | Packaged `direction_multipliers.json` for AS/NZS 1170.2:2021 Table 3.2(A) | `OPENWIND_MD_TABLE_PATH` override JSON | Packaged table has verified metadata; overrides warn if not verified |
+| VR | Packaged `regional_wind_speeds.json` for AS/NZS 1170.2:2021 Table 3.1(A) | `OPENWIND_VR_TABLE_PATH` override JSON | Coverage and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| Md | Packaged `direction_multipliers.json` for AS/NZS 1170.2:2021 Table 3.2(A) | `OPENWIND_MD_TABLE_PATH` override JSON | Region coverage and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| Mz,cat | Packaged `terrain_height_multipliers.json` for Table 4.1 and A0 rules | `OPENWIND_MZCAT_TABLE_PATH` override JSON | Exact structure, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| Ms | Packaged `shielding_multipliers.json` for Table 4.2 and the 25 m rule | `OPENWIND_MS_TABLE_PATH` override JSON | Exact normative points, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Obstruction Inventory | Reviewed footprint data, then Microsoft Building Footprints | OpenStreetMap building footprints | Review required for coverage, duplicates, and height sources |
 | Shielding Evidence | Obstruction inventory records with selected heights and footprints | None for certified design; incomplete data produces warnings | Indicative only, not certified `Ms` |
 | Terrain Evidence | DEM terrain profiles and obstruction evidence | Public DEM and public footprint fallbacks where configured | Evidence only, final terrain category not assigned |

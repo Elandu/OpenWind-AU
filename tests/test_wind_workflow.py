@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
+from openwind_au.models import WindVariableAssessment, WindWorkflowRequest
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.wind_workflow import mark_governing_vsitb, vsitb_directional_rows
 from tests.test_api import FlatDEM, sample_footprints
 
 
@@ -144,7 +147,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "<h2>2." not in body
     assert "<h2>9." not in body
     assert "Return period / importance level" in body
-    assert "Engineer notes" not in body
+    assert "Engineer notes" in body
     assert "Advanced inputs" in body
     assert body.count("<option value=") >= 17
     for orientation in [
@@ -168,7 +171,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     ]:
         assert f'<option value="{orientation}"' in body
     assert "Street address" not in body
-    assert "Assessment status" not in body
+    assert "Review and issue status" in body
+    assert "Assessment status" in body
     assert "Directional values appear once below." in body
     assert "Engineering overrides" in body
     assert 'id="raw-provenance"' in body
@@ -284,7 +288,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "mdStandardCell" in script.text
     assert "md-standard-table" in script.text
     assert "Governing Md" not in script.text
-    assert "inlineFinalValueCell" in script.text
+    assert "inlineAssessmentValueCell" in script.text
+    assert "Final editable values" not in script.text
     assert "renderRawProvenance" in script.text
     assert "<th>Source Reference</th>" not in script.text
     assert "Calculation provenance and warnings" in body
@@ -296,6 +301,51 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert stylesheet.status_code == 200
     assert ".workflow-sidepanel" in stylesheet.text
     assert "overflow: visible;" in stylesheet.text
+
+
+def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fields(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    schemas = test_client.get("/openapi.json").json()["components"]["schemas"]
+
+    request_properties = schemas["WindWorkflowRequest"]["properties"]
+    result_properties = schemas["WindWorkflowResult"]["properties"]
+
+    assert request_properties["assessment_status"]["enum"] == ["draft", "reviewed"]
+    assert "reviewed_by" in request_properties
+    assert "assessment_status" not in result_properties
+    assert "reviewed_by" not in result_properties
+    assert "engineer_notes" not in result_properties
+    assert "overrides_applied" not in result_properties
+
+
+def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    page = test_client.get("/")
+    script = test_client.get("/static/wind_workflow.js")
+    stylesheet = test_client.get("/static/styles.css")
+
+    assert page.status_code == 200
+    assert script.status_code == 200
+    assert stylesheet.status_code == 200
+    assert 'id="assessment_status"' in page.text
+    assert 'name="assessment_status"' in page.text
+    assert '<option value="draft" selected>Draft preliminary</option>' in page.text
+    assert '<option value="reviewed">Reviewed preliminary</option>' in page.text
+    assert 'id="review-metadata-fields" class="workflow-review" hidden' in page.text
+    assert 'id="reviewed_by"' in page.text
+    assert 'name="reviewed_by"' in page.text
+    assert 'id="engineer_notes"' in page.text
+    assert 'name="engineer_notes"' in page.text
+    assert "syncReviewControls();" in script.text
+    assert 'assessment_status: data.get("assessment_status") || "draft"' in script.text
+    assert "payload.reviewed_by" in script.text
+    assert "payload.engineer_notes" in script.text
+    assert "setCustomValidity" in script.text
+    assert "workflowForm.reportValidity()" in script.text
+    assert ".workflow-review[hidden]" in stylesheet.text
+    assert "20260712-review-controls-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -315,7 +365,9 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Review items" in response.text
     assert "Basis and limitations" in response.text
     assert response.text.count("<section") == 4
-    assert "Assessment status" not in response.text
+    assert "Assessment status" in response.text
+    assert "Draft preliminary" in response.text
+    assert "PRELIMINARY - NOT FOR CERTIFICATION" in response.text
     assert "Executive Summary" not in response.text
     assert "Variable Summary" not in response.text
     assert "Wind Region Assessment" not in response.text
@@ -335,6 +387,111 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "30 m x 20 m x 10 m" not in response.text
     assert "Vsit,b = VR x Md x Mz,cat x Ms x Mt" in response.text
     assert response.text.count("No final design pressures") == 1
+
+
+def test_final_issue_status_is_rejected_by_workflow_and_request_report_routes(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {"assessment_status": "final"}
+
+    for path in (
+        "/api/wind-workflow",
+        "/api/wind-workflow/stream",
+        "/api/wind-workflow/report/html",
+        "/api/wind-workflow/report/pdf",
+    ):
+        response = test_client.post(path, json=payload)
+
+        assert response.status_code == 422
+        assert "Final or certified issue is not supported" in response.text
+
+
+def test_reviewed_preliminary_status_requires_reviewer_and_notes(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+
+    missing_reviewer = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {"assessment_status": "reviewed", "engineer_notes": "Checked inputs."},
+    )
+    missing_notes = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload() | {"assessment_status": "reviewed", "reviewed_by": "Engineer A"},
+    )
+
+    assert missing_reviewer.status_code == 422
+    assert "reviewed_by is required" in missing_reviewer.text
+    assert missing_notes.status_code == 422
+    assert "engineer_notes are required" in missing_notes.text
+
+
+def test_reviewed_preliminary_report_records_reviewer_without_duplicate_result_fields(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "assessment_status": "reviewed",
+        "reviewed_by": "Engineer A",
+        "engineer_notes": "Reviewed terrain and multiplier inputs for preliminary issue.",
+    }
+
+    workflow = test_client.post("/api/wind-workflow", json=payload)
+    report = test_client.post("/api/wind-workflow/report/html", json=payload)
+
+    assert workflow.status_code == 200
+    body = workflow.json()
+    assert body["input"]["assessment_status"] == "reviewed"
+    assert body["input"]["reviewed_by"] == "Engineer A"
+    assert "assessment_status" not in {key for key in body if key != "input"}
+    assert "engineer_notes" not in {key for key in body if key != "input"}
+    assert report.status_code == 200
+    assert "Reviewed preliminary - Engineer A" in report.text
+    assert "PRELIMINARY - NOT FOR CERTIFICATION" in report.text
+
+
+def test_completed_result_report_routes_reject_tampered_or_redundant_status(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    tampered = workflow.json()
+    tampered["input"]["assessment_status"] = "final"
+    redundant = workflow.json() | {"assessment_status": "final"}
+
+    for path in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        tampered_response = test_client.post(path, json=tampered)
+        redundant_response = test_client.post(path, json=redundant)
+
+        assert tampered_response.status_code == 422
+        assert "Final or certified issue is not supported" in tampered_response.text
+        assert redundant_response.status_code == 422
+        assert "Extra inputs are not permitted" in redundant_response.text
+
+
+def test_completed_result_report_routes_require_valid_server_integrity_token(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+    assert authentic["integrity_token"].startswith("owau-hmac-sha256-v1:")
+
+    tampered = json.loads(json.dumps(authentic))
+    tampered["directional_vsitb"][0]["final_vsitb"] += 10
+    unsigned = json.loads(json.dumps(authentic))
+    unsigned.pop("integrity_token")
+
+    for path in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        tampered_response = test_client.post(path, json=tampered)
+        unsigned_response = test_client.post(path, json=unsigned)
+
+        assert tampered_response.status_code == 422
+        assert "inconsistent" in tampered_response.text.lower()
+        assert unsigned_response.status_code == 422
+        assert "missing" in unsigned_response.text.lower()
 
 
 def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> None:
@@ -734,10 +891,66 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
         "Mt",
         "Vsitb",
     }
+    mzcat_source = next(
+        item["source_reference"] for item in body["variables"] if item["variable"] == "Mzcat"
+    )
+    ms_source = next(
+        item["source_reference"] for item in body["variables"] if item["variable"] == "Ms"
+    )
+    assert "schema_version=1" in mzcat_source and "values_sha256=" in mzcat_source
+    assert "schema_version=1" in ms_source and "values_sha256=" in ms_source
     for row in body["directional_vsitb"]:
-        expected = round(row["vr"] * row["md"] * row["mzcat"] * row["ms"] * row["mt"], 3)
-        assert row["recommended_vsitb"] == expected
-        assert row["final_vsitb"] == expected
+        expected = row["vr"] * row["md"] * row["mzcat"] * row["ms"] * row["mt"]
+        assert row["recommended_vsitb"] == pytest.approx(expected)
+        assert row["final_vsitb"] == pytest.approx(expected)
+
+
+def test_full_precision_product_controls_governing_direction_before_display_rounding() -> None:
+    def variable(
+        name: str,
+        direction: str | None,
+        value: float,
+    ) -> WindVariableAssessment:
+        return WindVariableAssessment(
+            variable=name,  # type: ignore[arg-type]
+            label=name,
+            direction=direction,  # type: ignore[arg-type]
+            calculated_value=value,
+            final_value=value,
+            evidence_link="#test",
+            formula_basis="test input",
+            calculation_result="test input",
+        )
+
+    variables = [variable("VR", None, 1.0)]
+    for direction, md in (("N", 0.900040), ("NE", 0.900049)):
+        variables.extend(
+            [
+                variable("Md", direction, md),
+                variable("Mzcat", direction, 1.0),
+                variable("Ms", direction, 1.0),
+                variable("Mt", direction, 1.0),
+            ]
+        )
+
+    rows = mark_governing_vsitb(vsitb_directional_rows(variables))
+    north = next(row for row in rows if row.direction == "N")
+    north_east = next(row for row in rows if row.direction == "NE")
+
+    assert round(north.final_vsitb or 0.0, 3) == round(north_east.final_vsitb or 0.0, 3)
+    assert north.is_governing is False
+    assert north_east.is_governing is True
+
+
+def test_average_height_cannot_exceed_overall_building_height() -> None:
+    with pytest.raises(ValueError, match="[Aa]verage.*building height"):
+        WindWorkflowRequest(
+            latitude=-33.86,
+            longitude=151.21,
+            building_height_m=10.0,
+            average_height_m=10.1,
+            radius_m=500,
+        )
 
 
 def test_ignored_legacy_workflow_fields_are_rejected(monkeypatch) -> None:

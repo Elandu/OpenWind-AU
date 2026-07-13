@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-from importlib import resources
-from pathlib import Path
 from typing import Any
 
 import folium
@@ -25,15 +22,19 @@ from openwind_au.standard_calculations import (
     regional_wind_speed,
     table_region_key,
 )
+from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
+    MD_TABLE_ENV,
+    VR_DATA_FILE,
+    VR_TABLE_ENV,
+    load_lookup_data,
+    lookup_metadata_warnings,
+    source_reference,
+)
 from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
-VR_TABLE_ENV = "OPENWIND_VR_TABLE_PATH"
-MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
-VR_DATA_FILE = "regional_wind_speeds.json"
-MD_DATA_FILE = "direction_multipliers.json"
-VERIFIED_LOOKUP_REVIEW_STATUS = "verified_against_standard"
-VR_METADATA_WARNING = "VR lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
-MD_METADATA_WARNING = "Md lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
+VR_METADATA_WARNING = "VR lookup table does not have complete independent reviewer/date metadata."
+MD_METADATA_WARNING = "Md lookup table does not have complete independent reviewer/date metadata."
 
 
 def regional_wind_speed_assessment(
@@ -363,36 +364,3 @@ def load_md_tables() -> dict[str, Any]:
     """Load editable direction multiplier lookup data."""
 
     return load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
-
-
-def load_lookup_data(env_var: str, package_file: str) -> dict[str, Any]:
-    """Load lookup JSON from an env override or packaged data file."""
-
-    configured = os.environ.get(env_var)
-    if configured:
-        path = Path(configured)
-        return json.loads(path.read_text(encoding="utf-8"))
-    data_path = resources.files("openwind_au.data").joinpath(package_file)
-    return json.loads(data_path.read_text(encoding="utf-8"))
-
-
-def lookup_metadata_warnings(data: dict[str, Any], warning: str) -> list[str]:
-    """Return a warning when lookup source metadata is not marked verified."""
-
-    source = data.get("source", {})
-    if source.get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS:
-        return []
-    return [warning]
-
-
-def source_reference(data: dict[str, Any]) -> str:
-    """Build a compact source reference string from lookup metadata."""
-
-    source = data.get("source", {})
-    parts = [
-        source.get("title"),
-        source.get("standard_reference"),
-        source.get("review_status"),
-        source.get("status"),
-    ]
-    return "; ".join(str(part) for part in parts if part)

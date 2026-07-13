@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from plotly.offline import get_plotlyjs
 
+from openwind_au import __version__
 from openwind_au.analysis import run_site_analysis
 from openwind_au.calculation_validation import (
     calculation_validation_report_to_json,
@@ -39,6 +41,7 @@ from openwind_au.models import (
     WindWorkflowRequest,
     WindWorkflowResult,
 )
+from openwind_au.mzcat import load_mzcat_table, mzcat_lookup_issues
 from openwind_au.obstructions import (
     manual_overrides_from_json,
     parse_manual_overrides_csv,
@@ -63,7 +66,17 @@ from openwind_au.reports import (
     result_to_json,
     terrain_category_map_html,
 )
-from openwind_au.standard_calculations import DIRECTIONS, table_region_key
+from openwind_au.result_integrity import (
+    result_signing_readiness,
+    verify_workflow_result,
+)
+from openwind_au.standard_calculations import (
+    DIRECTIONS,
+    load_ms_table,
+    shielding_lookup_issues,
+    table_region_key,
+)
+from openwind_au.standard_lookup_tables import lookup_is_reviewed
 from openwind_au.terrain_category import run_terrain_category_evidence
 from openwind_au.terrain_category_validation import (
     DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES,
@@ -76,7 +89,6 @@ from openwind_au.validation import (
     validation_report_to_json,
 )
 from openwind_au.wind_inputs import (
-    VERIFIED_LOOKUP_REVIEW_STATUS,
     direction_multiplier_assessment,
     load_md_tables,
     load_vr_tables,
@@ -146,7 +158,7 @@ def create_app() -> FastAPI:
         description=(
             "Preliminary wind site terrain and topographic analysis for Australian buildings."
         ),
-        version="0.6.0",
+        version=__version__,
     )
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -252,7 +264,11 @@ def create_app() -> FastAPI:
     @app.post("/api/wind-workflow", response_model=WindWorkflowResult)
     def wind_workflow(request: WindWorkflowRequest) -> WindWorkflowResult:
         try:
-            site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
+            mzcat_lookup = load_mzcat_table()
+            site_result, obstruction_result, evidence = _run_terrain_category_workflow(
+                request,
+                mzcat_lookup_data=mzcat_lookup,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
@@ -262,6 +278,7 @@ def create_app() -> FastAPI:
             site_result=site_result,
             obstruction_result=obstruction_result,
             terrain_result=evidence,
+            mzcat_lookup_data=mzcat_lookup,
         )
 
     @app.post("/api/wind-workflow/stream")
@@ -280,6 +297,7 @@ def create_app() -> FastAPI:
     def wind_workflow_result_report_html(result: WindWorkflowResult) -> str:
         """Render an already completed workflow without repeating external data calls."""
 
+        _verify_completed_workflow_result(result)
         return render_wind_workflow_report_html(result)
 
     @app.post("/api/wind-workflow/report/pdf")
@@ -291,7 +309,14 @@ def create_app() -> FastAPI:
     def wind_workflow_result_report_pdf(result: WindWorkflowResult) -> Response:
         """Render an already completed workflow without repeating external data calls."""
 
+        _verify_completed_workflow_result(result)
         return _wind_workflow_pdf_response(result)
+
+    def _verify_completed_workflow_result(result: WindWorkflowResult) -> None:
+        try:
+            verify_workflow_result(result)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     def _wind_workflow_pdf_response(result: WindWorkflowResult) -> Response:
         try:
@@ -518,6 +543,7 @@ def create_app() -> FastAPI:
             site=evidence.site,
             directions=evidence.mzcat_assessment,
             recommendation_mode=request.mzcat_recommendation_mode,
+            lookup_provenance=evidence.mzcat_lookup_provenance,
             warnings=[
                 "Terrain category not confirmed.",
                 "Mz,cat values are indicative only.",
@@ -665,10 +691,17 @@ def create_app() -> FastAPI:
 
 def _run_terrain_category_workflow(
     request: TerrainCategoryEvidenceRequest,
+    *,
+    mzcat_lookup_data: dict[str, Any] | None = None,
 ) -> tuple[SiteAnalysisResult, ObstructionInventoryResult, TerrainCategoryEvidenceResult]:
+    mzcat_lookup = mzcat_lookup_data if mzcat_lookup_data is not None else load_mzcat_table()
     site_result = run_site_analysis(request, _dem_provider())
     obstruction_result = _run_obstruction_inventory_for_site(request, site_result)
-    evidence = run_terrain_category_evidence(site_result, obstruction_result)
+    evidence = run_terrain_category_evidence(
+        site_result,
+        obstruction_result,
+        mzcat_lookup_data=mzcat_lookup,
+    )
     return site_result, obstruction_result, evidence
 
 
@@ -687,6 +720,7 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
 
     try:
         yield event("start", 2, "Resolving site location and elevation")
+        mzcat_lookup = load_mzcat_table()
         site_result = run_site_analysis(request, _dem_provider())
         yield event(
             "site",
@@ -727,7 +761,11 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
             },
         )
 
-        evidence = run_terrain_category_evidence(site_result, obstruction_result)
+        evidence = run_terrain_category_evidence(
+            site_result,
+            obstruction_result,
+            mzcat_lookup_data=mzcat_lookup,
+        )
         yield event(
             "terrain",
             68,
@@ -749,6 +787,7 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
             wind_region=wind_region,
             regional_speed=regional_speed,
             direction_multipliers=direction_multipliers,
+            mzcat_lookup_data=mzcat_lookup,
         )
         yield event(
             "workflow",
@@ -869,10 +908,7 @@ def _readiness_report() -> dict[str, Any]:
                 for direction in DIRECTIONS
             )
         ]
-        metadata_reviewed = (
-            isinstance(md_data.get("source"), dict)
-            and md_data["source"].get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS
-        )
+        metadata_reviewed = lookup_is_reviewed(md_data)
         md_ready = metadata_reviewed and not missing_regions
         checks["direction_multiplier_table"] = {
             "ready": md_ready,
@@ -895,10 +931,7 @@ def _readiness_report() -> dict[str, Any]:
         if not isinstance(vr_data, dict) or not isinstance(vr_data.get("tables"), dict):
             raise TypeError("VR lookup data must contain a tables object")
         vr_tables = vr_data["tables"]
-        vr_reviewed = (
-            isinstance(vr_data.get("source"), dict)
-            and vr_data["source"].get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS
-        )
+        vr_reviewed = lookup_is_reviewed(vr_data)
         missing_vr_regions = [
             region for region in ("A", "B", "C", "D") if not _valid_vr_table(vr_tables.get(region))
         ]
@@ -918,6 +951,17 @@ def _readiness_report() -> dict[str, Any]:
             "ready": False,
             "message": "Regional wind speed table is not usable; inspect the server logs.",
         }
+
+    checks["terrain_height_multiplier_table"] = _standards_lookup_readiness(
+        loader=load_mzcat_table,
+        validator=mzcat_lookup_issues,
+        label="Mz,cat Table 4.1",
+    )
+    checks["shielding_multiplier_table"] = _standards_lookup_readiness(
+        loader=load_ms_table,
+        validator=shielding_lookup_issues,
+        label="Ms Table 4.2",
+    )
 
     try:
         provider = _dem_provider()
@@ -939,6 +983,7 @@ def _readiness_report() -> dict[str, Any]:
             "ready": False,
             "message": "DEM provider configuration is not usable; inspect the server logs.",
         }
+    checks["completed_result_signing"] = result_signing_readiness()
     ready = all(check["ready"] for check in checks.values())
     return {
         "status": "ready" if ready else "not_ready",
@@ -953,6 +998,41 @@ def _valid_lookup_number(value: Any, *, minimum: float, maximum: float) -> bool:
         and math.isfinite(float(value))
         and minimum < float(value) <= maximum
     )
+
+
+def _standards_lookup_readiness(
+    *,
+    loader: Callable[[], dict[str, Any]],
+    validator: Callable[..., list[str]],
+    label: str,
+) -> dict[str, Any]:
+    """Return a health check for one reviewed, digest-protected lookup table."""
+
+    try:
+        data = loader()
+        issues = validator(data, require_reviewed=True)
+        source = data.get("source") if isinstance(data, dict) else None
+        reviewed = isinstance(source, dict) and lookup_is_reviewed(data)
+        ready = not issues
+        return {
+            "ready": ready,
+            "reviewed": reviewed,
+            "values_sha256": data.get("values_sha256") if isinstance(data, dict) else None,
+            "issues": issues,
+            "message": (
+                f"Reviewed {label} data passed structure and digest checks."
+                if ready
+                else f"{label} data failed review, structure, or digest checks."
+            ),
+        }
+    except Exception:
+        LOGGER.exception("%s readiness check failed", label)
+        return {
+            "ready": False,
+            "reviewed": False,
+            "issues": ["lookup data could not be loaded"],
+            "message": f"{label} data is not usable; inspect the server logs.",
+        }
 
 
 def _valid_vr_table(value: Any) -> bool:
@@ -980,7 +1060,8 @@ def _obstruction_request_from_combined(
         latitude=request.latitude,
         longitude=request.longitude,
         radius_m=request.obstruction_radius_m,
-        building_height_m=request.building_height_m,
+        building_height_m=request.reference_height_m,
+        subject_base_rl_m=getattr(request, "base_rl_m", None),
         default_storey_height_m=request.default_storey_height_m,
         residential_storey_height_m=request.residential_storey_height_m,
         residential_two_storey_height_m=request.residential_two_storey_height_m,

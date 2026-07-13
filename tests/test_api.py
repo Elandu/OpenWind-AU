@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,13 @@ import openwind_au.api as api_module
 import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.standard_lookup_tables import (
+    MS_DATA_FILE,
+    MZCAT_DATA_FILE,
+    VERIFIED_LOOKUP_REVIEW_STATUS,
+    VR_DATA_FILE,
+    load_packaged_lookup_data,
+)
 
 
 class FlatDEM(DEMProvider):
@@ -19,7 +27,20 @@ class FlatDEM(DEMProvider):
         return 75.0
 
 
+def reviewed_lookup(filename: str) -> dict:
+    data = load_packaged_lookup_data(filename)
+    data["source"].update(
+        {
+            "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
+            "reviewed_by": "Independent Test Engineer",
+            "reviewed_on": "2026-07-12",
+        }
+    )
+    return data
+
+
 def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "test-result-signing-key-at-least-32-bytes")
     production_regions = ["A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D"]
     monkeypatch.setattr(
         api_module,
@@ -35,13 +56,20 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
         api_module,
         "load_md_tables",
         lambda: {
-            "source": {"review_status": api_module.VERIFIED_LOOKUP_REVIEW_STATUS},
+            "source": {
+                "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
+                "reviewed_by": "Independent Test Engineer",
+                "reviewed_on": "2026-07-12",
+            },
             "tables": {
                 region: {direction: 1.0 for direction in api_module.DIRECTIONS}
                 for region in production_regions
             },
         },
     )
+    monkeypatch.setattr(api_module, "load_mzcat_table", lambda: reviewed_lookup(MZCAT_DATA_FILE))
+    monkeypatch.setattr(api_module, "load_ms_table", lambda: reviewed_lookup(MS_DATA_FILE))
+    monkeypatch.setattr(api_module, "load_vr_tables", lambda: reviewed_lookup(VR_DATA_FILE))
     client = TestClient(api_module.create_app())
 
     live = client.get("/health/live")
@@ -52,6 +80,10 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert all(check["ready"] for check in ready.json()["checks"].values())
+    assert ready.json()["checks"]["terrain_height_multiplier_table"]["reviewed"] is True
+    assert ready.json()["checks"]["shielding_multiplier_table"]["reviewed"] is True
+    assert len(ready.json()["checks"]["terrain_height_multiplier_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["shielding_multiplier_table"]["values_sha256"]) == 64
 
 
 def test_health_reports_missing_production_inputs(monkeypatch) -> None:
@@ -71,6 +103,8 @@ def test_health_reports_missing_production_inputs(monkeypatch) -> None:
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert response.json()["checks"]["wind_region_dataset"]["ready"] is False
+    assert response.json()["checks"]["terrain_height_multiplier_table"]["ready"] is False
+    assert response.json()["checks"]["shielding_multiplier_table"]["ready"] is False
     assert "dataset_path" not in response.text
 
 
@@ -87,6 +121,8 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
     )
     monkeypatch.setattr(api_module, "load_md_tables", lambda: ["invalid"])
     monkeypatch.setattr(api_module, "load_vr_tables", lambda: {"tables": []})
+    monkeypatch.setattr(api_module, "load_mzcat_table", lambda: {"values": []})
+    monkeypatch.setattr(api_module, "load_ms_table", lambda: {"values": []})
     client = TestClient(api_module.create_app())
 
     response = client.get("/health")
@@ -95,7 +131,24 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
     body = response.json()
     assert body["checks"]["direction_multiplier_table"]["ready"] is False
     assert body["checks"]["regional_wind_speed_table"]["ready"] is False
+    assert body["checks"]["terrain_height_multiplier_table"]["ready"] is False
+    assert body["checks"]["shielding_multiplier_table"]["ready"] is False
     assert "inspect the server logs" in response.text
+
+
+def test_lookup_readiness_logs_loader_failures(caplog) -> None:
+    def broken_loader():
+        raise ValueError("synthetic lookup failure")
+
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        check = api_module._standards_lookup_readiness(
+            loader=broken_loader,
+            validator=lambda _data, **_kwargs: [],
+            label="synthetic lookup",
+        )
+
+    assert check["ready"] is False
+    assert "synthetic lookup readiness check failed" in caplog.text
 
 
 def sample_footprints() -> list[dict]:
@@ -733,8 +786,10 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert len(body["obstruction_inventory"]["obstructions"]) == 1
     assert "raw_osm_building_footprints" not in body["obstruction_inventory"]["data_quality"]
     assert "pipeline_log" not in body["obstruction_inventory"]["data_quality"]
+    assert len(body["obstruction_inventory"]["ms_lookup_provenance"]["values_sha256"]) == 64
     assert len(body["terrain_category_evidence"]["directions"]) == 8
     assert len(body["terrain_category_evidence"]["mzcat_assessment"]) == 8
+    assert len(body["terrain_category_evidence"]["mzcat_lookup_provenance"]["values_sha256"]) == 64
     assert (
         body["terrain_category_evidence"]["mzcat_assessment"][0]["recommendation_mode"]
         == "best_estimate"
