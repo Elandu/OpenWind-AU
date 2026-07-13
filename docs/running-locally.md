@@ -32,9 +32,11 @@ GET http://127.0.0.1:8000/health
 ```
 
 `/health/live` returns HTTP 200 when the API process is responsive. `/health` returns HTTP 200 only
-when the production wind-region dataset, reviewed lookup data, and configured DEM provider/cache
-are ready; otherwise it returns HTTP 503 with per-component checks. A development instance can be
-live while correctly reporting `not_ready` for project assessments.
+when the production wind-region dataset, reviewed `VR`/`Md`/`Mz,cat`/`Ms` lookup data, matching
+`Mz,cat`/`Ms` digests,
+and configured DEM provider/cache are ready; otherwise it returns HTTP 503 with per-component
+checks. A development instance can be live while correctly reporting `not_ready` for project
+assessments.
 
 ## Local Data
 

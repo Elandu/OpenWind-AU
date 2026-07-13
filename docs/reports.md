@@ -78,8 +78,14 @@ POST /api/wind-workflow/result/report/html
 POST /api/wind-workflow/result/report/pdf
 ```
 
-The `/result/report/*` routes accept an already completed `WindWorkflowResult`. The browser uses
-these routes so opening a report does not repeat elevation, terrain, or obstruction data calls.
+The `/result/report/*` routes accept an already completed `WindWorkflowResult` only when its
+server-issued `integrity_token` verifies. The browser uses these routes so opening a report does
+not repeat elevation, terrain, or obstruction data calls. Editing any signed input, variable,
+directional result, status, note, or override invalidates the token and returns HTTP 422.
+
+`0.7.x` completed-result payloads are not compatible with the `0.8.0` report routes. Rerun the
+workflow to obtain the current payload shape and integrity token; do not copy the old top-level
+status, engineer-note, or override fields into the new result.
 
 The HTML and PDF outputs use the same compact report structure:
 

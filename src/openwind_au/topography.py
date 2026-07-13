@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from openwind_au.models import TerrainProfile, TopographicFeature
 
-MIN_FEATURE_RELIEF_M = 5.0
+MIN_CONTEXT_FEATURE_RELIEF_M = 5.0
 MIN_RIDGE_VALLEY_SUBSTANTIAL_RELIEF_M = 50.0
 MIN_RIDGE_VALLEY_SLOPE = 0.10
 MIN_RISING_HILL_SLOPE = 0.03
@@ -44,29 +45,42 @@ class _ClauseGeometry:
 def analyse_topography(
     profiles: list[TerrainProfile],
     site_rl_m: float,
+    average_roof_height_m: float,
 ) -> list[TopographicFeature]:
     """Return one conservative topographic screening result for each profile."""
 
-    return [analyse_profile_topography(profile, site_rl_m) for profile in profiles]
+    return [
+        analyse_profile_topography(profile, site_rl_m, average_roof_height_m)
+        for profile in profiles
+    ]
 
 
 def analyse_profile_topography(
     profile: TerrainProfile,
     site_rl_m: float,
+    average_roof_height_m: float,
 ) -> TopographicFeature:
     """Classify one radial profile using transparent geometric rules."""
+
+    if (
+        not math.isfinite(average_roof_height_m)
+        or average_roof_height_m <= 0
+        or average_roof_height_m > 200
+    ):
+        raise ValueError("Average roof height h must be greater than zero and at most 200 m.")
 
     distances = np.array([point.distance_m for point in profile.points], dtype=float)
     elevations = np.array([point.elevation_m for point in profile.points], dtype=float)
     if len(distances) < 3:
         return _no_significant_feature(profile, site_rl_m)
 
+    minimum_feature_relief_m = min(0.4 * average_roof_height_m, 5.0)
     candidates = [
-        *_ridge_candidates(distances, elevations),
+        *_ridge_candidates(distances, elevations, minimum_feature_relief_m),
         *_valley_candidates(distances, elevations),
-        *_escarpment_candidates(distances, elevations),
+        *_escarpment_candidates(distances, elevations, minimum_feature_relief_m),
     ]
-    hill = _hill_candidate(distances, elevations)
+    hill = _hill_candidate(distances, elevations, minimum_feature_relief_m)
     if hill:
         candidates.append(hill)
 
@@ -74,7 +88,9 @@ def analyse_profile_topography(
         return _no_significant_feature(profile, site_rl_m)
 
     screened_candidates = [
-        candidate for candidate in candidates if _candidate_meets_review_thresholds(candidate)
+        candidate
+        for candidate in candidates
+        if _candidate_meets_review_thresholds(candidate, minimum_feature_relief_m)
     ]
     if not screened_candidates:
         return _no_significant_feature(profile, site_rl_m)
@@ -186,7 +202,11 @@ def _first_upwind_crossing(
     return None
 
 
-def _ridge_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_Candidate]:
+def _ridge_candidates(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    minimum_feature_relief_m: float,
+) -> list[_Candidate]:
     candidates: list[_Candidate] = []
     for index in range(1, len(elevations) - 1):
         if elevations[index] < elevations[index - 1] or elevations[index] < elevations[index + 1]:
@@ -197,7 +217,7 @@ def _ridge_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_Ca
         left_prominence = elevations[index] - elevations[left_min_index]
         right_prominence = elevations[index] - elevations[right_min_index]
         prominence = float(min(left_prominence, right_prominence))
-        if prominence < MIN_FEATURE_RELIEF_M:
+        if prominence < minimum_feature_relief_m:
             continue
 
         base_index = (
@@ -221,7 +241,7 @@ def _ridge_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_Ca
                 slope=slope,
                 score=h_m + prominence,
                 notes=(
-                    "Local crest rises at least 5 m above lower terrain on both sides.",
+                    "Local crest meets the Clause 4.4.2 H >= min(0.4h, 5 m) screening height.",
                     "Classified as a ridge candidate from profile geometry only.",
                 ),
             )
@@ -240,7 +260,7 @@ def _valley_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_C
         left_depth = elevations[left_max_index] - elevations[index]
         right_depth = elevations[right_max_index] - elevations[index]
         depth = float(min(left_depth, right_depth))
-        if depth < MIN_FEATURE_RELIEF_M:
+        if depth < MIN_CONTEXT_FEATURE_RELIEF_M:
             continue
 
         crest_index = (
@@ -272,7 +292,11 @@ def _valley_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_C
     return candidates
 
 
-def _escarpment_candidates(distances: np.ndarray, elevations: np.ndarray) -> list[_Candidate]:
+def _escarpment_candidates(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    minimum_feature_relief_m: float,
+) -> list[_Candidate]:
     candidates: list[_Candidate] = []
     for index, gradient in enumerate(np.diff(elevations) / np.diff(distances)):
         slope = abs(float(gradient))
@@ -285,7 +309,7 @@ def _escarpment_candidates(distances: np.ndarray, elevations: np.ndarray) -> lis
         crest_index = end if base_index == start else start
         h_m = abs(float(elevations[end] - elevations[start]))
         lu_m = abs(float(distances[end] - distances[start]))
-        if h_m < MIN_FEATURE_RELIEF_M or lu_m <= 0:
+        if h_m < minimum_feature_relief_m or lu_m <= 0:
             continue
         candidates.append(
             _Candidate(
@@ -306,13 +330,17 @@ def _escarpment_candidates(distances: np.ndarray, elevations: np.ndarray) -> lis
     return candidates
 
 
-def _hill_candidate(distances: np.ndarray, elevations: np.ndarray) -> _Candidate | None:
+def _hill_candidate(
+    distances: np.ndarray,
+    elevations: np.ndarray,
+    minimum_feature_relief_m: float,
+) -> _Candidate | None:
     endpoint_indices = (0, len(elevations) - 1)
     crest_index = max(endpoint_indices, key=lambda item: elevations[item])
     base_index = int(np.argmin(elevations))
     h_m = float(elevations[crest_index] - elevations[base_index])
     lu_m = abs(float(distances[crest_index] - distances[base_index]))
-    if h_m < MIN_FEATURE_RELIEF_M or lu_m <= 0:
+    if h_m < minimum_feature_relief_m or lu_m <= 0:
         return None
     slope = h_m / lu_m
     if slope < MIN_RISING_HILL_SLOPE:
@@ -333,8 +361,16 @@ def _hill_candidate(distances: np.ndarray, elevations: np.ndarray) -> _Candidate
     )
 
 
-def _candidate_meets_review_thresholds(candidate: _Candidate) -> bool:
-    if candidate.h_m < MIN_FEATURE_RELIEF_M or candidate.lu_m <= 0:
+def _candidate_meets_review_thresholds(
+    candidate: _Candidate,
+    minimum_feature_relief_m: float,
+) -> bool:
+    required_relief_m = (
+        MIN_CONTEXT_FEATURE_RELIEF_M
+        if candidate.feature_type == "valley"
+        else minimum_feature_relief_m
+    )
+    if candidate.h_m < required_relief_m or candidate.lu_m <= 0:
         return False
     if candidate.feature_type not in {"ridge", "valley"}:
         return True

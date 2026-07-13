@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openwind-au"
-version = "0.7.0"
+version = "0.8.0"
 description = "Preliminary wind site terrain and topographic analysis for Australian buildings using public geospatial datasets."
 readme = "README.md"
 requires-python = ">=3.11"

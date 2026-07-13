@@ -83,7 +83,11 @@ def test_detect_topographic_features_finds_ridge_or_escarpment() -> None:
         sample_interval_m=50,
     )
 
-    features = detect_topographic_features(profiles, site_elevation_m=100)
+    features = detect_topographic_features(
+        profiles,
+        site_elevation_m=100,
+        average_roof_height_m=10.0,
+    )
 
     assert len(features) == 8
     assert any(feature.feature_type in {"ridge", "hill", "escarpment"} for feature in features)

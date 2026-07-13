@@ -1588,6 +1588,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     )
     story = [
         Paragraph("OpenWind-AU Site Wind Assessment", title_style),
+        Paragraph("<b>PRELIMINARY - NOT FOR CERTIFICATION</b>", body_style),
         Paragraph(
             "Compact engineering review summary through Vsit,b. This is not a certified "
             "design-pressure report.",
@@ -1600,6 +1601,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     site_label = result.input.address or result.site.display_name or "Not supplied"
     summary_rows = [
         ["Project", result.input.project_number or "Not supplied"],
+        ["Assessment status", _wind_report_status(result)],
         ["Site", site_label],
         [
             "Coordinates",
@@ -1647,15 +1649,15 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     warnings = concise_workflow_warnings(result)
     if (
         warnings
-        or result.overrides_applied
+        or result.input.workflow_overrides
         or result.input.class_multiplier_overrides
-        or result.engineer_notes
+        or result.input.engineer_notes
     ):
         story.append(Paragraph("Review items", section_style))
     if warnings:
         story.append(Paragraph("Warnings", body_style))
         story.extend(Paragraph(f"- {escape(str(warning))}", body_style) for warning in warnings)
-    if result.overrides_applied or result.input.class_multiplier_overrides:
+    if result.input.workflow_overrides or result.input.class_multiplier_overrides:
         story.append(Paragraph("Overrides", body_style))
         override_rows = [["Variable", "Direction", "Value", "Reason"]]
         override_rows.extend(
@@ -1665,7 +1667,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
                 f"{override.override_value:.3f}",
                 override.reason,
             ]
-            for override in result.overrides_applied
+            for override in result.input.workflow_overrides
         )
         override_rows.extend(
             [
@@ -1683,8 +1685,10 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
                 header=True,
             )
         )
-    if result.engineer_notes:
-        story.append(Paragraph(f"Engineer notes: {escape(result.engineer_notes)}", body_style))
+    if result.input.engineer_notes:
+        story.append(
+            Paragraph(f"Engineer notes: {escape(result.input.engineer_notes)}", body_style)
+        )
     story.extend(
         [
             Paragraph("Basis and limitations", section_style),
@@ -1730,6 +1734,12 @@ def _wind_report_governing_summary(result: WindWorkflowResult) -> str:
     if result.governing_vsitb is None:
         return "Not available"
     return f"{result.governing_direction or 'N/A'} - {result.governing_vsitb:.3f} m/s"
+
+
+def _wind_report_status(result: WindWorkflowResult) -> str:
+    if result.input.assessment_status == "reviewed":
+        return f"Reviewed preliminary - {result.input.reviewed_by}"
+    return "Draft preliminary"
 
 
 def _wind_report_basis(result: WindWorkflowResult) -> str:
@@ -1814,7 +1824,7 @@ def _draw_wind_pdf_page(canvas, doc) -> None:
     canvas.setFillColor(colors.HexColor("#667085"))
     canvas.drawString(14 * mm, height - 10 * mm, "OpenWind-AU | Site Wind Assessment")
     canvas.drawRightString(width - 14 * mm, 9 * mm, f"Page {doc.page}")
-    canvas.drawString(14 * mm, 9 * mm, "Preliminary engineering review output")
+    canvas.drawString(14 * mm, 9 * mm, "PRELIMINARY - NOT FOR CERTIFICATION")
     canvas.restoreState()
 
 
@@ -3013,624 +3023,6 @@ TERRAIN_CATEGORY_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
 )
 
 
-WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
-    """
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>OpenWind-AU Site Wind Assessment Report</title>
-  <style>
-    :root {
-      color: #101828;
-      background: #f5f7fb;
-      font-family: Inter, Arial, sans-serif;
-    }
-    body {
-      margin: 0;
-      background: linear-gradient(180deg, #ffffff 0, #f7f9fc 240px, #f5f7fb 100%);
-    }
-    main {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    header {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      display: flex;
-      justify-content: space-between;
-      gap: 24px;
-      align-items: center;
-      min-height: 64px;
-      padding: 0 24px;
-      border-bottom: 1px solid #e4e7ec;
-      background: #ffffff;
-      box-shadow: 0 1px 2px rgb(16 24 40 / 6%);
-    }
-    h1, h2, h3 { color: #101828; }
-    h1 { margin: 0; font-size: 1.1rem; }
-    h2 {
-      margin: 18px 0 8px;
-      font-size: 1rem;
-    }
-    h3 {
-      margin: 14px 0 8px;
-      font-size: 0.92rem;
-    }
-    .subtitle { margin: 4px 0 0; color: #667085; font-size: 0.82rem; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .mark {
-      display: grid;
-      place-items: center;
-      width: 34px;
-      height: 34px;
-      border-radius: 8px;
-      color: #ffffff;
-      background: #155eef;
-      font-weight: 800;
-      font-size: 0.82rem;
-    }
-    .kpis {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(100px, 1fr));
-      gap: 0;
-      min-width: 360px;
-    }
-    .kpis div {
-      border-left: 1px solid #e4e7ec;
-      padding: 6px 16px;
-    }
-    .kpis span {
-      display: block;
-      color: #667085;
-      font-size: 0.72rem;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-    .kpis strong {
-      display: block;
-      margin-top: 3px;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 0.88rem;
-    }
-    section {
-      margin-bottom: 12px;
-      border: 1px solid #e4e7ec;
-      border-radius: 8px;
-      padding: 16px;
-      background: #ffffff;
-      box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
-    }
-    table {
-      border-collapse: separate;
-      border-spacing: 0;
-      width: 100%;
-      margin: 12px 0;
-      border: 1px solid #e4e7ec;
-      border-radius: 8px;
-      overflow: hidden;
-      font-size: 0.86rem;
-    }
-    th, td {
-      border: 0;
-      border-bottom: 1px solid #e4e7ec;
-      padding: 8px 10px;
-      text-align: left;
-      vertical-align: top;
-    }
-    tr:last-child td { border-bottom: 0; }
-    th {
-      background: #f9fafb;
-      color: #344054;
-      font-size: 0.76rem;
-      text-transform: uppercase;
-    }
-    .disclaimer {
-      border: 1px solid #fecdca;
-      border-left: 4px solid #b42318;
-      border-radius: 6px;
-      padding: 12px;
-      background: #fffbfa;
-      color: #912018;
-    }
-    .warning {
-      border: 1px solid #fedf89;
-      border-left: 4px solid #b54708;
-      border-radius: 6px;
-      padding: 12px;
-      background: #fffbeb;
-    }
-    .calc { background: #f8fafc; }
-    .governing { background: #ecfdf3; font-weight: 700; }
-    @media (max-width: 720px) {
-      header { align-items: flex-start; flex-direction: column; padding: 12px 16px; }
-      main { padding: 16px; }
-      .kpis { width: 100%; min-width: 0; }
-    }
-  </style>
-</head>
-<body>
-  <header>
-    <div class="brand">
-      <div class="mark">OW</div>
-      <div>
-        <h1>OpenWind-AU</h1>
-        <p class="subtitle">Site wind assessment report</p>
-      </div>
-    </div>
-    <div class="kpis">
-      <div>
-        <span>Region</span>
-        <strong>
-          {% if result.wind_region_assessment %}
-          {{ result.wind_region_assessment.wind_region }}
-          {% else %}
-          n/a
-          {% endif %}
-        </strong>
-      </div>
-      <div><span>Governing</span><strong>{{ result.governing_direction or "n/a" }}</strong></div>
-      <div>
-        <span>Vsit,b</span>
-        <strong>
-          {% if result.governing_vsitb is not none %}
-          {{ "%.3f"|format(result.governing_vsitb) }} m/s
-          {% else %}
-          n/a
-          {% endif %}
-        </strong>
-      </div>
-    </div>
-  </header>
-  <main>
-  <p class="disclaimer">{{ result.disclaimer }}</p>
-  {% if calculation_basis_reference %}
-  <p>{{ calculation_basis_reference }}</p>
-  {% endif %}
-
-  <section>
-  <h2>1. Executive Summary</h2>
-  <p>
-    This report summarises the AS/NZS 1170.2 site wind assessment workflow
-    through Vsit,b. Pressure, cladding, Cpe, and Cpi calculations are outside this scope.
-  </p>
-  <table>
-    <tr><th>Overrides applied</th><td>{{ result.overrides_applied|length }}</td></tr>
-    <tr>
-      <th>Directions calculated</th>
-      <td>
-        {{
-          result.directional_vsitb
-          |selectattr("status", "equalto", "calculated")
-          |list|length
-        }}
-      </td>
-    </tr>
-    <tr><th>Primary warning</th><td>{{ result.warnings[0] if result.warnings else "" }}</td></tr>
-    <tr>
-      <th>Governing direction</th>
-      <td>{{ result.governing_direction or "not available" }}</td>
-    </tr>
-    <tr>
-      <th>Governing Vsit,b</th>
-      <td>
-        {% if result.governing_vsitb is not none %}
-        {{ "%.3f"|format(result.governing_vsitb) }} m/s
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-    </tr>
-  </table>
-  </section>
-
-  <section>
-  <h2>2. Site Information</h2>
-  <p>
-    Workflow order: Site Information; Regional Wind Speed, VR;
-    Direction Multiplier, Md; Terrain Category and Mz,cat; Shielding Multiplier, Ms;
-    Topographic Multiplier, Mt; Site Wind Speed, Vsit,b; Report and Diagnostics.
-  </p>
-
-  {% if result.warnings %}
-  <div class="warning">
-    <strong>Workflow warnings</strong>
-    <ul>{% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>
-  </div>
-  {% endif %}
-
-  <table>
-    <tr>
-      <th>Address</th>
-      <td>{{ result.input.address or result.site.display_name or "not supplied" }}</td>
-    </tr>
-    <tr><th>Elevation</th><td>{{ "%.2f"|format(result.site.ground_elevation_m) }} m</td></tr>
-    <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability }}</td></tr>
-    <tr>
-      <th>Return period / importance level</th>
-      <td>{{ result.input.importance_level or "user input" }}</td>
-    </tr>
-    <tr><th>Building height</th><td>{{ "%.2f"|format(result.input.building_height_m) }} m</td></tr>
-    {% if result.input.structure_class %}
-    <tr><th>Structure class</th><td>{{ result.input.structure_class }}</td></tr>
-    {% endif %}
-    {% if result.input.structure_orientation_deg is not none %}
-    <tr>
-      <th>Orientation</th>
-      <td>{{ "%.2f"|format(result.input.structure_orientation_deg) }} deg</td>
-    </tr>
-    {% endif %}
-    {% if result.input.roof_shape %}
-    <tr><th>Roof shape</th><td>{{ result.input.roof_shape }}</td></tr>
-    {% endif %}
-    {% if result.input.building_width_m is not none %}
-    <tr><th>Width</th><td>{{ "%.2f"|format(result.input.building_width_m) }} m</td></tr>
-    {% endif %}
-    {% if result.input.building_length_m is not none %}
-    <tr><th>Length</th><td>{{ "%.2f"|format(result.input.building_length_m) }} m</td></tr>
-    {% endif %}
-    {% if result.input.roof_pitch_deg is not none %}
-    <tr><th>Roof pitch</th><td>{{ "%.2f"|format(result.input.roof_pitch_deg) }} deg</td></tr>
-    {% endif %}
-    {% if result.input.average_height_m is not none %}
-    <tr><th>Average height</th><td>{{ "%.2f"|format(result.input.average_height_m) }} m</td></tr>
-    {% endif %}
-    {% if result.input.base_rl_m is not none %}
-    <tr><th>Base RL</th><td>{{ "%.2f"|format(result.input.base_rl_m) }} m</td></tr>
-    {% endif %}
-  </table>
-  </section>
-
-  <section>
-  <h2>3. Wind Assessment Summary</h2>
-  <h3>Wind Region Assessment</h3>
-  {% if result.wind_region_assessment %}
-  <table>
-    <tr><th>Wind Region</th><td>{{ result.wind_region_assessment.wind_region }}</td></tr>
-    <tr>
-      <th>Region sub-classification</th>
-      <td>{{ result.wind_region_assessment.region_subclassification or "not applicable" }}</td>
-    </tr>
-    <tr><th>Source</th><td>{{ result.wind_region_assessment.source }}</td></tr>
-    <tr><th>Confidence</th><td>{{ result.wind_region_assessment.confidence }}</td></tr>
-    <tr>
-      <th>Distance to boundary</th>
-      <td>
-        {% if result.wind_region_assessment.distance_to_boundary_m is not none %}
-        {{ "%.1f"|format(result.wind_region_assessment.distance_to_boundary_m) }} m
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-    </tr>
-    <tr>
-      <th>Warnings</th>
-      <td>{{ result.wind_region_assessment.warnings|join(" ") }}</td>
-    </tr>
-  </table>
-  {% endif %}
-
-  <h3>Regional Wind Speed Assessment</h3>
-  {% if result.regional_wind_speed_assessment %}
-  <table>
-    <tr><th>Region</th><td>{{ result.regional_wind_speed_assessment.wind_region }}</td></tr>
-    <tr>
-      <th>Importance Level</th>
-      <td>{{ result.regional_wind_speed_assessment.importance_level or "not supplied" }}</td>
-    </tr>
-    <tr><th>ARI</th><td>{{ result.regional_wind_speed_assessment.ari_years }} years</td></tr>
-    <tr>
-      <th>VR,ult</th>
-      <td>
-        {% if result.regional_wind_speed_assessment.vr_ult is not none %}
-        {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_ult) }} m/s
-        {% else %}
-        manual input required
-        {% endif %}
-      </td>
-    </tr>
-    <tr>
-      <th>VR,serv</th>
-      <td>
-        {% if result.regional_wind_speed_assessment.vr_serv is not none %}
-        {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_serv) }} m/s
-        {% else %}
-        manual input required
-        {% endif %}
-      </td>
-    </tr>
-    <tr>
-      <th>Selected table</th>
-      <td>{{ result.regional_wind_speed_assessment.selected_table }}</td>
-    </tr>
-    <tr>
-      <th>Lookup values</th>
-      <td>
-        <ul>
-          {% for item in result.regional_wind_speed_assessment.lookup_values %}
-          <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      </td>
-    </tr>
-    <tr>
-      <th>Interpolation</th>
-      <td>{{ result.regional_wind_speed_assessment.interpolation or "not required" }}</td>
-    </tr>
-  </table>
-  {% endif %}
-
-  <h3>Direction Multiplier Assessment</h3>
-  {% if result.direction_multiplier_assessment %}
-  <table>
-    <tr><th>Wind Region</th><td>{{ result.direction_multiplier_assessment.wind_region }}</td></tr>
-    <tr><th>Source table</th><td>{{ result.direction_multiplier_assessment.source_table }}</td></tr>
-    <tr>
-      <th>Highest Md</th>
-      <td>
-        {% if result.direction_multiplier_assessment.highest_md is not none %}
-        {{ "%.3f"|format(result.direction_multiplier_assessment.highest_md) }}
-        {% else %}
-        manual input required
-        {% endif %}
-      </td>
-    </tr>
-    <tr>
-      <th>Governing direction(s)</th>
-      <td>{{ result.direction_multiplier_assessment.governing_directions|join(", ") }}</td>
-    </tr>
-  </table>
-  <table>
-    <tr><th>Direction</th><th>Md</th></tr>
-    {% for row in result.direction_multiplier_assessment.directions %}
-    <tr class="{% if row.is_governing %}governing{% endif %}">
-      <td>{{ row.direction }}{% if row.is_governing %}<br>highest Md{% endif %}</td>
-      <td>
-        {% if row.md is not none %}
-        {{ "%.3f"|format(row.md) }}
-        {% else %}
-        manual input required
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-
-  <h3>Variable Summary</h3>
-  <table>
-    <tr>
-      <th>Variable</th><th>Direction</th><th>Calculated</th><th>Confidence</th>
-      <th>Final</th><th>Source Reference</th>
-      <th>Warnings</th>
-    </tr>
-    {% for variable in result.variables %}
-    <tr>
-      <td>{{ variable.label }}</td>
-      <td>{{ variable.direction or "all" }}</td>
-      <td>
-        {% if variable.calculated_value is not none %}
-        {{ variable.recommended_label or "" }}
-        <br>{{ "%.3f"|format(variable.calculated_value) }} {{ variable.unit }}
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-      <td>{{ variable.confidence }}</td>
-      <td>
-        {% if variable.final_value is not none %}
-        {{ variable.final_label or "" }}
-        <br>{{ "%.3f"|format(variable.final_value) }} {{ variable.unit }}
-        {% if variable.is_overridden %}
-        <br><strong>Override:</strong> {{ variable.override_reason }}
-        {% endif %}
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-      <td>{{ variable.source_reference }}</td>
-      <td>{{ variable.warnings|join(" ") }}</td>
-    </tr>
-    <tr class="calc">
-      <td></td>
-      <td colspan="6">
-        <strong>{{ variable.detail_label }}:</strong><br>
-        <strong>Formula / basis:</strong> {{ variable.formula_basis }}<br>
-        <strong>Inputs:</strong>
-        <ul>{% for item in variable.calculation_inputs %}<li>{{ item }}</li>{% endfor %}</ul>
-        {% if variable.detail_items %}
-        <strong>Source details:</strong>
-        <ul>{% for item in variable.detail_items %}<li>{{ item }}</li>{% endfor %}</ul>
-        {% endif %}
-        <strong>Result:</strong> {{ variable.calculation_result }}
-        {% if variable.override_reason %}
-        <br><strong>Override reason:</strong> {{ variable.override_reason }}
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  </section>
-
-  <section>
-  <h2>4. Directional Results Table</h2>
-  <p>Vsit,b = VR x Md x Mz,cat x Ms x Mt</p>
-  <table>
-    <tr>
-      <th>Direction</th><th>VR</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th>
-      <th>Vsit,b</th><th>Warnings</th>
-    </tr>
-    {% for row in result.directional_vsitb %}
-    <tr class="{% if row.is_governing %}governing{% endif %}">
-      <td>
-        {{ row.direction }}
-        {% if row.is_governing %}<br>governing direction{% endif %}
-      </td>
-      <td>
-        {% if row.vr is not none %}{{ "%.3f"|format(row.vr) }}{% else %}not available{% endif %}
-      </td>
-      <td>
-        {% if row.md is not none %}{{ "%.3f"|format(row.md) }}{% else %}not available{% endif %}
-      </td>
-      <td>
-        {% if row.mzcat is not none %}
-        {{ "%.3f"|format(row.mzcat) }}
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-      <td>
-        {% if row.ms is not none %}{{ "%.3f"|format(row.ms) }}{% else %}not available{% endif %}
-      </td>
-      <td>
-        {% if row.mt is not none %}{{ "%.3f"|format(row.mt) }}{% else %}not available{% endif %}
-      </td>
-      <td>
-        {% if row.final_vsitb is not none %}
-        {{ "%.3f"|format(row.final_vsitb) }} m/s
-        {% if row.is_governing %}<br>governing Vsit,b{% endif %}
-        {% else %}
-        not available
-        {% endif %}
-      </td>
-      <td>{{ row.warnings|join(" ") }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  </section>
-
-  <section>
-  <h2>5. Terrain Category</h2>
-  <ul>
-    {% for variable in result.variables %}
-    {% if variable.variable == "Mzcat" %}
-    <li>
-      {{ variable.direction }}:
-      {{ variable.recommended_label or "review required" }};
-      final
-      {% if variable.final_value is not none %}
-      {{ "%.3f"|format(variable.final_value) }}
-      {% else %}
-      not available
-      {% endif %};
-      confidence {{ variable.confidence }}.
-    </li>
-    {% endif %}
-    {% endfor %}
-  </ul>
-  </section>
-
-  <section>
-  <h2>6. Shielding</h2>
-  <ul>
-    {% for variable in result.variables %}
-    {% if variable.variable == "Ms" %}
-    <li>
-      {{ variable.direction }}:
-      {{ variable.recommended_label or "review required" }};
-      final
-      {% if variable.final_value is not none %}
-      {{ "%.3f"|format(variable.final_value) }}
-      {% else %}
-      not available
-      {% endif %};
-      confidence {{ variable.confidence }}.
-    </li>
-    {% endif %}
-    {% endfor %}
-  </ul>
-  </section>
-
-  <section>
-  <h2>7. Topography</h2>
-  <ul>
-    {% for variable in result.variables %}
-    {% if variable.variable == "Mt" %}
-    <li>
-      {{ variable.direction }}:
-      {{ variable.recommended_label or "review required" }};
-      final
-      {% if variable.final_value is not none %}
-      {{ "%.3f"|format(variable.final_value) }}
-      {% else %}
-      not available
-      {% endif %};
-      confidence {{ variable.confidence }}.
-    </li>
-    {% endif %}
-    {% endfor %}
-  </ul>
-  </section>
-
-  <section>
-  <h2>8. Vsit,b</h2>
-  <p>Governing direction: {{ result.governing_direction or "not available" }}.</p>
-  <p>
-    Governing Vsit,b:
-    {% if result.governing_vsitb is not none %}
-    {{ "%.3f"|format(result.governing_vsitb) }} m/s.
-    {% else %}
-    not available.
-    {% endif %}
-  </p>
-  </section>
-
-  <section>
-  <h2>9. Maps</h2>
-  <p>
-    Use the application map views for terrain, shielding, topographic and combined layers.
-  </p>
-  </section>
-
-  <section>
-  <h2>10. Profiles</h2>
-  <p>Terrain profiles remain available in the site analysis tools.</p>
-  </section>
-
-  <section>
-  <h2>11. Engineer Notes</h2>
-  <p>{{ result.engineer_notes or "No engineer notes supplied." }}</p>
-  </section>
-
-  <section>
-  <h2>12. Limitations</h2>
-  <p>No final design pressure calculations are included in this report.</p>
-  </section>
-
-  <section>
-  <h2>Overrides Applied</h2>
-  {% if result.overrides_applied %}
-  <table>
-    <tr><th>Variable</th><th>Direction</th><th>Override value</th><th>Reason</th></tr>
-    {% for override in result.overrides_applied %}
-    <tr>
-      <td>{{ override.variable }}</td>
-      <td>{{ override.direction or "all" }}</td>
-      <td>{{ "%.3f"|format(override.override_value) }}</td>
-      <td>{{ override.reason }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}
-  <p>No overrides applied.</p>
-  {% endif %}
-
-  <p class="disclaimer">
-    No final design pressure calculations are included in this report.
-  </p>
-  {% if calculation_basis_reference %}
-  <p>{{ calculation_basis_reference }}</p>
-  {% endif %}
-  </section>
-  </main>
-</body>
-</html>
-"""
-)
-
-
 CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     r"""
 <!doctype html>
@@ -3665,6 +3057,15 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     .note { color: #667085; }
     .warning { border-left: 4px solid #b54708; padding-left: 12px; }
     .limitation { border-left: 4px solid #b42318; background: #fffbfa; }
+    .preliminary-banner {
+      padding: 9px 28px;
+      background: #fef3f2;
+      border-bottom: 2px solid #b42318;
+      color: #912018;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-align: center;
+    }
     ul { margin: 7px 0 0; padding-left: 20px; }
     @media print {
       body { background: #fff; }
@@ -3685,6 +3086,7 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     <h1>OpenWind-AU Site Wind Assessment</h1>
     <p>Compact engineering review summary through Vsit,b</p>
   </header>
+  <div class="preliminary-banner">PRELIMINARY - NOT FOR CERTIFICATION</div>
   <main>
     <section>
       <h2>Project and outcome</h2>
@@ -3693,6 +3095,14 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           <th>Project</th>
           <td>
             {{ result.input.project_number|e if result.input.project_number else "Not supplied" }}
+          </td>
+        </tr>
+        <tr>
+          <th>Assessment status</th>
+          <td>
+            {% if result.input.assessment_status == "reviewed" %}
+            Reviewed preliminary - {{ result.input.reviewed_by|e }}
+            {% else %}Draft preliminary{% endif %}
           </td>
         </tr>
         <tr>
@@ -3768,8 +3178,8 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
       </table>
     </section>
 
-    {% if report_warnings or result.overrides_applied
-          or result.input.class_multiplier_overrides or result.engineer_notes %}
+    {% if report_warnings or result.input.workflow_overrides
+          or result.input.class_multiplier_overrides or result.input.engineer_notes %}
     <section>
       <h2>Review items</h2>
       {% if report_warnings %}
@@ -3778,11 +3188,11 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         <ul>{% for warning in report_warnings %}<li>{{ warning|e }}</li>{% endfor %}</ul>
       </div>
       {% endif %}
-      {% if result.overrides_applied or result.input.class_multiplier_overrides %}
+      {% if result.input.workflow_overrides or result.input.class_multiplier_overrides %}
       <h3>Overrides</h3>
       <table>
         <tr><th>Type</th><th>Direction</th><th>Selection / value</th><th>Reason</th></tr>
-        {% for override in result.overrides_applied %}
+        {% for override in result.input.workflow_overrides %}
         <tr>
           <td>{{ override.variable }}</td><td>{{ override.direction or "All" }}</td>
           <td>{{ "%.3f"|format(override.override_value) }}</td><td>{{ override.reason|e }}</td>
@@ -3801,8 +3211,8 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         {% endfor %}
       </table>
       {% endif %}
-      {% if result.engineer_notes %}
-      <p><strong>Engineer notes:</strong> {{ result.engineer_notes|e }}</p>
+      {% if result.input.engineer_notes %}
+      <p><strong>Engineer notes:</strong> {{ result.input.engineer_notes|e }}</p>
       {% endif %}
     </section>
     {% endif %}

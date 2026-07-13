@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "source": {
+    "title": "Editable shielding multiplier lookup table",
+    "standard": "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2",
+    "clause": "Clause 4.3",
+    "table": "Table 4.2",
+    "standard_reference": "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2",
+    "status": "review data; not a substitute for the Standard",
+    "review_status": "pending_independent_review",
+    "reviewed_by": null,
+    "reviewed_on": null,
+    "review_note": "Packaged values have deterministic regression snapshots; independent named reviewer and review date are pending. User must hold appropriate rights to verify the source standard."
+  },
+  "values": {
+    "points": [
+      {"s": 1.5, "ms": 0.7},
+      {"s": 3.0, "ms": 0.8},
+      {"s": 6.0, "ms": 0.9},
+      {"s": 12.0, "ms": 1.0}
+    ],
+    "below_first_point": "use_first_ms",
+    "above_last_point": "use_last_ms",
+    "interpolation": "linear",
+    "maximum_reduction_building_height_m": 25.0
+  },
+  "values_sha256": "fc337acb9f85996304b3532b6572a1c99164244af1a34074581604eebfe2d531"
+}

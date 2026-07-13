@@ -29,7 +29,11 @@ def run_site_analysis(
         radius_m=request.radius_m,
         sample_interval_m=request.sample_interval_m,
     )
-    features = analyse_topography(profiles, location.ground_elevation_m)
+    features = analyse_topography(
+        profiles,
+        location.ground_elevation_m,
+        request.reference_height_m,
+    )
     dem_source = dem_provider_label(dem_provider)
     return SiteAnalysisResult(
         input=request,
@@ -84,7 +88,8 @@ def resolve_site_location(request: SiteAnalysisRequest, dem_provider: DEMProvide
 def detect_topographic_features(
     profiles: list[TerrainProfile],
     site_elevation_m: float,
+    average_roof_height_m: float,
 ) -> list[TopographicFeature]:
     """Backward-compatible wrapper for rule-based topographic screening."""
 
-    return analyse_topography(profiles, site_elevation_m)
+    return analyse_topography(profiles, site_elevation_m, average_roof_height_m)

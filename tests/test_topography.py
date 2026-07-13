@@ -8,10 +8,15 @@ from openwind_au.models import TerrainPoint, TerrainProfile
 from openwind_au.topography import analyse_profile_topography, analyse_topography
 
 
-def make_profile(elevations: list[float], direction: str = "N") -> TerrainProfile:
+def make_profile(
+    elevations: list[float],
+    direction: str = "N",
+    *,
+    spacing_m: float = 100.0,
+) -> TerrainProfile:
     points = [
         TerrainPoint(
-            distance_m=float(index * 100),
+            distance_m=float(index * spacing_m),
             latitude=-33.86,
             longitude=151.21,
             elevation_m=elevation,
@@ -32,7 +37,11 @@ def make_profile(elevations: list[float], direction: str = "N") -> TerrainProfil
 
 
 def test_flat_profile_returns_no_significant_feature() -> None:
-    result = analyse_profile_topography(make_profile([100, 100, 100, 100, 100]), 100)
+    result = analyse_profile_topography(
+        make_profile([100, 100, 100, 100, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "no significant feature"
     assert result.site_rl_m == 100
@@ -43,7 +52,11 @@ def test_flat_profile_returns_no_significant_feature() -> None:
 
 
 def test_simple_ridge_profile_returns_ridge_candidate() -> None:
-    result = analyse_profile_topography(make_profile([100, 105, 125, 105, 100]), 100)
+    result = analyse_profile_topography(
+        make_profile([100, 105, 125, 105, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "ridge"
     assert result.crest_rl_m == pytest.approx(125)
@@ -82,7 +95,11 @@ def test_broad_low_gradient_ridge_screens_out_as_public_dem_undulation() -> None
         100,
     ]
 
-    result = analyse_profile_topography(make_profile(elevations), 110)
+    result = analyse_profile_topography(
+        make_profile(elevations),
+        110,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "no significant feature"
     assert result.h_m == 0
@@ -115,7 +132,11 @@ def test_large_relief_gentle_ridge_is_still_reported_for_review() -> None:
         100,
     ]
 
-    result = analyse_profile_topography(make_profile(elevations), 110)
+    result = analyse_profile_topography(
+        make_profile(elevations),
+        110,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "ridge"
     assert result.h_m == pytest.approx(70)
@@ -123,7 +144,11 @@ def test_large_relief_gentle_ridge_is_still_reported_for_review() -> None:
 
 
 def test_simple_hill_profile_returns_hill_candidate() -> None:
-    result = analyse_profile_topography(make_profile([100, 105, 112, 122, 135]), 100)
+    result = analyse_profile_topography(
+        make_profile([100, 105, 112, 122, 135]),
+        100,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "hill"
     assert result.crest_rl_m == pytest.approx(135)
@@ -133,7 +158,11 @@ def test_simple_hill_profile_returns_hill_candidate() -> None:
 
 
 def test_escarpment_profile_returns_escarpment_candidate() -> None:
-    result = analyse_profile_topography(make_profile([100, 100, 130, 132, 132]), 100)
+    result = analyse_profile_topography(
+        make_profile([100, 100, 130, 132, 132]),
+        100,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "escarpment"
     assert result.h_m == pytest.approx(30)
@@ -144,7 +173,11 @@ def test_escarpment_profile_returns_escarpment_candidate() -> None:
 
 
 def test_windward_escarpment_resolves_clause_4_4_half_height_geometry() -> None:
-    result = analyse_profile_topography(make_profile([132, 132, 130, 100, 100]), 132)
+    result = analyse_profile_topography(
+        make_profile([132, 132, 130, 100, 100]),
+        132,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "escarpment"
     assert result.h_m == pytest.approx(30)
@@ -155,7 +188,11 @@ def test_windward_escarpment_resolves_clause_4_4_half_height_geometry() -> None:
 
 
 def test_valley_profile_returns_valley_candidate() -> None:
-    result = analyse_profile_topography(make_profile([120, 110, 90, 110, 120]), 100)
+    result = analyse_profile_topography(
+        make_profile([120, 110, 90, 110, 120]),
+        100,
+        average_roof_height_m=20.0,
+    )
 
     assert result.feature_type == "valley"
     assert result.base_rl_m == pytest.approx(90)
@@ -170,7 +207,7 @@ def test_analyse_topography_returns_one_result_per_profile() -> None:
         for direction in ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     ]
 
-    results = analyse_topography(profiles, site_rl_m=100)
+    results = analyse_topography(profiles, site_rl_m=100, average_roof_height_m=20.0)
 
     assert len(results) == 8
     assert [result.direction for result in results] == [
@@ -184,3 +221,22 @@ def test_analyse_topography_returns_one_result_per_profile() -> None:
         "NW",
     ]
     assert all(result.feature_type == "no significant feature" for result in results)
+
+
+def test_feature_screening_uses_dynamic_clause_height_threshold() -> None:
+    profile = make_profile([100, 100, 104.5, 100, 100], spacing_m=10.0)
+
+    low_building = analyse_profile_topography(
+        profile,
+        100,
+        average_roof_height_m=10.0,
+    )
+    taller_building = analyse_profile_topography(
+        profile,
+        100,
+        average_roof_height_m=20.0,
+    )
+
+    assert low_building.feature_type in {"ridge", "escarpment"}
+    assert low_building.h_m == pytest.approx(4.5)
+    assert taller_building.feature_type == "no significant feature"

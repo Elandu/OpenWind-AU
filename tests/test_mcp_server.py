@@ -73,6 +73,26 @@ def test_mcp_all_variables_matches_component_product() -> None:
     }
 
 
+def test_mcp_all_variables_uses_full_precision_mt_before_rounding_vsitb() -> None:
+    result = calculate_all_wind_variables(
+        wind_region="A2",
+        ari_years=500,
+        direction="N",
+        terrain_category="TC3",
+        height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="ridge",
+        h_m=30.0,
+        lu_m=75.0,
+        x_m=20.0,
+        site_elevation_m=0.0,
+    )
+
+    assert result["outputs"]["mt"] == pytest.approx(1.18876)
+    assert result["outputs"]["vsitb_mps"] == pytest.approx(32.079139)
+
+
 def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
     result = calculate_shielding_multiplier(1.0, 25.1)
 
@@ -94,6 +114,7 @@ def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
                 50,
                 0,
                 float("inf"),
+                10,
                 "A2",
                 100,
             ),
@@ -104,3 +125,92 @@ def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
 def test_mcp_tools_reject_nonfinite_inputs(call, error: str) -> None:
     with pytest.raises(ValueError, match=error):
         call()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: calculate_regional_wind_speed("Aardvark", 500),
+        lambda: calculate_regional_wind_speed("BLAH", 500),
+        lambda: get_direction_multipliers("Aardvark"),
+        lambda: get_direction_multipliers("BLAH"),
+        lambda: calculate_terrain_height_multiplier("TC3", 10.0, "ZZ"),
+        lambda: calculate_topographic_wind_multiplier(
+            "hill",
+            20,
+            50,
+            0,
+            10,
+            10,
+            "ZZ",
+            100,
+        ),
+    ],
+)
+def test_mcp_multiplier_tools_reject_unknown_wind_region(call) -> None:
+    with pytest.raises(ValueError, match="Unsupported Australian wind region"):
+        call()
+
+
+def test_mcp_topographic_tool_rejects_unknown_feature_type() -> None:
+    with pytest.raises(ValueError, match="Unsupported topographic feature type"):
+        calculate_topographic_wind_multiplier("unknown", 20, 50, 0, 10, 10, "A2", 100)
+
+
+def test_mcp_topographic_tool_rejects_reference_height_above_standard_scope() -> None:
+    with pytest.raises(ValueError, match="at most 200 m"):
+        calculate_topographic_wind_multiplier(
+            "no significant feature",
+            0,
+            0,
+            0,
+            200.1,
+            10,
+            "A2",
+            100,
+        )
+
+
+def test_mcp_topographic_tools_block_unresolved_qualifying_geometry() -> None:
+    with pytest.raises(ValueError, match="Lu is required"):
+        calculate_topographic_wind_multiplier("hill", 20, 0, 0, 10, 10, "A2", 100)
+
+    with pytest.raises(ValueError, match="Lu is required"):
+        calculate_all_wind_variables(
+            wind_region="A2",
+            ari_years=500,
+            direction="N",
+            terrain_category="TC3",
+            height_m=10.0,
+            shielding_parameter=4.5,
+            building_height_m=10.0,
+            feature_type="hill",
+            h_m=20.0,
+            lu_m=0.0,
+            x_m=0.0,
+            site_elevation_m=100.0,
+        )
+
+
+def test_mcp_combined_tool_rejects_reference_height_above_building_height() -> None:
+    with pytest.raises(ValueError, match="Reference height.*building height"):
+        calculate_all_wind_variables(
+            wind_region="A2",
+            ari_years=500,
+            direction="N",
+            terrain_category="TC3",
+            height_m=11.0,
+            shielding_parameter=4.5,
+            building_height_m=10.0,
+            feature_type="no significant feature",
+            h_m=0.0,
+            lu_m=0.0,
+            x_m=0.0,
+            site_elevation_m=100.0,
+        )
+
+
+def test_mcp_shielding_uses_table_at_exact_25_m_limit() -> None:
+    result = calculate_shielding_multiplier(1.0, 25.0)
+
+    assert result["outputs"]["ms"] == pytest.approx(0.7)

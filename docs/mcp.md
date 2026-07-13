@@ -62,6 +62,10 @@ engineering-review flag. The server calculates from supplied, reviewed inputs; i
 terrain category, obstruction suitability, topographic survey geometry, jurisdictional variations,
 or compliance.
 
+The MCP server uses the same configured and digest-validated Table 4.1/Table 4.2 assets as the web
+API (`OPENWIND_MZCAT_TABLE_PATH` and `OPENWIND_MS_TABLE_PATH`). Unsupported Australian wind-region
+labels are rejected rather than falling through to an ordinary-region calculation.
+
 ## Verify
 
 ```bash

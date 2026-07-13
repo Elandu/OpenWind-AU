@@ -142,7 +142,7 @@ def site_result() -> SiteAnalysisResult:
             footprints=[],
         ).site,
         profiles=profiles,
-        features=analyse_topography(profiles, 50),
+        features=analyse_topography(profiles, 50, average_roof_height_m=10.0),
         assumptions=[],
         limitations=[],
     )

@@ -229,7 +229,11 @@ GET  /api/validation/report/html
 
 `/health/live` is the process-liveness probe. `/health` is the stricter assessment-readiness probe
 and returns HTTP 503 with component checks until required production datasets, reviewed lookup
-tables, and the configured DEM provider/cache are usable.
+tables (`VR`, `Md`, `Mz,cat`, and `Ms`), matching lookup digests, and the configured DEM
+provider/cache are usable. Digest pinning currently covers `Mz,cat` and `Ms`; `VR` and `Md` use
+review metadata and coverage checks. Completed-result report endpoints also require the unmodified
+`integrity_token` returned by the workflow. Production deployments must configure the same
+32-byte-or-longer `OPENWIND_RESULT_SIGNING_KEY` on every API worker.
 
 ## Example Outputs
 

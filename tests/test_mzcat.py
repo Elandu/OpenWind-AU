@@ -2,23 +2,35 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
+import openwind_au.mzcat as mzcat_module
 from openwind_au.api import create_app
 from openwind_au.models import (
     ObstructionInventoryRequest,
+    SiteAnalysisRequest,
+    SiteLocation,
     TerrainCategoryDirectionEvidence,
     TerrainCategoryScoreComponents,
 )
 from openwind_au.mzcat import (
-    INDICATIVE_MZCAT_REFERENCE,
     category_bounds,
     direction_mzcat_assessment,
     indicative_mzcat,
+    run_mzcat_assessment,
 )
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import render_terrain_category_report_html
+from openwind_au.standard_lookup_tables import (
+    MZCAT_DATA_FILE,
+    MZCAT_EXPECTED_SHA256_ENV,
+    MZCAT_TABLE_ENV,
+    canonical_values_sha256,
+    load_packaged_lookup_data,
+)
 from openwind_au.terrain_category import run_terrain_category_evidence
 from tests.test_terrain_category import footprint, site_result
 
@@ -80,6 +92,39 @@ def test_category_range_mapping_and_indicative_values() -> None:
     assert "built-up coverage 42.0%" in assessment.reasoning
 
 
+def test_mzcat_assessment_uses_one_lookup_snapshot_and_records_provenance(monkeypatch) -> None:
+    lookup = load_packaged_lookup_data(MZCAT_DATA_FILE)
+    load_count = 0
+
+    def counted_loader():
+        nonlocal load_count
+        load_count += 1
+        return lookup
+
+    monkeypatch.setattr(mzcat_module, "load_mzcat_table", counted_loader)
+    request = SiteAnalysisRequest(
+        latitude=SITE_LAT,
+        longitude=SITE_LON,
+        building_height_m=10,
+        radius_m=500,
+    )
+    result = run_mzcat_assessment(
+        request=request,
+        site=SiteLocation(
+            latitude=SITE_LAT,
+            longitude=SITE_LON,
+            ground_elevation_m=10,
+            source="test",
+        ),
+        directions=[evidence(), evidence().model_copy(update={"direction": "N"})],
+    )
+
+    assert load_count == 1
+    assert result.lookup_provenance.values_sha256 == lookup["values_sha256"]
+    assert result.lookup_provenance.schema_version == lookup["schema_version"]
+    assert result.lookup_provenance.independent_review_recorded is False
+
+
 def test_mzcat_confidence_drops_for_weak_evidence() -> None:
     assessment = direction_mzcat_assessment(
         evidence(confidence="low", height_coverage=30, obstruction_count=2),
@@ -115,22 +160,6 @@ def test_best_estimate_mode_selects_upper_category_bound() -> None:
     assert assessment.recommended_mzcat == pytest.approx(0.92)
 
 
-@pytest.mark.parametrize(
-    ("height_m", "category", "expected"),
-    [
-        (height_m, category, expected)
-        for height_m, row in INDICATIVE_MZCAT_REFERENCE.items()
-        for category, expected in row.items()
-    ],
-)
-def test_mzcat_matches_every_table_4_1_node(
-    height_m: float,
-    category: str,
-    expected: float,
-) -> None:
-    assert indicative_mzcat(category, height_m) == pytest.approx(expected)
-
-
 def test_mzcat_uses_linear_height_interpolation() -> None:
     assert indicative_mzcat("TC3", 12.5) == pytest.approx(0.86)
 
@@ -139,15 +168,56 @@ def test_mzcat_uses_linear_category_interpolation() -> None:
     assert indicative_mzcat("TC1.5", 10) == pytest.approx(1.04)
 
 
-def test_mzcat_clamps_to_table_height_limits() -> None:
+def test_mzcat_uses_combined_height_and_category_interpolation() -> None:
+    assert indicative_mzcat("TC1.5", 12.5) == pytest.approx(1.0625)
+
+
+def test_mzcat_clamps_height_at_lower_table_limit() -> None:
     assert indicative_mzcat("TC4", 1) == pytest.approx(0.75)
-    assert indicative_mzcat("TC4", 250) == pytest.approx(1.16)
+
+
+def test_mzcat_rejects_height_above_standard_scope() -> None:
+    with pytest.raises(ValueError, match="200 m scope"):
+        indicative_mzcat("TC4", 200.1)
 
 
 def test_region_a0_uses_tc2_to_100_m_and_1_24_above() -> None:
     assert indicative_mzcat("TC4", 10, wind_region="A0") == pytest.approx(1.00)
     assert indicative_mzcat("TC1", 100, wind_region="A0") == pytest.approx(1.24)
     assert indicative_mzcat("TC1", 150, wind_region="A0") == pytest.approx(1.24)
+
+
+def test_mzcat_rejects_unknown_wind_region() -> None:
+    with pytest.raises(ValueError, match="Unsupported Australian wind region"):
+        indicative_mzcat("TC3", 10, wind_region="ZZ")
+
+
+def test_mzcat_rejects_invalid_category_even_when_a0_rule_is_category_independent() -> None:
+    with pytest.raises(ValueError, match="Unsupported terrain category"):
+        indicative_mzcat("invalid", 150, wind_region="A0")
+
+
+def test_mzcat_uses_validated_environment_override(monkeypatch, tmp_path) -> None:
+    data = load_packaged_lookup_data(MZCAT_DATA_FILE)
+    data["values"]["rows"][2][3] = 0.84
+    data["values_sha256"] = canonical_values_sha256(data)
+    path = tmp_path / "mzcat.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv(MZCAT_TABLE_ENV, str(path))
+    monkeypatch.setenv(MZCAT_EXPECTED_SHA256_ENV, data["values_sha256"])
+
+    assert indicative_mzcat("TC3", 10) == pytest.approx(0.84)
+
+
+def test_mzcat_rejects_lookup_with_stale_digest(monkeypatch, tmp_path) -> None:
+    data = load_packaged_lookup_data(MZCAT_DATA_FILE)
+    data["values"]["rows"][2][3] = 0.84
+    path = tmp_path / "mzcat.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv(MZCAT_TABLE_ENV, str(path))
+
+    with pytest.raises(ValueError, match="values_sha256"):
+        indicative_mzcat("TC3", 10)
 
 
 @pytest.mark.parametrize("height", [0, -1, float("nan"), float("inf")])

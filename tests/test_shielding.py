@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 import pytest
 
+import openwind_au.shielding as shielding_module
 from openwind_au.geo import EARTH_RADIUS_M
 from openwind_au.models import SiteLocation
 from openwind_au.obstructions import build_obstruction_records
 from openwind_au.shielding import (
     footprint_breadth_normal_to_wind,
-    ms_from_shielding_parameter,
     run_shielding_sector_analysis,
+)
+from openwind_au.standard_calculations import (
+    ms_from_shielding_parameter,
+    shielding_reduction_height_limit_m,
+)
+from openwind_au.standard_lookup_tables import (
+    MS_DATA_FILE,
+    MS_EXPECTED_SHA256_ENV,
+    MS_TABLE_ENV,
+    canonical_values_sha256,
+    load_packaged_lookup_data,
 )
 
 SITE_LAT = -33.86
@@ -292,7 +304,7 @@ def test_steep_slope_building_below_subject_top_is_rejected() -> None:
     assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
 
 
-def test_steep_slope_building_above_subject_top_is_still_rejected() -> None:
+def test_steep_slope_building_above_subject_top_is_retained_for_review() -> None:
     records = build_obstruction_records(
         [rectangle_footprint("steep-tall", 0, 40, 20, 10, 30)],
         site_latitude=SITE_LAT,
@@ -300,6 +312,46 @@ def test_steep_slope_building_above_subject_top_is_still_rejected() -> None:
         radius_m=300,
     )
     records[0] = records[0].model_copy(update={"ground_rl_m": -10.0})
+
+    sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.ns == 1
+    assert north.rejection_reason_counts == {}
+    assert any("common datum exceeds the subject building" in warning for warning in north.warnings)
+
+
+def test_steep_slope_building_equal_to_subject_top_is_rejected() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("steep-equal", 0, 40, 20, 10, 20)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=300,
+    )
+    records[0] = records[0].model_copy(update={"ground_rl_m": -10.0})
+
+    sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.ns == 0
+    assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
+
+
+def test_reviewed_surface_rl_controls_steep_slope_common_datum_check() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("steep-surface", 0, 40, 20, 10, 30)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=300,
+    )
+    records[0] = records[0].model_copy(
+        update={
+            "ground_rl_m": -10.0,
+            "surface_rl_m": 8.0,
+            "height_source": "DSM_DTM",
+            "selected_height_m": 18.0,
+        }
+    )
 
     sectors = run_shielding_sector_analysis(site(), records, subject_height_m=10)
     north = next(sector for sector in sectors if sector.direction == "N")
@@ -421,9 +473,57 @@ def test_breadth_uses_footprint_projection_normal_to_wind() -> None:
 
 
 def test_ms_interpolation_thresholds() -> None:
-    assert ms_from_shielding_parameter(1.0) == pytest.approx(0.7)
+    assert ms_from_shielding_parameter(0.0) == pytest.approx(0.7)
+    assert ms_from_shielding_parameter(1.5) == pytest.approx(0.7)
     assert ms_from_shielding_parameter(3.0) == pytest.approx(0.8)
     assert ms_from_shielding_parameter(4.5) == pytest.approx(0.85)
+    assert ms_from_shielding_parameter(6.0) == pytest.approx(0.9)
     assert ms_from_shielding_parameter(12.0) == pytest.approx(1.0)
+    assert ms_from_shielding_parameter(20.0) == pytest.approx(1.0)
+    assert shielding_reduction_height_limit_m() == pytest.approx(25.0)
     with pytest.raises(ValueError, match="finite"):
         ms_from_shielding_parameter(float("nan"))
+    with pytest.raises(ValueError, match="finite"):
+        ms_from_shielding_parameter(float("inf"))
+    with pytest.raises(ValueError, match="not be negative"):
+        ms_from_shielding_parameter(-0.1)
+
+
+def test_shielding_analysis_uses_one_lookup_snapshot(monkeypatch) -> None:
+    lookup = load_packaged_lookup_data(MS_DATA_FILE)
+    load_count = 0
+
+    def counted_loader():
+        nonlocal load_count
+        load_count += 1
+        return lookup
+
+    monkeypatch.setattr(shielding_module, "load_ms_table", counted_loader)
+
+    sectors = run_shielding_sector_analysis(site(), [], subject_height_m=10)
+
+    assert load_count == 1
+    assert len(sectors) == 8
+
+
+def test_ms_uses_validated_environment_override(monkeypatch, tmp_path) -> None:
+    data = load_packaged_lookup_data(MS_DATA_FILE)
+    data["values"]["points"][1]["ms"] = 0.81
+    data["values_sha256"] = canonical_values_sha256(data)
+    path = tmp_path / "ms.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv(MS_TABLE_ENV, str(path))
+    monkeypatch.setenv(MS_EXPECTED_SHA256_ENV, data["values_sha256"])
+
+    assert ms_from_shielding_parameter(3.0) == pytest.approx(0.81)
+
+
+def test_ms_rejects_lookup_with_stale_digest(monkeypatch, tmp_path) -> None:
+    data = load_packaged_lookup_data(MS_DATA_FILE)
+    data["values"]["points"][1]["ms"] = 0.81
+    path = tmp_path / "ms.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv(MS_TABLE_ENV, str(path))
+
+    with pytest.raises(ValueError, match="values_sha256"):
+        ms_from_shielding_parameter(3.0)

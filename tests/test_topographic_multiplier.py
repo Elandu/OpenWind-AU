@@ -9,10 +9,11 @@ from openwind_au.models import (
     SiteLocation,
     TopographicFeature,
     WindRegionAssessment,
+    WindVariableAssessment,
     WindWorkflowRequest,
 )
 from openwind_au.topographic_multiplier import calculate_topographic_multiplier
-from openwind_au.wind_workflow import mt_assessments
+from openwind_au.wind_workflow import mt_assessments, vsitb_directional_rows
 
 
 @pytest.mark.parametrize(
@@ -33,6 +34,7 @@ def test_mh_crest_values_follow_clause_4_4_2(slope: float, expected_mh: float) -
         lu_m=h_m / (2.0 * slope),
         x_m=0.0,
         z_m=0.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -49,6 +51,7 @@ def test_reference_height_and_distance_reduce_mh() -> None:
         lu_m=75.0,
         x_m=0.0,
         z_m=0.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -58,6 +61,7 @@ def test_reference_height_and_distance_reduce_mh() -> None:
         lu_m=75.0,
         x_m=20.0,
         z_m=10.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -74,6 +78,7 @@ def test_steep_peak_zone_uses_equation_4_4_4() -> None:
         lu_m=20.0,
         x_m=2.0,
         z_m=8.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -90,6 +95,7 @@ def test_downwind_escarpment_uses_ten_l1_zone() -> None:
         lu_m=50.0,
         x_m=100.0,
         z_m=10.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -106,6 +112,7 @@ def test_no_feature_still_applies_high_elevation_a4_factor() -> None:
         lu_m=0.0,
         x_m=0.0,
         z_m=10.0,
+        average_roof_height_m=10.0,
         wind_region="A4",
         site_elevation_m=1000.0,
     )
@@ -123,6 +130,7 @@ def test_region_a0_reduces_hill_shape_increment() -> None:
         lu_m=50.0,
         x_m=0.0,
         z_m=0.0,
+        average_roof_height_m=10.0,
         wind_region="A0",
         site_elevation_m=100.0,
     )
@@ -139,18 +147,30 @@ def test_topographic_multiplier_rejects_nonfinite_geometry() -> None:
             lu_m=50.0,
             x_m=0.0,
             z_m=10.0,
+            average_roof_height_m=10.0,
             wind_region="A2",
             site_elevation_m=100.0,
         )
 
 
-def test_low_or_gentle_feature_has_no_hill_shape_increase() -> None:
-    low = calculate_topographic_multiplier(
+def test_dynamic_feature_height_threshold_and_gentle_slope_rules() -> None:
+    below_dynamic_threshold = calculate_topographic_multiplier(
         feature_type="ridge",
-        h_m=9.9,
+        h_m=3.9,
         lu_m=20.0,
         x_m=0.0,
         z_m=0.0,
+        average_roof_height_m=10.0,
+        wind_region="A2",
+        site_elevation_m=100.0,
+    )
+    at_dynamic_threshold = calculate_topographic_multiplier(
+        feature_type="ridge",
+        h_m=4.0,
+        lu_m=20.0,
+        x_m=0.0,
+        z_m=0.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
@@ -160,12 +180,29 @@ def test_low_or_gentle_feature_has_no_hill_shape_increase() -> None:
         lu_m=250.0,
         x_m=0.0,
         z_m=0.0,
+        average_roof_height_m=10.0,
         wind_region="A2",
         site_elevation_m=100.0,
     )
 
-    assert low.mt == 1.0
+    assert below_dynamic_threshold.minimum_feature_height_m == pytest.approx(4.0)
+    assert below_dynamic_threshold.mt == 1.0
+    assert at_dynamic_threshold.mt > 1.0
     assert gentle.mt == 1.0
+
+
+def test_topographic_multiplier_rejects_reference_height_above_standard_scope() -> None:
+    with pytest.raises(ValueError, match="at most 200 m"):
+        calculate_topographic_multiplier(
+            feature_type="no significant feature",
+            h_m=0.0,
+            lu_m=0.0,
+            x_m=0.0,
+            z_m=200.1,
+            average_roof_height_m=10.0,
+            wind_region="A2",
+            site_elevation_m=100.0,
+        )
 
 
 def test_workflow_mt_uses_dem_feature_geometry_and_exposes_calculation() -> None:
@@ -216,13 +253,38 @@ def test_workflow_mt_uses_dem_feature_geometry_and_exposes_calculation() -> None
 
     assessment = mt_assessments(request, site_result, wind_region, {}, {})[0]
 
-    assert assessment.calculated_value == pytest.approx(1.189)
+    assert assessment.calculated_value == pytest.approx(1.1887601887601889)
     assert assessment.final_value == assessment.calculated_value
     assert assessment.final_label == "Calculated Mt from terrain profile"
     assert "Equation 4.4(3)" in assessment.formula_basis
     assert "Mh: 1.189" in assessment.calculation_inputs
     assert "Reference height z: 10.000 m" in assessment.calculation_inputs
     assert any("public DEM geometry" in warning for warning in assessment.warnings)
+
+    variables = [
+        WindVariableAssessment(
+            variable=variable,  # type: ignore[arg-type]
+            label=variable,
+            direction=direction,  # type: ignore[arg-type]
+            calculated_value=value,
+            final_value=value,
+            evidence_link="#test",
+            formula_basis="test input",
+            calculation_result="test input",
+        )
+        for variable, direction, value in (
+            ("VR", None, 45.0),
+            ("Md", "N", 0.85),
+            ("Mzcat", "N", 0.83),
+            ("Ms", "N", 0.85),
+        )
+    ]
+    north = next(
+        row for row in vsitb_directional_rows([*variables, assessment]) if row.direction == "N"
+    )
+    assert north.final_vsitb == pytest.approx(
+        45.0 * 0.85 * 0.83 * 0.85 * assessment.calculated_value
+    )
 
 
 def test_workflow_mt_blocks_unresolved_upwind_geometry() -> None:

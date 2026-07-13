@@ -18,16 +18,19 @@ GET /health
 API process can answer requests.
 
 `/health` is a deployment-readiness probe. It returns HTTP 200 with `status: "ready"` only when a
-non-test wind-region dataset, reviewed and complete `Md` and `VR` lookup data, and the configured
-DEM provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
+non-test wind-region dataset, reviewed and complete `VR`, `Md`, `Mz,cat`, and `Ms` lookup data,
+matching `Mz,cat`/`Ms` lookup digests, a durable `OPENWIND_RESULT_SIGNING_KEY`, and the configured DEM
+provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
 consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
 assessment traffic.
 
-Raw obstruction-provider diagnostics are intentionally absent from OpenAPI and disabled by
-default. For a trusted local troubleshooting session only, set
-`OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable
-`GET /api/obstructions/debug`. Do not expose that route on a public deployment because it includes
-provider queries, cache diagnostics, and pipeline details.
+Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
+disabled by default. For a trusted local troubleshooting session only, set
+`OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable `/api/debug/*` and
+`GET /api/obstructions/debug`. Do not expose those routes on a public deployment because they can
+include local dataset paths, polygon attributes, provider queries, cache diagnostics, and pipeline
+details. Normal assessment responses omit the local wind-region dataset path and full GIS polygon;
+use the dedicated map endpoint for rendered geometry.
 
 ## Analyse A Site
 
@@ -181,6 +184,16 @@ Use the two explicit override collections instead:
 
 These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
 and do not certify the automated GIS evidence or final design outcome.
+
+`assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
+both `reviewed_by` and non-empty `engineer_notes`. `final` is rejected because this service does
+not issue certified assessments. HTML and PDF reports remain marked `PRELIMINARY - NOT FOR
+CERTIFICATION` in either state.
+
+The response fields named `final_value` and `final_vsitb` are retained for API compatibility. They
+mean the selected calculated or explicitly overridden value used in the current preliminary
+workflow; they are not a certification state. Review metadata and override collections have one
+source of truth under `input` and are not repeated at the result top level.
 
 ## Validation
 

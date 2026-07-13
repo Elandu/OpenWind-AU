@@ -178,9 +178,36 @@ $env:OPENWIND_WIND_REGION_BOUNDARY_WARNING_M="25000"
 OpenWind-AU does not generate wind regions from a copied image. Test-only sample polygons live under
 `tests/fixtures` and must not be used for project assessments.
 
-Regional wind speed and direction multiplier lookup data are editable JSON files packaged under
-`src/openwind_au/data`. To use project-reviewed tables, set `OPENWIND_VR_TABLE_PATH` and
-`OPENWIND_MD_TABLE_PATH` to replacement JSON files with the same structure.
+Regional wind speed, direction, terrain/height, and shielding multiplier lookup data are editable
+JSON files packaged under `src/openwind_au/data`. To use project-reviewed tables, set:
+
+```powershell
+$env:OPENWIND_VR_TABLE_PATH="C:\data\openwind-au\regional_wind_speeds.json"
+$env:OPENWIND_MD_TABLE_PATH="C:\data\openwind-au\direction_multipliers.json"
+$env:OPENWIND_MZCAT_TABLE_PATH="C:\data\openwind-au\terrain_height_multipliers.json"
+$env:OPENWIND_MS_TABLE_PATH="C:\data\openwind-au\shielding_multipliers.json"
+$env:OPENWIND_MZCAT_EXPECTED_SHA256="<approved canonical values digest>"
+$env:OPENWIND_MS_EXPECTED_SHA256="<approved canonical values digest>"
+$env:OPENWIND_RESULT_SIGNING_KEY="<deployment secret containing at least 32 UTF-8 bytes>"
+```
+
+Replacement Table 4.1 and Table 4.2 files must retain schema version 1, source/table metadata, a
+review status, valid interpolation rules, and a `values_sha256` matching the canonical `values`
+object. An override retains the trusted packaged digest unless the deployment separately pins an
+approved replacement with `OPENWIND_MZCAT_EXPECTED_SHA256` or `OPENWIND_MS_EXPECTED_SHA256`.
+Changing only the digest inside the JSON is therefore insufficient to make changed values ready.
+
+Readiness requires `source.reviewed_by` and an ISO `source.reviewed_on` date alongside
+`review_status: "verified_against_standard"` for all four wind-variable lookup assets. Do not
+invent these fields: they record an actual independent standards review. The packaged assets do
+not yet contain that named sign-off. `/health` reports `not_ready` for an unreviewed, malformed, oversized,
+digest-mismatched, or externally unapproved lookup.
+
+`OPENWIND_RESULT_SIGNING_KEY` seals completed workflow responses before the browser or an API
+client sends them to `/api/wind-workflow/result/report/*`. Use the same private value on every
+API worker and keep it stable across restarts. When it is absent, a process-local development key
+is used, but `/health` remains `not_ready` because results cannot be verified across workers or
+after restart.
 
 ## Optional DSM/DTM Height Enrichment
 
