@@ -302,7 +302,7 @@ def download_indexed_tiles(
 def microsoft_target_lock(target: Path) -> threading.Lock:
     """Return the process-local lock for an indexed cache target."""
 
-    key = os.path.normcase(os.path.abspath(os.fspath(target)))
+    key = normalized_path_for_comparison(Path(os.path.abspath(os.fspath(target))))
     with MICROSOFT_TARGET_LOCKS_LOCK:
         return MICROSOFT_TARGET_LOCKS.setdefault(key, threading.Lock())
 

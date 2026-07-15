@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,6 +15,7 @@ from openwind_au.microsoft_footprints import (
     MAX_MICROSOFT_TILE_BYTES,
     MICROSOFT_FOOTPRINT_SOURCE,
     load_tile_index,
+    microsoft_target_lock,
     query_microsoft_building_footprints,
 )
 
@@ -413,6 +415,16 @@ def test_concurrent_microsoft_queries_download_an_indexed_tile_once(
     assert request_count == 1
     assert all(len(result.footprints) == 1 for result in results)
     assert not list(cache.rglob("*.part"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths are platform-specific")
+def test_microsoft_target_lock_normalizes_windows_extended_path_aliases(
+    tmp_path,
+) -> None:
+    ordinary_target = tmp_path / "microsoft" / "tiles" / "-34_151.geojsonl"
+    extended_target = type(ordinary_target)(f"\\\\?\\{ordinary_target}")
+
+    assert microsoft_target_lock(ordinary_target) is microsoft_target_lock(extended_target)
 
 
 @pytest.mark.parametrize(
