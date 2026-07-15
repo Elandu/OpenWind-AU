@@ -119,6 +119,19 @@ http://127.0.0.1:8000/site-analysis
 http://127.0.0.1:8000/terrain-category
 ```
 
+Before routing production assessment traffic, run the same readiness checks used by `/health`
+without starting a server:
+
+```bash
+openwind-au check
+openwind-au check --json
+```
+
+The command exits with status 0 only when the deployment is ready and status 1 when any required
+dataset, reviewed lookup, digest, signing key, or DEM check fails. A source checkout without the
+project-specific production inputs is expected to report `NOT_READY`. Invalid command-line usage
+exits with status 2.
+
 ## Microsoft Building Footprint Cache
 
 Microsoft publishes [Australia Building Footprints](https://github.com/microsoft/AustraliaBuildingFootprints)

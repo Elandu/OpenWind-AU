@@ -74,6 +74,7 @@ third-party binary format.
 A consumer-ready release should not be tagged until:
 
 - `GET /health` returns HTTP 200 with `status: "ready"` under the production configuration;
+- `openwind-au check` returns exit status 0 for that same production configuration;
 - full test suite and lint pass;
 - reference validations pass for a representative project set;
 - all bundled lookup assets have source metadata and reviewer approval;

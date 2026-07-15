@@ -209,6 +209,17 @@ API worker and keep it stable across restarts. When it is absent, a process-loca
 is used, but `/health` remains `not_ready` because results cannot be verified across workers or
 after restart.
 
+After configuring the deployment inputs, verify them without starting the web server:
+
+```bash
+openwind-au check
+openwind-au check --json
+```
+
+The preflight command and `GET /health` use the same readiness implementation. Exit status 0 means
+all required checks are ready; exit status 1 means the JSON or human-readable output identifies at
+least one remaining production input.
+
 ## Optional DSM/DTM Height Enrichment
 
 Obstruction height enrichment can use local DSM and DTM rasters when they are available. Set:

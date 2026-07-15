@@ -32,6 +32,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
+      - name: Smoke-test console entry point
+        run: openwind-au --help
+
       - name: Ruff lint
         run: ruff check .
 
@@ -74,6 +77,8 @@ jobs:
           required = {
               "openwind_au/data/shielding_multipliers.json",
               "openwind_au/data/terrain_height_multipliers.json",
+              "openwind_au/errors.py",
+              "openwind_au/main.py",
               "openwind_au/result_integrity.py",
               "openwind_au/standard_lookup_tables.py",
               "openwind_au/static/wind_workflow.js",
@@ -87,7 +92,7 @@ jobs:
           python -m pip install --no-deps --target /tmp/openwind-wheel-smoke dist/*.whl
           cd /tmp
           PYTHONPATH=/tmp/openwind-wheel-smoke python - <<'PY'
-          from importlib.metadata import version
+          from importlib.metadata import distribution, version
 
           from openwind_au import __version__
           from openwind_au.standard_lookup_tables import (
@@ -97,6 +102,13 @@ jobs:
           )
 
           assert version("openwind-au") == __version__
+          console_scripts = {
+              entry.name: entry.value
+              for entry in distribution("openwind-au").entry_points
+              if entry.group == "console_scripts"
+          }
+          assert console_scripts["openwind-au"] == "openwind_au.main:main"
+          assert console_scripts["openwind-au-mcp"] == "openwind_au.mcp_server:main"
           for filename in (MZCAT_DATA_FILE, MS_DATA_FILE):
               assert load_packaged_lookup_data(filename)["schema_version"] == 1
           PY

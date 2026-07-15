@@ -239,7 +239,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health(response: Response) -> dict[str, Any]:
-        report = _readiness_report()
+        report = readiness_report()
         if report["status"] != "ready":
             response.status_code = 503
         return report
@@ -855,7 +855,7 @@ def _dem_provider():
     )
 
 
-def _readiness_report() -> dict[str, Any]:
+def readiness_report() -> dict[str, Any]:
     """Report whether required datasets and reviewed lookup rows are usable."""
 
     checks: dict[str, dict[str, Any]] = {}

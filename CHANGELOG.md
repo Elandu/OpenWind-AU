@@ -35,6 +35,9 @@ All notable project milestones are documented here.
   failures, retained 4xx responses for consumer input errors and 502 for required upstream
   failures, sanitised low-level 502 details, and applied the same status contract to terminal
   workflow-stream events.
+- Added an operator preflight command (`openwind-au check` and `--json`) backed by the same readiness
+  report as `/health`, plus validated host/port options for the server command while retaining the
+  safe loopback default.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 
