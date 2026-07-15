@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.mzcat import mzcat_lookup_issues
 from openwind_au.standard_calculations import shielding_lookup_issues
 from openwind_au.standard_lookup_tables import (
@@ -402,7 +403,7 @@ def test_lookup_loader_rejects_duplicate_keys(monkeypatch, tmp_path) -> None:
     path.write_text('{"schema_version": 1, "values": {}, "values": {}}', encoding="utf-8")
     monkeypatch.setenv("OPENWIND_TEST_LOOKUP_PATH", str(path))
 
-    with pytest.raises(ValueError, match="duplicate object keys"):
+    with pytest.raises(ServiceNotReadyError, match="duplicate object keys"):
         load_lookup_data("OPENWIND_TEST_LOOKUP_PATH", MZCAT_DATA_FILE)
 
 
@@ -411,7 +412,7 @@ def test_lookup_loader_rejects_oversized_files(monkeypatch, tmp_path) -> None:
     path.write_bytes(b" " * (MAX_LOOKUP_FILE_BYTES + 1))
     monkeypatch.setenv("OPENWIND_TEST_LOOKUP_PATH", str(path))
 
-    with pytest.raises(ValueError, match="byte limit"):
+    with pytest.raises(ServiceNotReadyError, match="byte limit"):
         load_lookup_data("OPENWIND_TEST_LOOKUP_PATH", MZCAT_DATA_FILE)
 
 
@@ -420,5 +421,5 @@ def test_lookup_loader_rejects_nonfinite_json_constants(monkeypatch, tmp_path) -
     path.write_text('{"values": {"value": NaN}}', encoding="utf-8")
     monkeypatch.setenv("OPENWIND_TEST_LOOKUP_PATH", str(path))
 
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(ServiceNotReadyError, match="non-finite"):
         load_lookup_data("OPENWIND_TEST_LOOKUP_PATH", MZCAT_DATA_FILE)

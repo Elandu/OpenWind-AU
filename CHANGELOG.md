@@ -30,6 +30,9 @@ All notable project milestones are documented here.
   detailed server-side incident logs.
 - Added CI construction, required-file inspection, isolated installation smoke tests, and retained
   distribution artifacts for the consumer wheel and source package.
+- Classified invalid deployment settings and required local datasets as HTTP 503 readiness
+  failures, retained 4xx responses for consumer input errors and 502 for required upstream
+  failures, and applied the same status contract to terminal workflow-stream events.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 

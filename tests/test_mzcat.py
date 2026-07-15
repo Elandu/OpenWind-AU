@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import openwind_au.mzcat as mzcat_module
 from openwind_au.api import create_app
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     ObstructionInventoryRequest,
     SiteAnalysisRequest,
@@ -216,7 +217,7 @@ def test_mzcat_rejects_lookup_with_stale_digest(monkeypatch, tmp_path) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setenv(MZCAT_TABLE_ENV, str(path))
 
-    with pytest.raises(ValueError, match="values_sha256"):
+    with pytest.raises(ServiceNotReadyError, match="values_sha256"):
         indicative_mzcat("TC3", 10)
 
 

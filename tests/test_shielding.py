@@ -8,6 +8,7 @@ import math
 import pytest
 
 import openwind_au.shielding as shielding_module
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.geo import EARTH_RADIUS_M
 from openwind_au.models import SiteLocation
 from openwind_au.obstructions import build_obstruction_records
@@ -525,5 +526,5 @@ def test_ms_rejects_lookup_with_stale_digest(monkeypatch, tmp_path) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setenv(MS_TABLE_ENV, str(path))
 
-    with pytest.raises(ValueError, match="values_sha256"):
+    with pytest.raises(ServiceNotReadyError, match="values_sha256"):
         ms_from_shielding_parameter(3.0)

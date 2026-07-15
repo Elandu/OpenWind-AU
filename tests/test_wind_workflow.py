@@ -65,6 +65,18 @@ def client(monkeypatch) -> TestClient:
     return TestClient(api_module.create_app())
 
 
+def test_workflow_invalid_signing_configuration_returns_service_unavailable(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "too-short")
+
+    response = test_client.post("/api/wind-workflow", json=workflow_payload())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "OPENWIND_RESULT_SIGNING_KEY must contain at least 32 UTF-8 bytes."
+    )
+
+
 def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     test_client = client(monkeypatch)
 

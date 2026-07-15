@@ -10,12 +10,15 @@ import shutil
 import subprocess
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 import numpy as np
 import requests
+
+from openwind_au.errors import ServiceNotReadyError
 
 DEM_PROVIDER_ENV = "OPENWIND_DEM_PROVIDER"
 OPEN_METEO_ELEVATION_URL_ENV = "OPENWIND_OPEN_METEO_ELEVATION_URL"
@@ -215,15 +218,21 @@ def srtm_tile_name(latitude: float, longitude: float) -> str:
     return f"{ns}{abs(lat_floor):02d}{ew}{abs(lon_floor):03d}"
 
 
-def configured_dem_provider() -> DEMProvider:
+def configured_dem_provider(
+    *,
+    srtm_factory: Callable[[], DEMProvider] = SRTMProvider,
+    open_meteo_factory: Callable[[], DEMProvider] = OpenMeteoElevationProvider,
+) -> DEMProvider:
     """Return the DEM provider selected by environment configuration."""
 
     provider = os.environ.get(DEM_PROVIDER_ENV, "srtm").strip().lower()
     if provider in {"", "srtm"}:
-        return SRTMProvider()
+        return srtm_factory()
     if provider in {"open-meteo", "open_meteo", "openmeteo"}:
-        return OpenMeteoElevationProvider()
-    raise ValueError(f"Unsupported {DEM_PROVIDER_ENV}={provider!r}. Use 'srtm' or 'open-meteo'.")
+        return open_meteo_factory()
+    raise ServiceNotReadyError(
+        f"Unsupported {DEM_PROVIDER_ENV} setting. Configure 'srtm' or 'open-meteo'."
+    )
 
 
 def dem_provider_label(provider: DEMProvider) -> str:

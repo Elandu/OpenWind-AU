@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     MzCatAssessmentResult,
     MzCatDirectionAssessment,
@@ -54,12 +56,18 @@ EXPECTED_A0_RULE = {
     "constant_above_height_m": 100.0,
     "constant_above_value": 1.24,
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def load_mzcat_table() -> dict[str, Any]:
     """Load editable terrain/height-multiplier lookup data."""
 
-    return load_lookup_data(MZCAT_TABLE_ENV, MZCAT_DATA_FILE)
+    data = load_lookup_data(MZCAT_TABLE_ENV, MZCAT_DATA_FILE)
+    issues = mzcat_lookup_issues(data, require_reviewed=False)
+    if issues:
+        LOGGER.error("Configured Table 4.1 lookup is invalid: %s", "; ".join(issues))
+        raise ServiceNotReadyError(f"Invalid Table 4.1 lookup data: {'; '.join(issues)}")
+    return data
 
 
 def mzcat_lookup_issues(

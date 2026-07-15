@@ -24,6 +24,12 @@ provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_read
 consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
 assessment traffic.
 
+Assessment endpoints distinguish request failures from deployment and provider failures: malformed
+or unsupported request data returns HTTP 4xx, an unavailable required local dataset or invalid
+server configuration returns HTTP 503, and a required upstream provider failure returns HTTP 502.
+The NDJSON workflow stream always starts with HTTP 200, so clients must also inspect a terminal
+`error` event's `data.status_code` for the equivalent 400, 502, 503, or 500 classification.
+
 Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
 disabled by default. For a trusted local troubleshooting session only, set
 `OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable `/api/debug/*` and

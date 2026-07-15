@@ -38,6 +38,11 @@ and configured DEM provider/cache are ready; otherwise it returns HTTP 503 with 
 checks. A development instance can be live while correctly reporting `not_ready` for project
 assessments.
 
+Assessment requests return HTTP 503 when a required deployment input is missing or invalid (for
+example, the wind-region dataset, DEM selection, or durable result-signing key). Treat this as a
+server readiness problem and check `/health`; request validation errors remain HTTP 4xx, while
+required external-provider failures return HTTP 502.
+
 ## Local Data
 
 SRTM terrain tiles are cached under:

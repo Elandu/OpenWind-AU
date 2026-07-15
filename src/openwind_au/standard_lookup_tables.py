@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -13,6 +14,10 @@ from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from typing import Any
+
+from openwind_au.errors import ServiceNotReadyError
+
+LOGGER = logging.getLogger(__name__)
 
 VR_TABLE_ENV = "OPENWIND_VR_TABLE_PATH"
 MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
@@ -45,7 +50,18 @@ def load_lookup_data(env_var: str, package_file: str) -> dict[str, Any]:
     configured = os.environ.get(env_var)
     if configured:
         path = Path(configured).expanduser().resolve()
-        return deepcopy(_parse_lookup_bytes(_read_bounded_path(path)))
+        try:
+            return deepcopy(_parse_lookup_bytes(_read_bounded_path(path)))
+        except OSError as exc:
+            LOGGER.exception("Failed to read configured lookup data for %s", env_var)
+            raise ServiceNotReadyError(
+                f"Configured lookup data for {env_var} is unavailable; inspect the server logs."
+            ) from exc
+        except (UnicodeError, ValueError) as exc:
+            LOGGER.exception("Failed to parse configured lookup data for %s", env_var)
+            raise ServiceNotReadyError(
+                f"Configured lookup data for {env_var} is invalid: {exc}"
+            ) from exc
     return load_packaged_lookup_data(package_file)
 
 

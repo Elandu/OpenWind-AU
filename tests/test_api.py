@@ -520,9 +520,78 @@ def test_wind_region_configuration_failure_hides_local_path(
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 503
     assert response.json()["detail"] == "Configured wind-region dataset does not exist."
     assert "private-dataset" not in response.text
+
+
+def test_invalid_dem_configuration_is_a_service_readiness_failure(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_DEM_PROVIDER", "unknown")
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/analyse",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Unsupported OPENWIND_DEM_PROVIDER setting. Configure 'srtm' or 'open-meteo'."
+    )
+
+
+def test_invalid_lookup_configuration_is_a_service_readiness_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    lookup_path = tmp_path / "mzcat.json"
+    lookup_path.write_text('{"values": NaN}', encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_MZCAT_TABLE_PATH", str(lookup_path))
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-workflow",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Configured lookup data for OPENWIND_MZCAT_TABLE_PATH is invalid: "
+        "Lookup JSON must not contain non-finite numeric constants"
+    )
+    assert str(tmp_path) not in response.text
+
+
+def test_wind_workflow_stream_reports_missing_dataset_as_not_ready(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", "missing-regions.gpkg")
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-workflow/stream",
+        json={
+            "latitude": -33.8688,
+            "longitude": 151.2093,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert events[-1]["stage"] == "error"
+    assert events[-1]["data"]["status_code"] == 503
+    assert events[-1]["label"] == "Configured wind-region dataset does not exist."
 
 
 def test_wind_workflow_stream_endpoint(monkeypatch) -> None:

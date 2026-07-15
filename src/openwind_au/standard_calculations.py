@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.standard_lookup_tables import (
     MD_DATA_FILE,
     MD_TABLE_ENV,
@@ -48,6 +50,7 @@ REGIONAL_WIND_SPEED_V1: dict[str, float] = {
     "D": 23.0,
 }
 MS_METADATA_WARNING = "Ms lookup table does not have complete independent reviewer/date metadata."
+LOGGER = logging.getLogger(__name__)
 MS_SOURCE_CLAUSE = "Clause 4.3"
 MS_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2"
 EXPECTED_SHIELDING_PARAMETER_NODES: tuple[float, ...] = (1.5, 3.0, 6.0, 12.0)
@@ -134,7 +137,12 @@ def ms_from_shielding_parameter(
 def load_ms_table() -> dict[str, Any]:
     """Load editable shielding-multiplier lookup data."""
 
-    return load_lookup_data(MS_TABLE_ENV, MS_DATA_FILE)
+    data = load_lookup_data(MS_TABLE_ENV, MS_DATA_FILE)
+    issues = shielding_lookup_issues(data, require_reviewed=False)
+    if issues:
+        LOGGER.error("Configured Table 4.2 lookup is invalid: %s", "; ".join(issues))
+        raise ServiceNotReadyError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
+    return data
 
 
 def shielding_reduction_height_limit_m(data: dict[str, Any] | None = None) -> float:

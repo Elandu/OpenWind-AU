@@ -12,6 +12,7 @@ from typing import Any
 import geopandas as gpd
 from shapely.geometry import Point, mapping
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import SiteLocation, WindRegionAssessment, WindRegionLabel
 
 LOGGER = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
     dataset_path = require_dataset_path()
     gdf = load_wind_region_geodataframe(dataset_path)
     if gdf.empty:
-        raise ValueError("Configured wind-region GIS dataset contains no features.")
+        raise ServiceNotReadyError("Configured wind-region GIS dataset contains no features.")
 
     point = Point(site.longitude, site.latitude)
     matches = gdf[gdf.geometry.covers(point)]
@@ -142,7 +143,7 @@ def configured_dataset_path() -> Path | None:
     if configured:
         path = Path(configured)
         if not path.exists():
-            raise ValueError("Configured wind-region dataset does not exist.")
+            raise ServiceNotReadyError("Configured wind-region dataset does not exist.")
         return path
     for candidate in PRODUCTION_DATASET_CANDIDATES:
         path = Path.cwd() / candidate
@@ -156,13 +157,13 @@ def require_dataset_path() -> Path:
 
     path = configured_dataset_path()
     if path is None:
-        raise ValueError(
+        raise ServiceNotReadyError(
             "Wind-region GIS dataset is not configured. Set "
             f"{DATASET_ENV} to the local GeoJSON/GPKG/SHP path for Geoscience Australia's "
             "1170.2 Wind Regions for Australia dataset."
         )
     if not path.exists():
-        raise ValueError("Configured wind-region dataset does not exist.")
+        raise ServiceNotReadyError("Configured wind-region dataset does not exist.")
     return path
 
 
@@ -219,7 +220,7 @@ def wind_region_debug(site: SiteLocation, *, include_geometry: bool = False) -> 
     path = require_dataset_path()
     gdf = load_wind_region_geodataframe(path)
     if gdf.empty:
-        raise ValueError(f"Wind-region GIS dataset contains no features: {path}")
+        raise ServiceNotReadyError("Configured wind-region GIS dataset contains no features.")
 
     point = Point(site.longitude, site.latitude)
     matches = gdf[gdf.geometry.covers(point)].copy()
@@ -278,11 +279,14 @@ def load_wind_region_geodataframe(path: Path) -> gpd.GeoDataFrame:
 
     resolved = path.resolve()
     layer = os.environ.get(LAYER_ENV) or None
-    return _load_wind_region_geodataframe(
-        str(resolved),
-        layer,
-        resolved.stat().st_mtime_ns,
-    )
+    try:
+        modified_ns = resolved.stat().st_mtime_ns
+    except OSError as exc:
+        LOGGER.exception("Failed to inspect configured wind-region GIS dataset")
+        raise ServiceNotReadyError(
+            "Configured wind-region GIS dataset is unavailable; inspect the server logs."
+        ) from exc
+    return _load_wind_region_geodataframe(str(resolved), layer, modified_ns)
 
 
 @lru_cache(maxsize=4)
@@ -296,13 +300,13 @@ def _load_wind_region_geodataframe(
     path = Path(path_text)
     try:
         gdf = gpd.read_file(path, layer=layer) if layer else gpd.read_file(path)
+        gdf = gdf.set_crs("EPSG:4326") if gdf.crs is None else gdf.to_crs("EPSG:4326")
+        gdf = gdf[gdf.geometry.notna()].copy()
     except Exception as exc:
         LOGGER.exception("Failed to read configured wind-region GIS dataset")
-        raise ValueError(
+        raise ServiceNotReadyError(
             "Failed to read configured wind-region GIS dataset; inspect the server logs."
         ) from exc
-    gdf = gdf.set_crs("EPSG:4326") if gdf.crs is None else gdf.to_crs("EPSG:4326")
-    gdf = gdf[gdf.geometry.notna()].copy()
     return gdf
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from plotly.offline import get_plotlyjs
 
@@ -21,7 +21,8 @@ from openwind_au.calculation_validation import (
     calculation_validation_report_to_json,
     run_calculation_validation_cases,
 )
-from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider
+from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider, configured_dem_provider
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.geo import geocode_address, geocode_address_suggestions
 from openwind_au.models import (
     CombinedMapRequest,
@@ -178,6 +179,15 @@ def create_app() -> FastAPI:
         ),
         version=__version__,
     )
+
+    @app.exception_handler(ServiceNotReadyError)
+    async def service_not_ready_handler(
+        _request: Request,
+        exc: ServiceNotReadyError,
+    ) -> JSONResponse:
+        LOGGER.error("Assessment service is not ready: %s", exc)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", response_class=HTMLResponse)
@@ -287,17 +297,17 @@ def create_app() -> FastAPI:
                 request,
                 mzcat_lookup_data=mzcat_lookup,
             )
+            return run_wind_workflow(
+                request=request,
+                site_result=site_result,
+                obstruction_result=obstruction_result,
+                terrain_result=evidence,
+                mzcat_lookup_data=mzcat_lookup,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        return run_wind_workflow(
-            request=request,
-            site_result=site_result,
-            obstruction_result=obstruction_result,
-            terrain_result=evidence,
-            mzcat_lookup_data=mzcat_lookup,
-        )
 
     @app.post("/api/wind-workflow/stream")
     def wind_workflow_stream(request: WindWorkflowRequest) -> StreamingResponse:
@@ -832,6 +842,8 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
             {"map_html": map_html_content},
         )
         yield event("complete", 100, "Assessment complete")
+    except ServiceNotReadyError as exc:
+        yield event("error", 100, str(exc), {"status_code": 503})
     except ValueError as exc:
         yield event("error", 100, str(exc), {"status_code": 400})
     except RuntimeError as exc:
@@ -849,17 +861,15 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
 def _optional_wind_region(site_result: SiteAnalysisResult) -> WindRegionAssessment | None:
     try:
         return assess_wind_region(site_result.site)
-    except ValueError:
+    except (ServiceNotReadyError, ValueError):
         return None
 
 
 def _dem_provider():
-    provider = os.environ.get("OPENWIND_DEM_PROVIDER", "srtm").strip().lower()
-    if provider in {"", "srtm"}:
-        return SRTMProvider()
-    if provider in {"open-meteo", "open_meteo", "openmeteo"}:
-        return OpenMeteoElevationProvider()
-    raise ValueError(f"Unsupported OPENWIND_DEM_PROVIDER={provider!r}. Use 'srtm' or 'open-meteo'.")
+    return configured_dem_provider(
+        srtm_factory=SRTMProvider,
+        open_meteo_factory=OpenMeteoElevationProvider,
+    )
 
 
 def _readiness_report() -> dict[str, Any]:

@@ -12,6 +12,7 @@ from openwind_au.dem import (
     configured_dem_provider,
     srtm_tile_name,
 )
+from openwind_au.errors import ServiceNotReadyError
 
 
 def test_srtm_tile_name_for_australia() -> None:
@@ -145,5 +146,5 @@ def test_configured_dem_provider_accepts_open_meteo(monkeypatch) -> None:
 def test_configured_dem_provider_rejects_unknown_provider(monkeypatch) -> None:
     monkeypatch.setenv("OPENWIND_DEM_PROVIDER", "unknown")
 
-    with pytest.raises(ValueError, match="Unsupported OPENWIND_DEM_PROVIDER"):
+    with pytest.raises(ServiceNotReadyError, match="Unsupported OPENWIND_DEM_PROVIDER"):
         configured_dem_provider()

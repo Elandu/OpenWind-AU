@@ -10,6 +10,7 @@ from typing import Any
 import folium
 from shapely.geometry import mapping, shape
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
@@ -169,7 +170,7 @@ def wind_region_map_html(site: SiteLocation, assessment: WindRegionAssessment) -
     ).add_to(fmap)
     try:
         diagnostics = wind_region_debug(site, include_geometry=True)
-    except ValueError:
+    except (ServiceNotReadyError, ValueError):
         diagnostics = None
     if diagnostics:
         for neighbour in diagnostics.get("neighbouring_polygons", []):
@@ -271,7 +272,7 @@ def run_wind_region_validation_cases() -> list[dict[str, Any]]:
             confidence = assessment.confidence
             distance = assessment.distance_to_boundary_m
             diagnosis = validation_diagnosis(case, assessment, status)
-        except ValueError as exc:
+        except (ServiceNotReadyError, ValueError) as exc:
             actual = None
             status = "warning"
             confidence = "low"

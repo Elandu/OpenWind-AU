@@ -10,6 +10,7 @@ import os
 import secrets
 from typing import TYPE_CHECKING
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.standard_calculations import DIRECTIONS, site_wind_speed
 
 if TYPE_CHECKING:
@@ -183,7 +184,9 @@ def _signing_key() -> bytes:
         return _EPHEMERAL_SIGNING_KEY
     key = configured.encode("utf-8")
     if len(key) < 32:
-        raise ValueError(f"{RESULT_SIGNING_KEY_ENV} must contain at least 32 UTF-8 bytes.")
+        raise ServiceNotReadyError(
+            f"{RESULT_SIGNING_KEY_ENV} must contain at least 32 UTF-8 bytes."
+        )
     return key
 
 
