@@ -325,7 +325,7 @@ def test_geocode_suggest_endpoint(monkeypatch) -> None:
     assert response.json()["suggestions"][0]["display_name"] == "1 Macquarie Street, Sydney NSW"
 
 
-def test_geocode_resolve_endpoint_and_errors(monkeypatch) -> None:
+def test_geocode_resolve_endpoint_and_errors(monkeypatch, caplog) -> None:
     def fake_geocode(query):
         assert query == "1 Macquarie Street Sydney"
         return {
@@ -362,15 +362,19 @@ def test_geocode_resolve_endpoint_and_errors(monkeypatch) -> None:
     monkeypatch.setattr(
         api_module,
         "geocode_address",
-        lambda _query: (_ for _ in ()).throw(RuntimeError("upstream unavailable")),
+        lambda _query: (_ for _ in ()).throw(
+            RuntimeError("upstream unavailable at C:\\private\\provider-cache")
+        ),
     )
-    assert (
-        client.post(
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        upstream_failure = client.post(
             "/api/geocode/resolve",
             json={"query": "failure"},
-        ).status_code
-        == 502
-    )
+        )
+    assert upstream_failure.status_code == 502
+    assert upstream_failure.json()["detail"] == api_module.DEPENDENCY_FAILURE_DETAIL
+    assert "private" not in upstream_failure.text
+    assert "private\\provider-cache" in caplog.text
 
 
 def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
@@ -668,6 +672,36 @@ def test_wind_workflow_stream_emits_sanitized_terminal_event_for_unexpected_erro
     assert events[-1]["data"]["status_code"] == 500
     assert "server logs" in events[-1]["label"]
     assert "private detail" not in response.text
+
+
+def test_wind_workflow_stream_sanitizes_dependency_failure(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "run_site_analysis",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("failed at C:\\private\\terrain-cache")
+        ),
+    )
+    client = TestClient(api_module.create_app())
+
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.post(
+            "/api/wind-workflow/stream",
+            json={
+                "latitude": -33.8688,
+                "longitude": 151.2093,
+                "building_height_m": 10,
+                "radius_m": 500,
+            },
+        )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert events[-1]["stage"] == "error"
+    assert events[-1]["data"]["status_code"] == 502
+    assert events[-1]["label"] == api_module.DEPENDENCY_FAILURE_DETAIL
+    assert "private" not in response.text
+    assert "private\\terrain-cache" in caplog.text
 
 
 def test_obstruction_inventory_endpoints(monkeypatch) -> None:

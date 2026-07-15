@@ -27,6 +27,8 @@ assessment traffic.
 Assessment endpoints distinguish request failures from deployment and provider failures: malformed
 or unsupported request data returns HTTP 4xx, an unavailable required local dataset or invalid
 server configuration returns HTTP 503, and a required upstream provider failure returns HTTP 502.
+HTTP 502 responses use a generic consumer-safe detail; full provider, cache, URL, and low-level
+exception diagnostics are retained only in server logs.
 The NDJSON workflow stream always starts with HTTP 200, so clients must also inspect a terminal
 `error` event's `data.status_code` for the equivalent 400, 502, 503, or 500 classification.
 

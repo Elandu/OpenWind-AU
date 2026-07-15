@@ -110,6 +110,9 @@ STATIC_DIR = PACKAGE_DIR / "static"
 LOGGER = logging.getLogger(__name__)
 MAX_OBSTRUCTION_IMPORT_BYTES = 1_000_000
 DEBUG_ENDPOINTS_ENV = "OPENWIND_ENABLE_DEBUG_ENDPOINTS"
+DEPENDENCY_FAILURE_DETAIL = (
+    "Required data provider failed; retry the request or inspect the server logs."
+)
 
 
 def debug_endpoints_enabled() -> bool:
@@ -128,6 +131,15 @@ def require_debug_endpoints_enabled() -> None:
 
     if not debug_endpoints_enabled():
         raise HTTPException(status_code=404, detail="Not found")
+
+
+def _log_dependency_failure(exc: RuntimeError) -> None:
+    """Record dependency diagnostics without returning them to API consumers."""
+
+    LOGGER.error(
+        "Required assessment dependency failed",
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 async def _read_obstruction_import(
@@ -188,6 +200,17 @@ def create_app() -> FastAPI:
         LOGGER.error("Assessment service is not ready: %s", exc)
         return JSONResponse(status_code=503, content={"detail": str(exc)})
 
+    @app.exception_handler(RuntimeError)
+    async def dependency_failure_handler(
+        _request: Request,
+        exc: RuntimeError,
+    ) -> JSONResponse:
+        _log_dependency_failure(exc)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": DEPENDENCY_FAILURE_DETAIL},
+        )
+
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", response_class=HTMLResponse)
@@ -231,15 +254,12 @@ def create_app() -> FastAPI:
 
     @app.post("/api/geocode/suggest")
     def geocode_suggest(request: GeocodeQueryRequest) -> dict:
-        try:
-            return {
-                "suggestions": geocode_address_suggestions(
-                    request.query,
-                    limit=request.limit,
-                )
-            }
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return {
+            "suggestions": geocode_address_suggestions(
+                request.query,
+                limit=request.limit,
+            )
+        }
 
     @app.post("/api/geocode/resolve")
     def geocode_resolve(request: GeocodeQueryRequest) -> dict:
@@ -249,8 +269,6 @@ def create_app() -> FastAPI:
             return geocode_address(request.query)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/analyse", response_model=SiteAnalysisResult)
     def analyse(request: SiteAnalysisRequest) -> SiteAnalysisResult:
@@ -258,8 +276,6 @@ def create_app() -> FastAPI:
             return run_site_analysis(request, _dem_provider())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/full-analysis")
     def full_analysis(request: TerrainCategoryEvidenceRequest) -> dict:
@@ -269,8 +285,6 @@ def create_app() -> FastAPI:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {
             "site_analysis": site_result,
             "obstruction_inventory": _obstruction_inventory_public_data(obstruction_result),
@@ -306,8 +320,6 @@ def create_app() -> FastAPI:
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/wind-workflow/stream")
     def wind_workflow_stream(request: WindWorkflowRequest) -> StreamingResponse:
@@ -371,8 +383,6 @@ def create_app() -> FastAPI:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return combined_map_html(
             site_result,
             obstruction_result,
@@ -387,8 +397,6 @@ def create_app() -> FastAPI:
             return assess_wind_region(site_result.site)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/wind-region/map", response_class=HTMLResponse)
     def wind_region_map(request: SiteAnalysisRequest) -> str:
@@ -398,8 +406,6 @@ def create_app() -> FastAPI:
             return wind_region_map_html(site_result.site, assessment)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/api/debug/wind-region/dataset", include_in_schema=False)
     def wind_region_dataset_debug() -> dict:
@@ -421,8 +427,6 @@ def create_app() -> FastAPI:
             return wind_region_debug(site)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/debug/wind-region", include_in_schema=False)
     def wind_region_debug_post(request: SiteAnalysisRequest) -> dict:
@@ -432,8 +436,6 @@ def create_app() -> FastAPI:
             return wind_region_debug(site_result.site)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/export/json")
     def export_json(request: SiteAnalysisRequest) -> Response:
@@ -484,8 +486,6 @@ def create_app() -> FastAPI:
             return run_obstruction_inventory(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.post("/api/obstructions/map", response_class=HTMLResponse)
     def obstruction_map(request: ObstructionInventoryRequest) -> str:
@@ -512,8 +512,6 @@ def create_app() -> FastAPI:
             result = run_obstruction_inventory(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return {
             "query_centre": result.data_quality.query_centre,
             "radius": result.data_quality.query_radius_m,
@@ -542,8 +540,6 @@ def create_app() -> FastAPI:
             obstruction_result = _run_obstruction_inventory_for_site(request, site_result)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return combined_map_html(site_result, obstruction_result)
 
     @app.post("/api/obstructions/report/html", response_class=HTMLResponse)
@@ -559,8 +555,6 @@ def create_app() -> FastAPI:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return evidence
 
     @app.post("/api/mzcat/assessment", response_model=MzCatAssessmentResult)
@@ -569,8 +563,6 @@ def create_app() -> FastAPI:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return MzCatAssessmentResult(
             input=evidence.input,
             site=evidence.site,
@@ -590,8 +582,6 @@ def create_app() -> FastAPI:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return terrain_category_map_html(site_result, obstruction_result, evidence)
 
     @app.post("/api/terrain-category/report/html", response_class=HTMLResponse)
@@ -600,8 +590,6 @@ def create_app() -> FastAPI:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
         return render_terrain_category_report_html(
             _apply_mzcat_reviews(evidence, request.mzcat_reviews)
         )
@@ -662,19 +650,13 @@ def create_app() -> FastAPI:
 
     @app.get("/api/validation")
     def validation_report() -> Response:
-        try:
-            report = run_validation_cases()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        report = run_validation_cases()
         content = json.dumps(validation_report_to_json(report), indent=2)
         return Response(content=content, media_type="application/json")
 
     @app.get("/api/validation/report/html", response_class=HTMLResponse)
     def validation_report_html() -> str:
-        try:
-            report = run_validation_cases()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        report = run_validation_cases()
         return render_validation_report_html(report)
 
     @app.get("/api/calculation-validation")
@@ -847,7 +829,8 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
     except ValueError as exc:
         yield event("error", 100, str(exc), {"status_code": 400})
     except RuntimeError as exc:
-        yield event("error", 100, str(exc), {"status_code": 502})
+        _log_dependency_failure(exc)
+        yield event("error", 100, DEPENDENCY_FAILURE_DETAIL, {"status_code": 502})
     except Exception:
         LOGGER.exception("Unexpected wind workflow stream failure")
         yield event(
