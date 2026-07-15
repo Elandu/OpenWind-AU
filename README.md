@@ -189,6 +189,7 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
+- [v0.8.0 milestone changes](CHANGELOG.md#v080---standards-provenance-and-preliminary-issue-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
 ## API Overview

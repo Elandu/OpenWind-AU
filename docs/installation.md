@@ -38,12 +38,20 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+Alternatively, uv 0.11.x can reproduce the exact committed development environment without
+modifying the lockfile:
+
+```bash
+uv sync --locked --extra dev
+```
+
 ## Verify The Install
 
 ```bash
 pytest
 ruff check .
 ruff format --check .
+uv lock --check
 ```
 
 The first real terrain analysis may download public SRTM tiles into `data/cache/srtm`.
