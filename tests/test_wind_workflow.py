@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 import openwind_au.api as api_module
-from openwind_au.models import WindVariableAssessment, WindWorkflowRequest
+from openwind_au.models import WindVariableAssessment, WindWorkflowRequest, WindWorkflowResult
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.wind_workflow import mark_governing_vsitb, vsitb_directional_rows
 from tests.test_api import FlatDEM, sample_footprints
@@ -45,6 +47,21 @@ def sample_overrides() -> list[dict]:
             "reason": "Project engineer selected a directional override after review.",
         }
     ]
+
+
+def _pydantic_model_types(annotation):
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        yield annotation
+        return
+    for argument in get_args(annotation):
+        yield from _pydantic_model_types(argument)
+
+
+def _nested_value(payload, path):
+    value = payload
+    for key in path:
+        value = value[key]
+    return value
 
 
 def client(monkeypatch) -> TestClient:
@@ -323,8 +340,8 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     schemas = test_client.get("/openapi.json").json()["components"]["schemas"]
 
     request_properties = schemas["WindWorkflowRequest"]["properties"]
-    result_properties = schemas["WindWorkflowResult-Output"]["properties"]
-    wind_region_properties = schemas["WindRegionAssessment-Output"]["properties"]
+    result_properties = schemas["WindWorkflowResult"]["properties"]
+    wind_region_properties = schemas["PublicWindRegionAssessment"]["properties"]
 
     assert request_properties["assessment_status"]["enum"] == ["draft", "reviewed"]
     assert "reviewed_by" in request_properties
@@ -361,7 +378,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260715-address-state-1" in page.text
+    assert "20260715-location-contract-2" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -508,6 +525,121 @@ def test_completed_result_report_routes_require_valid_server_integrity_token(mon
         assert "inconsistent" in tampered_response.text.lower()
         assert unsigned_response.status_code == 422
         assert "missing" in unsigned_response.text.lower()
+
+
+def test_completed_result_model_graph_is_strict_and_has_no_excluded_payload_fields() -> None:
+    """Keep every accepted completed-result field inside the canonical signed projection."""
+
+    models = {WindWorkflowResult}
+    pending = [WindWorkflowResult]
+    while pending:
+        model = pending.pop()
+        for field in model.model_fields.values():
+            nested = list(_pydantic_model_types(field.annotation))
+            for nested_model in nested:
+                if nested_model not in models:
+                    models.add(nested_model)
+                    pending.append(nested_model)
+
+    for model in models:
+        assert model.model_config.get("extra") == "forbid", model.__name__
+        assert model.model_config.get("strict") is True, model.__name__
+        assert not {name for name, field in model.model_fields.items() if field.exclude is True}, (
+            model.__name__
+        )
+
+
+def test_completed_result_report_routes_reject_unknown_nested_fields(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload() | {"workflow_overrides": sample_overrides()},
+    )
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+    nested_paths = (
+        ("site",),
+        ("wind_region_assessment",),
+        ("regional_wind_speed_assessment",),
+        ("direction_multiplier_assessment",),
+        ("direction_multiplier_assessment", "directions", 0),
+        ("variables", 0),
+        ("directional_vsitb", 0),
+        ("input", "workflow_overrides", 0),
+    )
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        for path in nested_paths:
+            tampered = json.loads(json.dumps(authentic))
+            target = _nested_value(tampered, path)
+            target["unexpected_nested_field"] = "must not be discarded"
+
+            response = test_client.post(route, json=tampered)
+
+            assert response.status_code == 422
+            assert "Extra inputs are not permitted" in response.text
+
+
+def test_completed_result_report_routes_reject_internal_region_polygon_tampering(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+    authentic_token = authentic["integrity_token"]
+    assert "region_polygon" not in authentic["wind_region_assessment"]
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        tampered = json.loads(json.dumps(authentic))
+        tampered["wind_region_assessment"]["region_polygon"] = {
+            "type": "Point",
+            "coordinates": [0, 0],
+        }
+        assert tampered["integrity_token"] == authentic_token
+
+        response = test_client.post(route, json=tampered)
+
+        assert response.status_code == 422
+        assert "region_polygon" in response.text
+        assert "Extra inputs are not permitted" in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("site", "latitude"), "-33.86"),
+        (("variables", 0, "final_value"), "45.0"),
+        (("variables", 0, "is_overridden"), 0),
+        (("directional_vsitb", 0, "is_governing"), 1),
+    ],
+)
+def test_completed_result_report_routes_reject_coercible_representations(
+    monkeypatch,
+    path,
+    replacement,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    tampered = workflow.json()
+    parent = _nested_value(tampered, path[:-1])
+    parent[path[-1]] = replacement
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        response = test_client.post(route, json=tampered)
+
+        assert response.status_code == 422
+        assert "Input should be" in response.text
 
 
 def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> None:

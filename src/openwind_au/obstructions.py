@@ -335,7 +335,7 @@ def resolve_obstruction_site(request: ObstructionInventoryRequest) -> SiteLocati
             longitude=request.longitude,
             ground_elevation_m=0.0,
             source="User supplied coordinates",
-            display_name=request.address,
+            display_name=request.site_label,
         )
     assert request.address is not None
     geocoded = geocode_address(request.address)
@@ -1274,7 +1274,23 @@ def parse_manual_overrides_csv(content: str) -> list[ObstructionManualOverride]:
     """Parse reviewed obstruction heights from CSV text."""
 
     rows = csv.DictReader(StringIO(content))
-    fieldnames = {field.strip() for field in (rows.fieldnames or []) if field}
+    raw_fieldnames = rows.fieldnames or []
+    if not raw_fieldnames or any(field is None or not field.strip() for field in raw_fieldnames):
+        raise ValueError("CSV headers must be non-empty")
+    normalized_fieldnames = [field.strip() for field in raw_fieldnames]
+    if len(normalized_fieldnames) != len(set(normalized_fieldnames)):
+        raise ValueError("CSV contains duplicate column headers")
+    allowed_fieldnames = {
+        "obstruction_id",
+        "height_m",
+        "building_levels",
+        "height_source",
+        "notes",
+    }
+    unknown_fieldnames = set(normalized_fieldnames) - allowed_fieldnames
+    if unknown_fieldnames:
+        raise ValueError(f"CSV contains unknown columns: {', '.join(sorted(unknown_fieldnames))}")
+    fieldnames = set(normalized_fieldnames)
     if "obstruction_id" not in fieldnames:
         raise ValueError("CSV must include an obstruction_id column")
     if not fieldnames.intersection({"height_m", "building_levels"}):
@@ -1282,6 +1298,9 @@ def parse_manual_overrides_csv(content: str) -> list[ObstructionManualOverride]:
     overrides: list[ObstructionManualOverride] = []
     seen_ids: set[str] = set()
     for row_number, row in enumerate(rows, start=2):
+        if None in row:
+            raise ValueError(f"CSV row {row_number} contains more values than its header")
+        row = {str(key).strip(): value for key, value in row.items()}
         obstruction_id = (row.get("obstruction_id") or "").strip()
         if not obstruction_id:
             if any(str(value or "").strip() for value in row.values()):
@@ -1314,10 +1333,21 @@ def reviewed_obstructions_to_json(records: list[ObstructionRecord]) -> str:
     return json.dumps([record.model_dump() for record in records], indent=2)
 
 
+def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build a JSON object while rejecting ambiguous duplicate members."""
+
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"JSON contains duplicate key: {key}")
+        value[key] = item
+    return value
+
+
 def manual_overrides_from_json(content: str) -> list[ObstructionManualOverride]:
     """Import manual overrides from JSON text."""
 
-    data = json.loads(content)
+    data = json.loads(content, object_pairs_hook=_json_object_without_duplicate_keys)
     if isinstance(data, dict):
         if set(data) != {"obstructions"}:
             raise ValueError("JSON object must contain only an obstructions array")
@@ -1329,7 +1359,10 @@ def manual_overrides_from_json(content: str) -> list[ObstructionManualOverride]:
     for item_number, item in enumerate(data, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"JSON obstruction {item_number} must be an object")
-        obstruction_id = str(item.get("obstruction_id") or "").strip()
+        raw_obstruction_id = item.get("obstruction_id")
+        if not isinstance(raw_obstruction_id, str):
+            raise ValueError(f"JSON obstruction {item_number} obstruction_id must be a string")
+        obstruction_id = raw_obstruction_id.strip()
         if not obstruction_id:
             raise ValueError(f"JSON obstruction {item_number} is missing obstruction_id")
         if obstruction_id in seen_ids:
@@ -1340,13 +1373,7 @@ def manual_overrides_from_json(content: str) -> list[ObstructionManualOverride]:
                 f"JSON obstruction {item_number} must provide height_m or building_levels"
             )
         overrides.append(
-            ObstructionManualOverride(
-                obstruction_id=obstruction_id,
-                height_m=item.get("height_m"),
-                building_levels=item.get("building_levels"),
-                height_source=item.get("height_source", "manual_review"),
-                notes=item.get("notes") if isinstance(item.get("notes"), str) else None,
-            )
+            ObstructionManualOverride.model_validate({**item, "obstruction_id": obstruction_id})
         )
     return overrides
 

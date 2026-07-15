@@ -3,27 +3,79 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import math
 import os
-from typing import Any
+from collections.abc import Sequence
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
+from typing_extensions import TypedDict
 
+from openwind_au import __version__
+from openwind_au.models import TerrainCategoryLabel, WindDirection, WindRegionLabel
 from openwind_au.mzcat import indicative_mzcat, mzcat_lookup_warnings
 from openwind_au.standard_calculations import (
     DIRECTIONS,
     direction_multiplier_values,
     ms_from_shielding_parameter,
-    regional_wind_speed,
     shielding_lookup_warnings,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
+from openwind_au.standard_lookup_tables import lookup_metadata_warnings, source_reference
 from openwind_au.topographic_multiplier import (
     calculate_topographic_multiplier as calculate_mt,
 )
+from openwind_au.wind_inputs import (
+    VR_METADATA_WARNING,
+    VR_TABLE_ENV,
+    configured_regional_wind_speed,
+    load_vr_tables,
+)
 
 STANDARD = "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2"
+MCP_TRANSPORTS = ("stdio", "streamable-http")
+LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+LOOPBACK_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+]
+
+FeatureType = Literal["hill", "ridge", "escarpment", "valley", "no significant feature"]
+AriYears = Annotated[
+    int,
+    Field(
+        strict=True,
+        ge=1,
+        description="Annual recurrence interval in years; use 1 or at least 5 without an override.",
+    ),
+]
+ReferenceHeight = Annotated[float, Field(strict=True, ge=0, le=200, allow_inf_nan=False)]
+PositiveHeight = Annotated[float, Field(strict=True, gt=0, le=200, allow_inf_nan=False)]
+TopographicHeight = Annotated[float, Field(strict=True, ge=0, le=100_000, allow_inf_nan=False)]
+TopographicDistance = Annotated[float, Field(strict=True, ge=0, le=1_000_000, allow_inf_nan=False)]
+SiteElevation = Annotated[float, Field(strict=True, ge=-500, le=10_000, allow_inf_nan=False)]
+ShieldingParameter = Annotated[float, Field(strict=True, ge=0, le=1_000_000, allow_inf_nan=False)]
+PositiveWindValue = Annotated[float, Field(strict=True, gt=0, le=200, allow_inf_nan=False)]
+PositiveMultiplier = Annotated[float, Field(strict=True, gt=0, le=10, allow_inf_nan=False)]
+StrictBoolean = Annotated[bool, Field(strict=True)]
+
+
+class CalculationResult(TypedDict):
+    """Stable envelope returned by every OpenWind-AU MCP calculation tool."""
+
+    standard: str
+    clause: str
+    inputs: dict[str, Any]
+    outputs: dict[str, Any]
+    warnings: list[str]
+    engineering_review_required: bool
+
 
 mcp = FastMCP(
     "OpenWind-AU",
@@ -34,6 +86,9 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
 )
+# FastMCP v1 does not expose the low-level server version in its constructor. Setting the
+# supported Server attribute ensures initialize reports the application release, not the SDK.
+mcp._mcp_server.version = __version__
 
 
 def _result(
@@ -42,7 +97,7 @@ def _result(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
     warnings: list[str] | None = None,
-) -> dict[str, Any]:
+) -> CalculationResult:
     return {
         "standard": STANDARD,
         "clause": clause,
@@ -76,21 +131,55 @@ def _finite_value(
     return number
 
 
+def _regional_wind_speed(wind_region: str, ari_years: int) -> tuple[float, list[str], str]:
+    """Resolve ultimate VR through the API's equation-or-configured-table path."""
+
+    data = load_vr_tables()
+    vr, note = configured_regional_wind_speed(
+        wind_region,
+        ari_years,
+        lookup_data=data,
+    )
+    if vr is None:
+        raise ValueError(
+            "Configured regional wind speed table has no ultimate value for "
+            f"{wind_region} at ARI {ari_years} years; manual input is required."
+        )
+    warnings = lookup_metadata_warnings(data, VR_METADATA_WARNING)
+    if note:
+        warnings.append(note)
+    configured_table = bool(os.environ.get(VR_TABLE_ENV))
+    if configured_table and note is None:
+        warnings.append(
+            f"Selected the exact {ari_years}-year ARI row from the configured VR table."
+        )
+    selected_source = (
+        source_reference(data) if configured_table else f"{STANDARD} Table 3.1(A) regional equation"
+    )
+    return vr, warnings, selected_source
+
+
 @mcp.tool()
-def calculate_regional_wind_speed(wind_region: str, ari_years: int) -> dict[str, Any]:
+def calculate_regional_wind_speed(
+    wind_region: WindRegionLabel,
+    ari_years: AriYears,
+) -> CalculationResult:
     """Calculate Australian regional wind speed VR for a reviewed region and ARI."""
 
-    vr = regional_wind_speed(wind_region, ari_years)
+    vr, lookup_warnings, selected_source = _regional_wind_speed(wind_region, ari_years)
     return _result(
         clause="Table 3.1(A)",
         inputs={"wind_region": wind_region, "ari_years": ari_years},
-        outputs={"vr_mps": vr},
-        warnings=["Confirm the wind-region boundary and applicable NCC jurisdictional variations."],
+        outputs={"vr_mps": vr, "source_reference": selected_source},
+        warnings=[
+            "Confirm the wind-region boundary and applicable NCC jurisdictional variations.",
+            *lookup_warnings,
+        ],
     )
 
 
 @mcp.tool()
-def get_direction_multipliers(wind_region: str) -> dict[str, Any]:
+def get_direction_multipliers(wind_region: WindRegionLabel) -> CalculationResult:
     """Return the eight Australian wind direction multipliers Md for a reviewed region."""
 
     multipliers = direction_multiplier_values(wind_region)
@@ -103,10 +192,10 @@ def get_direction_multipliers(wind_region: str) -> dict[str, Any]:
 
 @mcp.tool()
 def calculate_terrain_height_multiplier(
-    terrain_category: str,
-    height_m: float,
-    wind_region: str,
-) -> dict[str, Any]:
+    terrain_category: TerrainCategoryLabel,
+    height_m: PositiveHeight,
+    wind_region: WindRegionLabel,
+) -> CalculationResult:
     """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
 
     height_m = _finite_value("Height", height_m, minimum=0, maximum=200, minimum_inclusive=False)
@@ -129,9 +218,9 @@ def calculate_terrain_height_multiplier(
 
 @mcp.tool()
 def calculate_shielding_multiplier(
-    shielding_parameter: float,
-    building_height_m: float,
-) -> dict[str, Any]:
+    shielding_parameter: ShieldingParameter,
+    building_height_m: PositiveHeight,
+) -> CalculationResult:
     """Calculate Ms from a reviewed shielding parameter and building height."""
 
     shielding_parameter = _finite_value(
@@ -167,16 +256,16 @@ def calculate_shielding_multiplier(
 
 @mcp.tool()
 def calculate_topographic_wind_multiplier(
-    feature_type: str,
-    h_m: float,
-    lu_m: float,
-    x_m: float,
-    z_m: float,
-    average_roof_height_m: float,
-    wind_region: str,
-    site_elevation_m: float,
-    site_is_downwind: bool = True,
-) -> dict[str, Any]:
+    feature_type: FeatureType,
+    h_m: TopographicHeight,
+    lu_m: TopographicDistance,
+    x_m: TopographicDistance,
+    z_m: ReferenceHeight,
+    average_roof_height_m: PositiveHeight,
+    wind_region: WindRegionLabel,
+    site_elevation_m: SiteElevation,
+    site_is_downwind: StrictBoolean = True,
+) -> CalculationResult:
     """Calculate Mt from reviewed Clause 4.4 hill, ridge, or escarpment geometry."""
 
     calculation = calculate_mt(
@@ -226,12 +315,12 @@ def calculate_topographic_wind_multiplier(
 
 @mcp.tool()
 def calculate_site_wind_speed(
-    vr_mps: float,
-    md: float,
-    mzcat: float,
-    ms: float,
-    mt: float,
-) -> dict[str, Any]:
+    vr_mps: PositiveWindValue,
+    md: PositiveMultiplier,
+    mzcat: PositiveMultiplier,
+    ms: PositiveMultiplier,
+    mt: PositiveMultiplier,
+) -> CalculationResult:
     """Calculate site wind speed Vsit,b from reviewed multiplier inputs."""
 
     values = {
@@ -269,20 +358,20 @@ def calculate_site_wind_speed(
 
 @mcp.tool()
 def calculate_all_wind_variables(
-    wind_region: str,
-    ari_years: int,
-    direction: str,
-    terrain_category: str,
-    height_m: float,
-    shielding_parameter: float,
-    building_height_m: float,
-    feature_type: str,
-    h_m: float,
-    lu_m: float,
-    x_m: float,
-    site_elevation_m: float,
-    site_is_downwind: bool = True,
-) -> dict[str, Any]:
+    wind_region: WindRegionLabel,
+    ari_years: AriYears,
+    direction: WindDirection,
+    terrain_category: TerrainCategoryLabel,
+    height_m: PositiveHeight,
+    shielding_parameter: ShieldingParameter,
+    building_height_m: PositiveHeight,
+    feature_type: FeatureType,
+    h_m: TopographicHeight,
+    lu_m: TopographicDistance,
+    x_m: TopographicDistance,
+    site_elevation_m: SiteElevation,
+    site_is_downwind: StrictBoolean = True,
+) -> CalculationResult:
     """Calculate VR, Md, Mz,cat, Ms, Mt, and Vsit,b from reviewed inputs."""
 
     direction = direction.upper()
@@ -320,7 +409,7 @@ def calculate_all_wind_variables(
         maximum=10_000,
     )
 
-    vr = regional_wind_speed(wind_region, ari_years)
+    vr, vr_warnings, vr_source = _regional_wind_speed(wind_region, ari_years)
     md = direction_multiplier_values(wind_region)[direction]
     mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
     height_limit_m = shielding_reduction_height_limit_m()
@@ -347,6 +436,7 @@ def calculate_all_wind_variables(
         )
     vsitb = site_wind_speed(vr, md, mzcat, ms, mt_calculation.mt)
     warnings = [
+        *vr_warnings,
         *mzcat_lookup_warnings(),
         *shielding_lookup_warnings(),
         *mt_calculation.warnings,
@@ -376,6 +466,7 @@ def calculate_all_wind_variables(
         },
         outputs={
             "vr_mps": vr,
+            "vr_source_reference": vr_source,
             "md": md,
             "mzcat": round(mzcat, 6),
             "ms": round(ms, 6),
@@ -386,26 +477,319 @@ def calculate_all_wind_variables(
     )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     """Run the MCP server over stdio or Streamable HTTP."""
 
-    parser = argparse.ArgumentParser(description="Run the OpenWind-AU MCP server.")
+    parser = argparse.ArgumentParser(
+        prog="openwind-au-mcp",
+        description="Run the OpenWind-AU MCP server.",
+    )
     parser.add_argument(
         "--transport",
-        choices=("stdio", "streamable-http"),
-        default=os.environ.get("OPENWIND_MCP_TRANSPORT", "stdio"),
+        choices=MCP_TRANSPORTS,
+        default=None,
+        help="MCP transport (default: OPENWIND_MCP_TRANSPORT or stdio)",
     )
-    parser.add_argument("--host", default=os.environ.get("OPENWIND_MCP_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--host",
+        type=_host,
+        default=None,
+        help="HTTP bind host (default: OPENWIND_MCP_HOST or 127.0.0.1)",
+    )
     parser.add_argument(
         "--port",
-        type=int,
-        default=int(os.environ.get("OPENWIND_MCP_PORT", "8001")),
+        type=_port,
+        default=None,
+        help="HTTP bind port (default: OPENWIND_MCP_PORT or 8001)",
     )
-    args = parser.parse_args()
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
-    mcp.run(transport=args.transport)
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        type=_allowed_host,
+        default=None,
+        help=(
+            "Trusted HTTP Host header, repeatable. Required for wildcard binds; "
+            "default: OPENWIND_MCP_ALLOWED_HOSTS."
+        ),
+    )
+    parser.add_argument(
+        "--allowed-origin",
+        action="append",
+        type=_allowed_origin,
+        default=None,
+        help=(
+            "Trusted browser Origin, repeatable. Default: OPENWIND_MCP_ALLOWED_ORIGINS "
+            "or origins derived from allowed hosts."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    transport = args.transport
+    if transport is None:
+        transport = _environment_value(
+            parser,
+            "OPENWIND_MCP_TRANSPORT",
+            "stdio",
+            _transport,
+        )
+    host = args.host
+    if host is None:
+        host = _environment_value(parser, "OPENWIND_MCP_HOST", "127.0.0.1", _host)
+    port = args.port
+    if port is None:
+        port = _environment_value(parser, "OPENWIND_MCP_PORT", "8001", _port)
+    allowed_hosts = args.allowed_host
+    if allowed_hosts is None:
+        allowed_hosts = _environment_list(
+            parser,
+            "OPENWIND_MCP_ALLOWED_HOSTS",
+            _allowed_host,
+        )
+    allowed_origins = args.allowed_origin
+    if allowed_origins is None:
+        allowed_origins = _environment_list(
+            parser,
+            "OPENWIND_MCP_ALLOWED_ORIGINS",
+            _allowed_origin,
+        )
+
+    mcp.settings.host = host
+    mcp.settings.port = port
+    if transport == "streamable-http":
+        mcp.settings.transport_security = _transport_security_settings(
+            parser,
+            bind_host=host,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
+    mcp.run(transport=transport)
+    return 0
+
+
+def _environment_value(
+    parser: argparse.ArgumentParser,
+    name: str,
+    fallback: str,
+    converter,
+):
+    """Validate one MCP environment default and surface an argparse diagnostic."""
+
+    try:
+        return converter(os.environ.get(name, fallback))
+    except argparse.ArgumentTypeError as exc:
+        parser.error(f"{name}: {exc}")
+
+
+def _environment_list(
+    parser: argparse.ArgumentParser,
+    name: str,
+    converter,
+) -> list[str]:
+    """Parse a comma-separated MCP security allowlist."""
+
+    raw_value = os.environ.get(name, "")
+    if not raw_value.strip():
+        return []
+    values: list[str] = []
+    for raw_item in raw_value.split(","):
+        try:
+            values.append(converter(raw_item))
+        except argparse.ArgumentTypeError as exc:
+            parser.error(f"{name}: {exc}")
+    return values
+
+
+def _transport(value: str) -> str:
+    """Parse one supported MCP transport."""
+
+    transport = value.strip()
+    if transport not in MCP_TRANSPORTS:
+        choices = ", ".join(MCP_TRANSPORTS)
+        raise argparse.ArgumentTypeError(f"transport must be one of: {choices}")
+    return transport
+
+
+def _host(value: str) -> str:
+    """Reject an empty MCP bind host."""
+
+    host = value.strip()
+    if not host:
+        raise argparse.ArgumentTypeError("host must not be empty")
+    if any(character.isspace() for character in host) or "/" in host or "@" in host or "*" in host:
+        raise argparse.ArgumentTypeError("host must be a hostname or IP address without a port")
+    if ":" in host:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "host must be a hostname or IP address without a port"
+            ) from exc
+    return host
+
+
+def _port(value: str) -> int:
+    """Parse one valid MCP TCP port."""
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _allowed_host(value: str) -> str:
+    """Validate one trusted Host-header value."""
+
+    allowed_host = value.strip()
+    if not allowed_host:
+        raise argparse.ArgumentTypeError("allowed host must not be empty")
+    if (
+        any(character.isspace() for character in allowed_host)
+        or "/" in allowed_host
+        or "@" in allowed_host
+        or ("*" in allowed_host and not allowed_host.endswith(":*"))
+    ):
+        raise argparse.ArgumentTypeError(
+            "allowed host must be a hostname, IP, host:port, or host:* pattern"
+        )
+    if allowed_host.startswith("["):
+        closing_bracket = allowed_host.find("]")
+        if closing_bracket < 0:
+            raise argparse.ArgumentTypeError("allowed host contains an invalid bracketed IPv6 IP")
+        address_text = allowed_host[1:closing_bracket]
+        suffix = allowed_host[closing_bracket + 1 :]
+        try:
+            address = ipaddress.ip_address(address_text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "allowed host contains an invalid bracketed IPv6 IP"
+            ) from exc
+        if address.version != 6 or (suffix and not _valid_port_suffix(suffix)):
+            raise argparse.ArgumentTypeError(
+                "allowed host must be a hostname, IP, host:port, or host:* pattern"
+            )
+        return allowed_host
+    if ":" in allowed_host:
+        try:
+            address = ipaddress.ip_address(allowed_host)
+        except ValueError:
+            hostname, port = allowed_host.rsplit(":", 1)
+            if not hostname or ":" in hostname or not _valid_port_suffix(f":{port}"):
+                raise argparse.ArgumentTypeError(
+                    "IPv6 allowed hosts must be a bare IP or use [address]:port syntax"
+                ) from None
+            return allowed_host
+        if address.version == 6:
+            return f"[{allowed_host}]"
+    return allowed_host
+
+
+def _allowed_origin(value: str) -> str:
+    """Validate one trusted browser Origin-header value."""
+
+    allowed_origin = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(allowed_origin)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("allowed origin contains an invalid host") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise argparse.ArgumentTypeError(
+            "allowed origin must be an http(s) origin without credentials or a path"
+        )
+    return allowed_origin
+
+
+def _transport_security_settings(
+    parser: argparse.ArgumentParser,
+    *,
+    bind_host: str,
+    allowed_hosts: Sequence[str],
+    allowed_origins: Sequence[str],
+) -> TransportSecuritySettings:
+    """Build a protected HTTP allowlist for the selected bind interface."""
+
+    trusted_hosts = list(LOOPBACK_ALLOWED_HOSTS)
+    requested_hosts = list(allowed_hosts)
+    wildcard_bind = _is_wildcard_bind_host(bind_host)
+    if wildcard_bind and not requested_hosts:
+        parser.error(
+            "--allowed-host or OPENWIND_MCP_ALLOWED_HOSTS is required when binding "
+            f"Streamable HTTP to {bind_host}"
+        )
+    if not wildcard_bind:
+        requested_hosts.append(_host_header_name(bind_host))
+    for allowed_host in requested_hosts:
+        if allowed_host not in trusted_hosts:
+            trusted_hosts.append(allowed_host)
+        if not _host_has_port_pattern(allowed_host):
+            wildcard_port = f"{allowed_host}:*"
+            if wildcard_port not in trusted_hosts:
+                trusted_hosts.append(wildcard_port)
+
+    trusted_origins = list(LOOPBACK_ALLOWED_ORIGINS)
+    derived_origins = [
+        f"{scheme}://{allowed_host}"
+        for allowed_host in trusted_hosts
+        if allowed_host not in LOOPBACK_ALLOWED_HOSTS
+        for scheme in ("http", "https")
+    ]
+    for allowed_origin in [*derived_origins, *allowed_origins]:
+        if allowed_origin not in trusted_origins:
+            trusted_origins.append(allowed_origin)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=trusted_hosts,
+        allowed_origins=trusted_origins,
+    )
+
+
+def _host_header_name(bind_host: str) -> str:
+    """Return the Host-header representation for a concrete bind host."""
+
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    return f"[{bind_host}]" if address.version == 6 else bind_host
+
+
+def _is_wildcard_bind_host(bind_host: str) -> bool:
+    """Return whether a bind address listens on every interface."""
+
+    try:
+        return ipaddress.ip_address(bind_host).is_unspecified
+    except ValueError:
+        return False
+
+
+def _host_has_port_pattern(allowed_host: str) -> bool:
+    """Return whether an allowed Host value already fixes or wildcards a port."""
+
+    if allowed_host.startswith("["):
+        return "]:" in allowed_host
+    return allowed_host.count(":") == 1
+
+
+def _valid_port_suffix(suffix: str) -> bool:
+    """Return whether a Host allowlist suffix is :*, or a valid TCP port."""
+
+    if suffix == ":*":
+        return True
+    if not suffix.startswith(":") or not suffix[1:].isdigit():
+        return False
+    return 1 <= int(suffix[1:]) <= 65535
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -50,6 +50,22 @@ All notable project milestones are documented here.
   column and the complete optional override controls.
 - Verified Python 3.13 and 3.14 support and normalised Windows extended-path aliases so concurrent
   Microsoft footprint requests share one download lock on current Python releases.
+- Made every public request location unambiguous: clients now send either an address to geocode or
+  a complete coordinate pair, with optional `site_label` for coordinate display. Updated both
+  browser workflows so autocomplete, restored sites, and dragged buildings use that contract.
+- Made public request and completed-result validation strict, rejecting unknown nested fields,
+  booleans/numeric strings in engineering-number fields, unsigned internal GIS geometry, and other
+  representation changes that could previously be discarded before integrity verification.
+- Corrected OpenAPI media types and schemas for NDJSON streams, all PDF routes, raw obstruction
+  imports, health/error responses, geocoding, combined analysis, and validation outputs. PDF and
+  completed-result errors now document the JSON bodies actually returned at runtime.
+- Made CSV/JSON obstruction imports fail closed on unknown or duplicate fields, missing reviewed
+  heights, surplus CSV values, invalid identifiers, unsupported media, and bodies over 1 MB while
+  streaming the size check instead of buffering an unbounded request.
+- Unified configured `VR` selection between FastAPI and MCP, added MCP source provenance and
+  application-version handshakes, published bounded enum/result schemas, and validated all MCP
+  engineering types without coercion. Streamable HTTP now retains DNS-rebinding protection and
+  requires explicit Host allowlists for wildcard binds.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 

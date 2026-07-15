@@ -24,7 +24,8 @@ certified design tool. Suitable for exploration, review, contribution, and regre
 
 ## What It Does
 
-- Accepts an Australian street address or latitude/longitude.
+- Accepts either an Australian street address or latitude/longitude, with an optional non-geocoded
+  `site_label` for map-selected coordinates.
 - Generates 8-direction terrain profiles: N, NE, E, SE, S, SW, W, and NW.
 - Supports analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Performs conservative rule-based screening for candidate ridge, hill, escarpment, valley, or no

@@ -32,6 +32,9 @@ exception diagnostics are retained only in server logs.
 The NDJSON workflow stream always starts with HTTP 200, so clients must also inspect a terminal
 `error` event's `data.status_code` for the equivalent 400, 502, 503, or 500 classification.
 
+All JSON request models are strict. Unknown fields, booleans used as numbers, and numeric strings
+such as `"10"` are rejected with HTTP 422 instead of being ignored or coerced.
+
 Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
 disabled by default. For a trusted local troubleshooting session only, set
 `OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable `/api/debug/*` and
@@ -41,6 +44,23 @@ details. Normal assessment responses omit the local wind-region dataset path and
 use the dedicated map endpoint for rendered geometry.
 
 ## Analyse A Site
+
+Every assessment request must use exactly one location mode:
+
+- `address` alone asks the server to geocode that address; or
+- `latitude` and `longitude` supply the calculation coordinates directly. An optional `site_label`
+  may describe those coordinates without being geocoded.
+
+Do not send `address` together with coordinates. For example, a map-selected or dragged site uses:
+
+```json
+{
+  "site_label": "1 Macquarie Street, Sydney NSW",
+  "latitude": -33.8568,
+  "longitude": 151.2153,
+  "building_height_m": 12
+}
+```
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/analyse \
@@ -88,6 +108,12 @@ POST /api/obstructions/report/html
 POST /api/obstructions/import/csv
 POST /api/obstructions/import/json
 ```
+
+CSV and JSON imports are limited to 1 MB and must use `text/csv`, `application/csv`, or
+`application/json` as documented in OpenAPI. CSV accepts only `obstruction_id`, `height_m`,
+`building_levels`, `height_source`, and `notes`; duplicate/unknown headers and surplus values are
+rejected. Each JSON/CSV item requires a nonblank `obstruction_id` and at least one of `height_m` or
+`building_levels`. Unknown or duplicate JSON member names and numeric strings are rejected.
 
 The obstruction inventory uses Microsoft Australia Building Footprints as the preferred building
 geometry source when a local cache is configured. OSM/Overpass is used as fallback and to merge
@@ -173,8 +199,8 @@ POST /api/wind-workflow/report/html
 POST /api/wind-workflow/report/pdf
 ```
 
-Wind-workflow requests use a strict schema: unknown fields are rejected with HTTP 422 rather than
-silently ignored. In particular, legacy request fields such as `wind_region`,
+Wind-workflow requests use the same strict location and type contract. In particular, legacy
+request fields such as `wind_region`,
 `regional_wind_speed_mps`, `wind_direction_multipliers`, and `workflow_reviews` are not accepted.
 Use the two explicit override collections instead:
 
@@ -202,6 +228,10 @@ The response fields named `final_value` and `final_vsitb` are retained for API c
 mean the selected calculated or explicitly overridden value used in the current preliminary
 workflow; they are not a certification state. Review metadata and override collections have one
 source of truth under `input` and are not repeated at the result top level.
+
+`/api/wind-workflow/stream` is documented and returned as `application/x-ndjson`. PDF routes return
+binary `application/pdf` with `Content-Disposition`; completed-result routes require an authentic
+server integrity token and reject unknown, excluded, or coercible nested representations.
 
 ## Validation
 

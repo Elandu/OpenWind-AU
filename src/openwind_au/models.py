@@ -16,7 +16,38 @@ SUPPORTED_LATITUDE_RANGE = (-44.5, -9.0)
 SUPPORTED_LONGITUDE_RANGE = (112.0, 154.5)
 
 
-class GeocodeQueryRequest(BaseModel):
+class StrictRequestModel(BaseModel):
+    """Public request model that rejects typos and implicit JSON coercion."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ApiErrorResponse(BaseModel):
+    """Standard non-validation API error body."""
+
+    detail: str
+
+
+class ApiValidationErrorResponse(BaseModel):
+    """Request-validation or completed-result integrity error body."""
+
+    detail: str | list[dict[str, Any]]
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness response returned with either HTTP 200 or 503."""
+
+    status: Literal["ready", "not_ready"]
+    checks: dict[str, dict[str, Any]]
+
+
+class LivenessResponse(BaseModel):
+    """Process liveness response."""
+
+    status: Literal["ok"] = "ok"
+
+
+class GeocodeQueryRequest(StrictRequestModel):
     """Bounded address-search input kept out of access-log query strings."""
 
     query: str = Field(min_length=3, max_length=300)
@@ -31,10 +62,70 @@ class GeocodeQueryRequest(BaseModel):
         return cleaned
 
 
-class SiteAnalysisRequest(BaseModel):
-    """Input payload for a preliminary site wind terrain analysis."""
+class GeocodeResult(BaseModel):
+    """Resolved Australian address candidate."""
 
-    address: str | None = Field(default=None, description="Street address to geocode.")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    latitude: float = Field(ge=SUPPORTED_LATITUDE_RANGE[0], le=SUPPORTED_LATITUDE_RANGE[1])
+    longitude: float = Field(ge=SUPPORTED_LONGITUDE_RANGE[0], le=SUPPORTED_LONGITUDE_RANGE[1])
+    display_name: str | None = None
+    source: str
+
+
+class GeocodeSuggestionsResponse(BaseModel):
+    """Bounded autocomplete result list."""
+
+    suggestions: list[GeocodeResult]
+
+
+class LocationRequest(StrictRequestModel):
+    """Shared, unambiguous address-or-coordinate request fields."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "title": "Address location",
+                    "required": ["address"],
+                    "properties": {
+                        "address": {"type": "string", "pattern": r".*\S.*"},
+                        "site_label": {"type": "null"},
+                        "latitude": {"type": "null"},
+                        "longitude": {"type": "null"},
+                    },
+                },
+                {
+                    "title": "Coordinate location",
+                    "required": ["latitude", "longitude"],
+                    "properties": {
+                        "latitude": {
+                            "type": "number",
+                            "minimum": SUPPORTED_LATITUDE_RANGE[0],
+                            "maximum": SUPPORTED_LATITUDE_RANGE[1],
+                        },
+                        "longitude": {
+                            "type": "number",
+                            "minimum": SUPPORTED_LONGITUDE_RANGE[0],
+                            "maximum": SUPPORTED_LONGITUDE_RANGE[1],
+                        },
+                        "address": {"type": "null"},
+                    },
+                },
+            ]
+        }
+    )
+
+    address: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Street address to geocode. Omit when coordinates are supplied.",
+    )
+    site_label: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Display label for supplied coordinates; this value is not geocoded.",
+    )
     latitude: float | None = Field(
         default=None,
         ge=SUPPORTED_LATITUDE_RANGE[0],
@@ -45,6 +136,37 @@ class SiteAnalysisRequest(BaseModel):
         ge=SUPPORTED_LONGITUDE_RANGE[0],
         le=SUPPORTED_LONGITUDE_RANGE[1],
     )
+
+    @field_validator("address", "site_label")
+    @classmethod
+    def normalize_location_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_location(self) -> LocationRequest:
+        """Require exactly one location mode and keep labels coordinate-only."""
+
+        has_address = self.address is not None
+        has_coords = self.latitude is not None and self.longitude is not None
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Provide both latitude and longitude when using coordinates.")
+        if self.site_label is not None and not has_coords:
+            raise ValueError("site_label may only be supplied with latitude and longitude.")
+        if has_address and has_coords:
+            raise ValueError(
+                "Provide either address or latitude and longitude, not both. "
+                "Use site_label to describe supplied coordinates."
+            )
+        if not has_address and not has_coords:
+            raise ValueError("Provide either address or latitude and longitude.")
+        return self
+
+
+class SiteAnalysisRequest(LocationRequest):
+    """Input payload for a preliminary site wind terrain analysis."""
+
     building_height_m: float = Field(
         gt=0,
         le=200,
@@ -55,15 +177,7 @@ class SiteAnalysisRequest(BaseModel):
     mzcat_recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
 
     @model_validator(mode="after")
-    def validate_location(self) -> SiteAnalysisRequest:
-        """Require either an address or a complete coordinate pair."""
-
-        has_address = bool(self.address and self.address.strip())
-        has_coords = self.latitude is not None and self.longitude is not None
-        if not has_address and not has_coords:
-            raise ValueError("Provide either address or latitude and longitude.")
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("Provide both latitude and longitude when using coordinates.")
+    def validate_analysis_radius(self) -> SiteAnalysisRequest:
         if self.radius_m not in {500, 1000, 2000, 4000}:
             raise ValueError("radius_m must be one of 500, 1000, 2000, or 4000.")
         return self
@@ -78,6 +192,8 @@ class SiteAnalysisRequest(BaseModel):
 
 class SiteLocation(BaseModel):
     """Resolved site location."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     latitude: float
     longitude: float
@@ -214,6 +330,8 @@ class MzCatDirectionAssessment(BaseModel):
 class MzCatReviewSelection(BaseModel):
     """Engineer-selected final Mz,cat fields supplied for reviewed reports."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
     final_mzcat: float | None = Field(default=None, gt=0)
@@ -280,15 +398,51 @@ class TerrainCategoryEvidenceResult(BaseModel):
 class ObstructionManualOverride(BaseModel):
     """Reviewed obstruction height data supplied by a user."""
 
-    obstruction_id: str
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "required": ["height_m"],
+                    "properties": {"height_m": {"type": "number", "minimum": 0, "maximum": 500}},
+                },
+                {
+                    "required": ["building_levels"],
+                    "properties": {
+                        "building_levels": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 200,
+                        }
+                    },
+                },
+            ]
+        },
+    )
+
+    obstruction_id: str = Field(min_length=1, max_length=300, pattern=r".*\S.*")
     height_m: float | None = Field(default=None, ge=0, le=500)
     building_levels: float | None = Field(default=None, ge=0, le=200)
     height_source: str = "manual_review"
     notes: str | None = None
 
+    @field_validator("obstruction_id", mode="before")
+    @classmethod
+    def normalize_obstruction_id(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_reviewed_height(self) -> ObstructionManualOverride:
+        if self.height_m is None and self.building_levels is None:
+            raise ValueError("Provide height_m or building_levels for a manual override.")
+        return self
+
 
 class ReviewedFootprint(BaseModel):
     """Reviewed obstruction geometry supplied by a reviewed obstruction JSON file."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
     geometry: dict[str, Any]
@@ -380,20 +534,9 @@ class PublicObstructionDataQuality(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class ObstructionInventoryRequest(BaseModel):
+class ObstructionInventoryRequest(LocationRequest):
     """Input payload for building obstruction inventory."""
 
-    address: str | None = Field(default=None, description="Street address to geocode.")
-    latitude: float | None = Field(
-        default=None,
-        ge=SUPPORTED_LATITUDE_RANGE[0],
-        le=SUPPORTED_LATITUDE_RANGE[1],
-    )
-    longitude: float | None = Field(
-        default=None,
-        ge=SUPPORTED_LONGITUDE_RANGE[0],
-        le=SUPPORTED_LONGITUDE_RANGE[1],
-    )
     radius_m: int = Field(default=500, ge=50, le=4000)
     building_height_m: float | None = Field(
         default=None,
@@ -419,23 +562,12 @@ class ObstructionInventoryRequest(BaseModel):
     ] = "nearest_500"
     map_max_display_obstructions: int = Field(default=500, ge=1, le=5000)
 
-    @model_validator(mode="after")
-    def validate_location(self) -> ObstructionInventoryRequest:
-        """Require either an address or a complete coordinate pair."""
-
-        has_address = bool(self.address and self.address.strip())
-        has_coords = self.latitude is not None and self.longitude is not None
-        if not has_address and not has_coords:
-            raise ValueError("Provide either address or latitude and longitude.")
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("Provide both latitude and longitude when using coordinates.")
-        return self
-
 
 class PublicObstructionInventoryInput(BaseModel):
     """Echoed inventory settings without repeating imported footprint geometry."""
 
     address: str | None = None
+    site_label: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     radius_m: int
@@ -594,6 +726,17 @@ class PublicObstructionInventoryResult(BaseModel):
     disclaimer: str
 
 
+class FullAnalysisResult(BaseModel):
+    """Typed response for the combined legacy browser analysis workflow."""
+
+    site_analysis: SiteAnalysisResult
+    obstruction_inventory: PublicObstructionInventoryResult
+    terrain_category_evidence: TerrainCategoryEvidenceResult
+    profile_plot_html: str
+    terrain_category_map_html: str
+    combined_map_html: str
+
+
 class CombinedMapRequest(SiteAnalysisRequest):
     """Request for the unified site + obstruction map with toggleable layers.
 
@@ -651,8 +794,10 @@ WindRegionLabel = Literal[
 ]
 
 
-class WindRegionAssessment(BaseModel):
-    """Wind region assigned from bundled AS/NZS wind-region GIS polygons."""
+class PublicWindRegionAssessment(BaseModel):
+    """Serializable wind-region evidence included in completed workflow results."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     latitude: float
     longitude: float
@@ -665,16 +810,38 @@ class WindRegionAssessment(BaseModel):
     confidence: Literal["high", "medium", "low"]
     distance_to_boundary_m: float | None = None
     near_boundary: bool = False
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WindRegionAssessment(PublicWindRegionAssessment):
+    """Wind region assessment with server-only GIS geometry for map rendering."""
+
     region_polygon: dict[str, Any] | None = Field(
         default=None,
         exclude=True,
         description="Internal GIS geometry used by server-rendered map endpoints.",
     )
-    warnings: list[str] = Field(default_factory=list)
+
+
+class WindRegionValidationResult(BaseModel):
+    """One published wind-region dataset validation outcome."""
+
+    site: str
+    latitude: float
+    longitude: float
+    expected_region: WindRegionLabel
+    warning: str | None = None
+    actual_region: WindRegionLabel | None = None
+    status: Literal["pass", "fail", "warning"]
+    confidence: Literal["high", "medium", "low"]
+    distance_to_boundary_m: float | None = None
+    diagnosis: str
 
 
 class RegionalWindSpeedAssessment(BaseModel):
     """VR lookup for the assessed wind region and selected annual probability."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     wind_region: WindRegionLabel
     importance_level: str | None = None
@@ -691,6 +858,8 @@ class RegionalWindSpeedAssessment(BaseModel):
 class DirectionMultiplierRow(BaseModel):
     """Directional Md value for one cardinal/intercardinal direction."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     direction: WindDirection
     md: float | None = None
     is_governing: bool = False
@@ -698,6 +867,8 @@ class DirectionMultiplierRow(BaseModel):
 
 class DirectionMultiplierAssessment(BaseModel):
     """Direction multiplier table selected from the assessed wind region."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     wind_region: WindRegionLabel
     source_table: str
@@ -710,6 +881,8 @@ class DirectionMultiplierAssessment(BaseModel):
 
 class WindVariableOverride(BaseModel):
     """Optional override for a calculated wind workflow variable."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     variable: WindWorkflowVariable
     direction: WindDirection | None = None
@@ -728,6 +901,8 @@ class WindVariableOverride(BaseModel):
 
 class WindClassMultiplierOverride(BaseModel):
     """Optional reviewed class inputs for directional Mz,cat, Ms, and Mt values."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     direction: WindDirection
     terrain_category: TerrainCategoryLabel | None = None
@@ -761,7 +936,7 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     review and does not calculate pressures.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     project_number: str | None = None
     annual_exceedance_probability: str = "1/500"
@@ -821,6 +996,8 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
 class WindVariableAssessment(BaseModel):
     """Reviewable value for one AS/NZS site wind workflow variable."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     variable: WindWorkflowVariable
     label: str
     direction: WindDirection | None = None
@@ -847,6 +1024,8 @@ class WindVariableAssessment(BaseModel):
 class SiteWindSpeedRow(BaseModel):
     """Directional Vsit,b row assembled from reviewed workflow variables."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     direction: WindDirection
     vr: float | None = None
     md: float | None = None
@@ -863,11 +1042,11 @@ class SiteWindSpeedRow(BaseModel):
 class WindWorkflowResult(BaseModel):
     """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     input: WindWorkflowRequest
     site: SiteLocation
-    wind_region_assessment: WindRegionAssessment | None = None
+    wind_region_assessment: PublicWindRegionAssessment | None = None
     regional_wind_speed_assessment: RegionalWindSpeedAssessment | None = None
     direction_multiplier_assessment: DirectionMultiplierAssessment | None = None
     variables: list[WindVariableAssessment]

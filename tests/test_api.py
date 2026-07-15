@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
@@ -226,6 +228,25 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert all(feature["feature_type"] == "no significant feature" for feature in body["features"])
     assert all("competent engineer" in " ".join(feature["notes"]) for feature in body["features"])
     assert "not a certified" in body["disclaimer"]
+
+
+def test_export_json_matches_typed_site_analysis_response(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "site_label": "Reviewed coordinate site",
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+    }
+
+    analysis = client.post("/api/analyse", json=payload)
+    exported = client.post("/api/export/json", json=payload)
+
+    assert analysis.status_code == exported.status_code == 200
+    assert exported.json() == analysis.json()
 
 
 def test_pdf_report_endpoint_returns_in_memory_download(monkeypatch, tmp_path) -> None:
@@ -803,6 +824,132 @@ def test_obstruction_inventory_openapi_omits_private_diagnostics() -> None:
     assert "reviewed_footprints" not in input_properties
 
 
+def test_openapi_documents_stream_and_pdf_transport_media_types() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+
+    stream_content = schema["paths"]["/api/wind-workflow/stream"]["post"]["responses"]["200"][
+        "content"
+    ]
+    assert set(stream_content) == {"application/x-ndjson"}
+    assert stream_content["application/x-ndjson"]["schema"] == {"type": "string"}
+
+    for path in (
+        "/api/wind-workflow/report/pdf",
+        "/api/wind-workflow/result/report/pdf",
+        "/api/report/pdf",
+    ):
+        success = schema["paths"][path]["post"]["responses"]["200"]
+        assert set(success["content"]) == {"application/pdf"}
+        assert success["content"]["application/pdf"]["schema"] == {
+            "type": "string",
+            "format": "binary",
+        }
+        assert "Content-Disposition" in success["headers"]
+
+
+def test_openapi_documents_raw_obstruction_import_contracts() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    paths = schema["paths"]
+
+    csv_operation = paths["/api/obstructions/import/csv"]["post"]
+    assert set(csv_operation["requestBody"]["content"]) == {
+        "text/csv",
+        "application/csv",
+    }
+    json_operation = paths["/api/obstructions/import/json"]["post"]
+    json_body_schema = json_operation["requestBody"]["content"]["application/json"]["schema"]
+    assert len(json_body_schema["oneOf"]) == 2
+    assert json_body_schema["oneOf"][1]["additionalProperties"] is False
+    override_schema = schema["components"]["schemas"]["ObstructionManualOverride"]
+    assert len(override_schema["anyOf"]) == 2
+    assert override_schema["properties"]["obstruction_id"]["pattern"] == r".*\S.*"
+
+    for operation in (csv_operation, json_operation):
+        success_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert success_schema["type"] == "array"
+        assert success_schema["items"]["$ref"].endswith("/ObstructionManualOverride")
+        for status in ("400", "413", "415"):
+            error_schema = operation["responses"][status]["content"]["application/json"]["schema"]
+            assert error_schema["$ref"].endswith("/ApiErrorResponse")
+
+
+def test_openapi_documents_location_modes_and_runtime_error_models() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    request_schema = schema["components"]["schemas"]["WindWorkflowRequest"]
+    assert [branch["required"] for branch in request_schema["oneOf"]] == [
+        ["address"],
+        ["latitude", "longitude"],
+    ]
+
+    expected_errors = {
+        ("/api/geocode/resolve", "404"): "ApiErrorResponse",
+        ("/api/wind-workflow", "400"): "ApiErrorResponse",
+        ("/api/wind-workflow", "502"): "ApiErrorResponse",
+        ("/api/wind-workflow", "503"): "ApiErrorResponse",
+        ("/api/wind-workflow/report/pdf", "500"): "ApiErrorResponse",
+        (
+            "/api/wind-workflow/result/report/html",
+            "422",
+        ): "ApiValidationErrorResponse",
+        (
+            "/api/wind-workflow/result/report/pdf",
+            "422",
+        ): "ApiValidationErrorResponse",
+    }
+    for (path, status), model_name in expected_errors.items():
+        error_schema = schema["paths"][path]["post"]["responses"][status]["content"][
+            "application/json"
+        ]["schema"]
+        assert error_schema["$ref"].endswith(f"/{model_name}")
+
+    health_responses = schema["paths"]["/health"]["get"]["responses"]
+    for status in ("200", "503"):
+        health_schema = health_responses[status]["content"]["application/json"]["schema"]
+        assert health_schema["$ref"].endswith("/ReadinessResponse")
+
+
+def test_openapi_has_typed_success_schemas_for_all_published_json_operations() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    expected_models = {
+        ("/health/live", "get"): ("LivenessResponse", False),
+        ("/api/geocode/suggest", "post"): ("GeocodeSuggestionsResponse", False),
+        ("/api/geocode/resolve", "post"): ("GeocodeResult", False),
+        ("/api/full-analysis", "post"): ("FullAnalysisResult", False),
+        ("/api/export/json", "post"): ("SiteAnalysisResult", False),
+        ("/api/terrain-category/validation/cases", "get"): (
+            "TerrainCategoryValidationCase",
+            True,
+        ),
+        ("/api/terrain-category/validation", "get"): (
+            "TerrainCategoryValidationResult",
+            True,
+        ),
+        ("/api/validation/cases", "get"): ("ValidationCase", True),
+        ("/api/validation", "get"): ("ValidationReport", False),
+        ("/api/calculation-validation", "get"): ("CalculationValidationReport", False),
+        ("/api/reference-validation/7989", "get"): (
+            "ReferenceCalc7989ComparisonReport",
+            False,
+        ),
+        ("/api/wind-region/validation", "get"): ("WindRegionValidationResult", True),
+    }
+    for (path, method), (model_name, is_array) in expected_models.items():
+        success_schema = schema["paths"][path][method]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+        model_schema = success_schema["items"] if is_array else success_schema
+        assert model_schema["$ref"].endswith(f"/{model_name}")
+
+    empty_success_schemas = []
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            success = operation.get("responses", {}).get("200", {})
+            for media_type, media in success.get("content", {}).items():
+                if media.get("schema") == {}:
+                    empty_success_schemas.append((method, path, media_type))
+    assert empty_success_schemas == []
+
+
 @pytest.mark.parametrize(
     ("path", "content", "content_type", "expected_status"),
     [
@@ -816,6 +963,30 @@ def test_obstruction_inventory_openapi_omits_private_diagnostics() -> None:
         ),
         ("/api/obstructions/import/json", b"{broken", "application/json", 400),
         ("/api/obstructions/import/json", b'{"unexpected": []}', "application/json", 400),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":8,"height_metres":8}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":"8"}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":8,"height_m":9}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'{"obstructions":[],"obstructions":[]}',
+            "application/json",
+            400,
+        ),
         ("/api/obstructions/import/json", b"[]", "text/plain", 415),
     ],
 )
@@ -843,6 +1014,32 @@ def test_obstruction_import_rejects_oversized_payload() -> None:
     )
 
     assert response.status_code == 413
+
+
+def test_obstruction_import_stream_stops_at_size_limit_without_buffering_remainder() -> None:
+    consumed_chunks: list[int] = []
+
+    class ChunkedRequest:
+        headers = {"content-type": "application/json"}
+
+        async def stream(self):
+            for index, chunk in enumerate(
+                (b"x" * api_module.MAX_OBSTRUCTION_IMPORT_BYTES, b"y", b"not-consumed"),
+                start=1,
+            ):
+                consumed_chunks.append(index)
+                yield chunk
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            api_module._read_obstruction_import(
+                ChunkedRequest(),
+                accepted_media_types={"application/json"},
+            )
+        )
+
+    assert exc_info.value.status_code == 413
+    assert consumed_chunks == [1, 2]
 
 
 def test_obstruction_debug_endpoint(monkeypatch) -> None:

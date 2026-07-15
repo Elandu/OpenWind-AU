@@ -194,6 +194,28 @@ def test_csv_overrides_parse_reviewed_heights() -> None:
     assert overrides[0].notes == "checked"
 
 
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (
+            "obstruction_id,height_m,typo\nosm-way-1,8.2,ignored",
+            "unknown columns",
+        ),
+        (
+            "obstruction_id,height_m,height_m\nosm-way-1,8.2,9.1",
+            "duplicate column headers",
+        ),
+        (
+            "obstruction_id,height_m\nosm-way-1,8.2,extra",
+            "more values than its header",
+        ),
+    ],
+)
+def test_csv_overrides_reject_ambiguous_columns(content: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_manual_overrides_csv(content)
+
+
 def test_run_obstruction_inventory_uses_supplied_footprints() -> None:
     result = run_obstruction_inventory(
         ObstructionInventoryRequest(

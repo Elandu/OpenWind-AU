@@ -489,8 +489,11 @@ function workflowPayload() {
   if (locationMode === "coordinates" && coordinateOverride) {
     payload.latitude = coordinateOverride.latitude;
     payload.longitude = coordinateOverride.longitude;
+    payload.site_label = payload.address || coordinateOverride.display_name || null;
+    delete payload.address;
   }
   if (!payload.address) delete payload.address;
+  if (!payload.site_label) delete payload.site_label;
   if (!payload.project_number) delete payload.project_number;
   if (payload.importance_level === null) delete payload.importance_level;
   [
@@ -541,6 +544,9 @@ function acceptedWorkflowFingerprint(requestPayload, workflow) {
   ) {
     acceptedPayload.latitude = Number(workflow.site.latitude);
     acceptedPayload.longitude = Number(workflow.site.longitude);
+    acceptedPayload.site_label = acceptedPayload.address || workflow.site.display_name || null;
+    delete acceptedPayload.address;
+    if (!acceptedPayload.site_label) delete acceptedPayload.site_label;
   }
   return JSON.stringify(acceptedPayload);
 }
@@ -1625,7 +1631,7 @@ function formatOrientation(value) {
 function renderSiteAnalysisProgress(siteAnalysis) {
   const input = siteAnalysis.input || {};
   const site = siteAnalysis.site || {};
-  const resultAddress = String(input.address || "").trim();
+  const resultAddress = String(input.address || input.site_label || "").trim();
   const currentAddress = String(dashboardAddress?.value || "").trim();
   const locationStillCurrent = !resultAddress || !currentAddress || resultAddress === currentAddress;
   if (
@@ -1636,21 +1642,21 @@ function renderSiteAnalysisProgress(siteAnalysis) {
     currentMapSite = {
       latitude: Number(site.latitude),
       longitude: Number(site.longitude),
-      display_name: site.display_name || input.address || "Assessed site",
+      display_name: site.display_name || input.address || input.site_label || "Assessed site",
     };
     coordinateOverride = { ...currentMapSite };
     locationMode = "coordinates";
     saveDesignLocation(currentMapSite);
     renderMapCoordinates(currentMapSite);
   }
-  if (!dashboardAddress?.value.trim() && input.address) {
-    dashboardAddress.value = input.address;
+  if (!dashboardAddress?.value.trim() && (input.address || input.site_label)) {
+    dashboardAddress.value = input.address || input.site_label;
   }
   siteInputSummary.innerHTML = `
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>Address</th><td>${escapeHtml(input.address || site.display_name || "not supplied")}</td></tr>
+          <tr><th>Address / site label</th><td>${escapeHtml(input.address || input.site_label || site.display_name || "not supplied")}</td></tr>
           <tr><th>Latitude</th><td id="resolved-site-latitude">${formatNullableNumber(site.latitude, 6, "")}</td></tr>
           <tr><th>Longitude</th><td id="resolved-site-longitude">${formatNullableNumber(site.longitude, 6, "")}</td></tr>
           <tr><th>Ground elevation</th><td>${formatNullableNumber(site.ground_elevation_m, 2, "m")}</td></tr>
@@ -1793,7 +1799,7 @@ function renderSiteInputs(workflow) {
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>Address</th><td>${escapeHtml(input.address || workflow.site?.display_name || "not supplied")}</td></tr>
+          <tr><th>Address / site label</th><td>${escapeHtml(input.address || input.site_label || workflow.site?.display_name || "not supplied")}</td></tr>
           <tr><th>Latitude</th><td id="resolved-site-latitude">${formatNullableNumber(workflow.site?.latitude, 6, "")}</td></tr>
           <tr><th>Longitude</th><td id="resolved-site-longitude">${formatNullableNumber(workflow.site?.longitude, 6, "")}</td></tr>
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>

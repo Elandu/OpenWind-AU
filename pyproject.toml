@@ -36,6 +36,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "pydantic>=2.11,<3",
+  "typing-extensions>=4.12; python_version < '3.13'",
   "numpy>=1.26",
   "scipy>=1.11",
   "requests>=2.31",

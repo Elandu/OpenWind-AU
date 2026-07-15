@@ -18,20 +18,28 @@ from plotly.offline import get_plotlyjs
 from openwind_au import __version__
 from openwind_au.analysis import run_site_analysis
 from openwind_au.calculation_validation import (
-    calculation_validation_report_to_json,
+    CalculationValidationReport,
     run_calculation_validation_cases,
 )
 from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider, configured_dem_provider
 from openwind_au.errors import ServiceNotReadyError
 from openwind_au.geo import geocode_address, geocode_address_suggestions
 from openwind_au.models import (
+    ApiErrorResponse,
+    ApiValidationErrorResponse,
     CombinedMapRequest,
+    FullAnalysisResult,
     GeocodeQueryRequest,
+    GeocodeResult,
+    GeocodeSuggestionsResponse,
+    LivenessResponse,
     MzCatAssessmentResult,
     MzCatReviewSelection,
     ObstructionInventoryRequest,
     ObstructionInventoryResult,
+    ObstructionManualOverride,
     PublicObstructionInventoryResult,
+    ReadinessResponse,
     SiteAnalysisRequest,
     SiteAnalysisResult,
     SiteLocation,
@@ -39,6 +47,7 @@ from openwind_au.models import (
     TerrainCategoryEvidenceResult,
     TerrainCategoryReportRequest,
     WindRegionAssessment,
+    WindRegionValidationResult,
     WindWorkflowRequest,
     WindWorkflowResult,
 )
@@ -49,6 +58,7 @@ from openwind_au.obstructions import (
     run_obstruction_inventory,
 )
 from openwind_au.reference_calc_validation import (
+    ReferenceCalc7989ComparisonReport,
     compare_reference_calc_7989,
     reference_calc_7989_class_overrides,
     reference_calc_7989_osm_footprints,
@@ -81,13 +91,16 @@ from openwind_au.standard_lookup_tables import lookup_is_reviewed
 from openwind_au.terrain_category import run_terrain_category_evidence
 from openwind_au.terrain_category_validation import (
     DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES,
+    TerrainCategoryValidationCase,
+    TerrainCategoryValidationResult,
     run_terrain_category_validation_cases,
 )
 from openwind_au.validation import (
     DEFAULT_VALIDATION_CASES,
+    ValidationCase,
+    ValidationReport,
     render_validation_report_html,
     run_validation_cases,
-    validation_report_to_json,
 )
 from openwind_au.wind_inputs import (
     direction_multiplier_assessment,
@@ -113,6 +126,111 @@ DEBUG_ENDPOINTS_ENV = "OPENWIND_ENABLE_DEBUG_ENDPOINTS"
 DEPENDENCY_FAILURE_DETAIL = (
     "Required data provider failed; retry the request or inspect the server logs."
 )
+ASSESSMENT_ERROR_RESPONSES = {
+    400: {"model": ApiErrorResponse, "description": "Invalid assessment input or data."},
+    502: {"model": ApiErrorResponse, "description": "Required data provider failed."},
+    503: {"model": ApiErrorResponse, "description": "Assessment service is not ready."},
+}
+HTML_ASSESSMENT_ERROR_RESPONSES = {
+    status: {
+        "description": response["description"],
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/ApiErrorResponse"},
+            }
+        },
+    }
+    for status, response in ASSESSMENT_ERROR_RESPONSES.items()
+}
+PDF_SUCCESS_RESPONSE = {
+    200: {
+        "description": "PDF report.",
+        "content": {
+            "application/pdf": {
+                "schema": {"type": "string", "format": "binary"},
+            }
+        },
+        "headers": {
+            "Content-Disposition": {
+                "description": "Attachment filename.",
+                "schema": {"type": "string"},
+            }
+        },
+    }
+}
+PDF_FAILURE_RESPONSE = {
+    500: {"model": ApiErrorResponse, "description": "PDF generation failed."},
+}
+COMPLETED_RESULT_VALIDATION_RESPONSE = {
+    422: {
+        "model": ApiValidationErrorResponse,
+        "description": "Request validation or completed-result integrity failure.",
+    }
+}
+HTML_COMPLETED_RESULT_VALIDATION_RESPONSE = {
+    422: {
+        "description": "Request validation or completed-result integrity failure.",
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/ApiValidationErrorResponse"},
+            }
+        },
+    }
+}
+NDJSON_SUCCESS_RESPONSE = {
+    200: {
+        "description": (
+            "One JSON event per line. Runtime failures are terminal error events whose "
+            "data.status_code records the corresponding failure category."
+        ),
+        "content": {
+            "application/x-ndjson": {
+                "schema": {"type": "string"},
+                "example": '{"stage":"start","percent":2,"label":"Resolving site"}\n',
+            }
+        },
+    }
+}
+OBSTRUCTION_OVERRIDE_ARRAY_SCHEMA = {
+    "type": "array",
+    "items": {"$ref": "#/components/schemas/ObstructionManualOverride"},
+}
+OBSTRUCTION_CSV_REQUEST_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "text/csv": {"schema": {"type": "string"}},
+            "application/csv": {"schema": {"type": "string"}},
+        },
+    }
+}
+OBSTRUCTION_JSON_REQUEST_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "oneOf": [
+                        OBSTRUCTION_OVERRIDE_ARRAY_SCHEMA,
+                        {
+                            "type": "object",
+                            "required": ["obstructions"],
+                            "additionalProperties": False,
+                            "properties": {
+                                "obstructions": OBSTRUCTION_OVERRIDE_ARRAY_SCHEMA,
+                            },
+                        },
+                    ]
+                }
+            }
+        },
+    }
+}
+OBSTRUCTION_IMPORT_ERROR_RESPONSES = {
+    400: {"model": ApiErrorResponse, "description": "Malformed import body."},
+    413: {"model": ApiErrorResponse, "description": "Import body is too large."},
+    415: {"model": ApiErrorResponse, "description": "Unsupported import media type."},
+}
 
 
 def debug_endpoints_enabled() -> bool:
@@ -169,14 +287,16 @@ async def _read_obstruction_import(
                 detail=f"Import body exceeds {MAX_OBSTRUCTION_IMPORT_BYTES} bytes",
             )
 
-    body = await request.body()
-    if len(body) > MAX_OBSTRUCTION_IMPORT_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Import body exceeds {MAX_OBSTRUCTION_IMPORT_BYTES} bytes",
-        )
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_OBSTRUCTION_IMPORT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Import body exceeds {MAX_OBSTRUCTION_IMPORT_BYTES} bytes",
+            )
+        body.extend(chunk)
     try:
-        return body.decode("utf-8-sig")
+        return bytes(body).decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="Import body must be valid UTF-8") from exc
 
@@ -233,16 +353,25 @@ def create_app() -> FastAPI:
     def validation_page() -> str:
         return (STATIC_DIR / "validation.html").read_text(encoding="utf-8")
 
-    @app.get("/health/live")
-    def liveness() -> dict[str, str]:
-        return {"status": "ok"}
+    @app.get("/health/live", response_model=LivenessResponse)
+    def liveness() -> LivenessResponse:
+        return LivenessResponse()
 
-    @app.get("/health")
-    def health(response: Response) -> dict[str, Any]:
+    @app.get(
+        "/health",
+        response_model=ReadinessResponse,
+        responses={
+            503: {
+                "model": ReadinessResponse,
+                "description": "One or more required services or datasets are not ready.",
+            }
+        },
+    )
+    def health(response: Response) -> ReadinessResponse:
         report = readiness_report()
         if report["status"] != "ready":
             response.status_code = 503
-        return report
+        return ReadinessResponse.model_validate(report)
 
     @app.get("/vendor/plotly.min.js", include_in_schema=False)
     def plotly_javascript() -> Response:
@@ -252,58 +381,83 @@ def create_app() -> FastAPI:
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
-    @app.post("/api/geocode/suggest")
-    def geocode_suggest(request: GeocodeQueryRequest) -> dict:
-        return {
-            "suggestions": geocode_address_suggestions(
+    @app.post(
+        "/api/geocode/suggest",
+        response_model=GeocodeSuggestionsResponse,
+        responses={
+            502: {"model": ApiErrorResponse, "description": "Geocoding provider failed."},
+        },
+    )
+    def geocode_suggest(request: GeocodeQueryRequest) -> GeocodeSuggestionsResponse:
+        return GeocodeSuggestionsResponse(
+            suggestions=geocode_address_suggestions(
                 request.query,
                 limit=request.limit,
             )
-        }
+        )
 
-    @app.post("/api/geocode/resolve")
-    def geocode_resolve(request: GeocodeQueryRequest) -> dict:
+    @app.post(
+        "/api/geocode/resolve",
+        response_model=GeocodeResult,
+        responses={
+            404: {"model": ApiErrorResponse, "description": "Address was not resolved."},
+            502: {"model": ApiErrorResponse, "description": "Geocoding provider failed."},
+        },
+    )
+    def geocode_resolve(request: GeocodeQueryRequest) -> GeocodeResult:
         """Resolve one supported Australian address without running terrain analysis."""
 
         try:
-            return geocode_address(request.query)
+            return GeocodeResult.model_validate(geocode_address(request.query))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @app.post("/api/analyse", response_model=SiteAnalysisResult)
+    @app.post(
+        "/api/analyse",
+        response_model=SiteAnalysisResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
     def analyse(request: SiteAnalysisRequest) -> SiteAnalysisResult:
         try:
             return run_site_analysis(request, _dem_provider())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/api/full-analysis")
-    def full_analysis(request: TerrainCategoryEvidenceRequest) -> dict:
+    @app.post(
+        "/api/full-analysis",
+        response_model=FullAnalysisResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
+    def full_analysis(request: TerrainCategoryEvidenceRequest) -> FullAnalysisResult:
         """Run the browser workflow in one pass to avoid duplicate obstruction queries."""
 
         try:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {
-            "site_analysis": site_result,
-            "obstruction_inventory": _obstruction_inventory_public_data(obstruction_result),
-            "terrain_category_evidence": evidence,
-            "profile_plot_html": profile_plot_html(site_result),
-            "terrain_category_map_html": terrain_category_map_html(
+        return FullAnalysisResult(
+            site_analysis=site_result,
+            obstruction_inventory=_obstruction_inventory_public_data(obstruction_result),
+            terrain_category_evidence=evidence,
+            profile_plot_html=profile_plot_html(site_result),
+            terrain_category_map_html=terrain_category_map_html(
                 site_result,
                 obstruction_result,
                 evidence,
             ),
-            "combined_map_html": combined_map_html(
+            combined_map_html=combined_map_html(
                 site_result,
                 obstruction_result,
                 evidence,
                 wind_region_assessment=_optional_wind_region(site_result),
             ),
-        }
+        )
 
-    @app.post("/api/wind-workflow", response_model=WindWorkflowResult)
+    @app.post(
+        "/api/wind-workflow",
+        response_model=WindWorkflowResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
     def wind_workflow(request: WindWorkflowRequest) -> WindWorkflowResult:
         try:
             mzcat_lookup = load_mzcat_table()
@@ -321,31 +475,59 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/api/wind-workflow/stream")
+    @app.post(
+        "/api/wind-workflow/stream",
+        response_class=StreamingResponse,
+        responses=NDJSON_SUCCESS_RESPONSE,
+    )
     def wind_workflow_stream(request: WindWorkflowRequest) -> StreamingResponse:
         return StreamingResponse(
             _wind_workflow_stream_events(request),
             media_type="application/x-ndjson",
         )
 
-    @app.post("/api/wind-workflow/report/html", response_class=HTMLResponse)
+    @app.post(
+        "/api/wind-workflow/report/html",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def wind_workflow_report_html(request: WindWorkflowRequest) -> str:
         result = wind_workflow(request)
         return render_wind_workflow_report_html(result)
 
-    @app.post("/api/wind-workflow/result/report/html", response_class=HTMLResponse)
+    @app.post(
+        "/api/wind-workflow/result/report/html",
+        response_class=HTMLResponse,
+        responses=HTML_COMPLETED_RESULT_VALIDATION_RESPONSE,
+    )
     def wind_workflow_result_report_html(result: WindWorkflowResult) -> str:
         """Render an already completed workflow without repeating external data calls."""
 
         _verify_completed_workflow_result(result)
         return render_wind_workflow_report_html(result)
 
-    @app.post("/api/wind-workflow/report/pdf")
+    @app.post(
+        "/api/wind-workflow/report/pdf",
+        response_class=Response,
+        responses={
+            **PDF_SUCCESS_RESPONSE,
+            **ASSESSMENT_ERROR_RESPONSES,
+            **PDF_FAILURE_RESPONSE,
+        },
+    )
     def wind_workflow_report_pdf(request: WindWorkflowRequest) -> Response:
         result = wind_workflow(request)
         return _wind_workflow_pdf_response(result)
 
-    @app.post("/api/wind-workflow/result/report/pdf")
+    @app.post(
+        "/api/wind-workflow/result/report/pdf",
+        response_class=Response,
+        responses={
+            **PDF_SUCCESS_RESPONSE,
+            **COMPLETED_RESULT_VALIDATION_RESPONSE,
+            **PDF_FAILURE_RESPONSE,
+        },
+    )
     def wind_workflow_result_report_pdf(result: WindWorkflowResult) -> Response:
         """Render an already completed workflow without repeating external data calls."""
 
@@ -377,7 +559,11 @@ def create_app() -> FastAPI:
             },
         )
 
-    @app.post("/api/wind-workflow/map", response_class=HTMLResponse)
+    @app.post(
+        "/api/wind-workflow/map",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def wind_workflow_map(request: WindWorkflowRequest) -> str:
         try:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
@@ -390,7 +576,11 @@ def create_app() -> FastAPI:
             wind_region_assessment=_optional_wind_region(site_result),
         )
 
-    @app.post("/api/wind-region", response_model=WindRegionAssessment)
+    @app.post(
+        "/api/wind-region",
+        response_model=WindRegionAssessment,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
     def wind_region_assessment(request: SiteAnalysisRequest) -> WindRegionAssessment:
         try:
             site_result = analyse(request)
@@ -398,7 +588,11 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/api/wind-region/map", response_class=HTMLResponse)
+    @app.post(
+        "/api/wind-region/map",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def wind_region_map(request: SiteAnalysisRequest) -> str:
         try:
             site_result = analyse(request)
@@ -437,18 +631,32 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/api/export/json")
-    def export_json(request: SiteAnalysisRequest) -> Response:
-        result = analyse(request)
-        content = json.dumps(result_to_json(result), indent=2)
-        return Response(content=content, media_type="application/json")
+    @app.post(
+        "/api/export/json",
+        response_model=SiteAnalysisResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
+    def export_json(request: SiteAnalysisRequest) -> SiteAnalysisResult:
+        return analyse(request)
 
-    @app.post("/api/report/html", response_class=HTMLResponse)
+    @app.post(
+        "/api/report/html",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def report_html(request: SiteAnalysisRequest) -> str:
         result = analyse(request)
         return render_html_report(result)
 
-    @app.post("/api/report/pdf")
+    @app.post(
+        "/api/report/pdf",
+        response_class=Response,
+        responses={
+            **PDF_SUCCESS_RESPONSE,
+            **ASSESSMENT_ERROR_RESPONSES,
+            **PDF_FAILURE_RESPONSE,
+        },
+    )
     def report_pdf(request: SiteAnalysisRequest) -> Response:
         result = analyse(request)
         try:
@@ -465,12 +673,20 @@ def create_app() -> FastAPI:
             headers={"Content-Disposition": 'attachment; filename="openwind-au-report.pdf"'},
         )
 
-    @app.post("/api/plots/profile", response_class=HTMLResponse)
+    @app.post(
+        "/api/plots/profile",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def profile_plot(request: SiteAnalysisRequest) -> str:
         result = analyse(request)
         return profile_plot_html(result)
 
-    @app.post("/api/maps/site", response_class=HTMLResponse)
+    @app.post(
+        "/api/maps/site",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def site_map(request: SiteAnalysisRequest) -> str:
         result = analyse(request)
         return map_html(result)
@@ -478,6 +694,7 @@ def create_app() -> FastAPI:
     @app.post(
         "/api/obstructions/inventory",
         response_model=PublicObstructionInventoryResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
     )
     def obstruction_inventory(
         request: ObstructionInventoryRequest,
@@ -487,7 +704,11 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post("/api/obstructions/map", response_class=HTMLResponse)
+    @app.post(
+        "/api/obstructions/map",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def obstruction_map(request: ObstructionInventoryRequest) -> str:
         result = obstruction_inventory(request)
         return obstruction_map_html(result)
@@ -533,7 +754,11 @@ def create_app() -> FastAPI:
             "pipeline_log": result.data_quality.pipeline_log,
         }
 
-    @app.post("/api/map/combined", response_class=HTMLResponse)
+    @app.post(
+        "/api/map/combined",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def map_combined(request: CombinedMapRequest) -> str:
         try:
             site_result = analyse(request)
@@ -542,12 +767,20 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return combined_map_html(site_result, obstruction_result)
 
-    @app.post("/api/obstructions/report/html", response_class=HTMLResponse)
+    @app.post(
+        "/api/obstructions/report/html",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def obstruction_report_html(request: ObstructionInventoryRequest) -> str:
         result = obstruction_inventory(request)
         return render_obstruction_report_html(result)
 
-    @app.post("/api/terrain-category/evidence", response_model=TerrainCategoryEvidenceResult)
+    @app.post(
+        "/api/terrain-category/evidence",
+        response_model=TerrainCategoryEvidenceResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
     def terrain_category_evidence(
         request: TerrainCategoryEvidenceRequest,
     ) -> TerrainCategoryEvidenceResult:
@@ -557,7 +790,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return evidence
 
-    @app.post("/api/mzcat/assessment", response_model=MzCatAssessmentResult)
+    @app.post(
+        "/api/mzcat/assessment",
+        response_model=MzCatAssessmentResult,
+        responses=ASSESSMENT_ERROR_RESPONSES,
+    )
     def mzcat_assessment(request: TerrainCategoryEvidenceRequest) -> MzCatAssessmentResult:
         try:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
@@ -576,7 +813,11 @@ def create_app() -> FastAPI:
             ],
         )
 
-    @app.post("/api/terrain-category/map", response_class=HTMLResponse)
+    @app.post(
+        "/api/terrain-category/map",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def terrain_category_map(request: TerrainCategoryEvidenceRequest) -> str:
         try:
             site_result, obstruction_result, evidence = _run_terrain_category_workflow(request)
@@ -584,7 +825,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return terrain_category_map_html(site_result, obstruction_result, evidence)
 
-    @app.post("/api/terrain-category/report/html", response_class=HTMLResponse)
+    @app.post(
+        "/api/terrain-category/report/html",
+        response_class=HTMLResponse,
+        responses=HTML_ASSESSMENT_ERROR_RESPONSES,
+    )
     def terrain_category_report_html(request: TerrainCategoryReportRequest) -> str:
         try:
             _site_result, _obstruction_result, evidence = _run_terrain_category_workflow(request)
@@ -594,24 +839,27 @@ def create_app() -> FastAPI:
             _apply_mzcat_reviews(evidence, request.mzcat_reviews)
         )
 
-    @app.get("/api/terrain-category/validation/cases")
-    def terrain_category_validation_cases() -> Response:
-        content = json.dumps(
-            [case.model_dump() for case in DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES],
-            indent=2,
-        )
-        return Response(content=content, media_type="application/json")
+    @app.get(
+        "/api/terrain-category/validation/cases",
+        response_model=list[TerrainCategoryValidationCase],
+    )
+    def terrain_category_validation_cases() -> list[TerrainCategoryValidationCase]:
+        return list(DEFAULT_TERRAIN_CATEGORY_VALIDATION_CASES)
 
-    @app.get("/api/terrain-category/validation")
-    def terrain_category_validation() -> Response:
-        content = json.dumps(
-            [result.model_dump() for result in run_terrain_category_validation_cases()],
-            indent=2,
-        )
-        return Response(content=content, media_type="application/json")
+    @app.get(
+        "/api/terrain-category/validation",
+        response_model=list[TerrainCategoryValidationResult],
+    )
+    def terrain_category_validation() -> list[TerrainCategoryValidationResult]:
+        return run_terrain_category_validation_cases()
 
-    @app.post("/api/obstructions/import/csv")
-    async def obstruction_import_csv(request: Request) -> Response:
+    @app.post(
+        "/api/obstructions/import/csv",
+        response_model=list[ObstructionManualOverride],
+        responses=OBSTRUCTION_IMPORT_ERROR_RESPONSES,
+        openapi_extra=OBSTRUCTION_CSV_REQUEST_BODY,
+    )
+    async def obstruction_import_csv(request: Request) -> list[ObstructionManualOverride]:
         content = await _read_obstruction_import(
             request,
             accepted_media_types={"application/csv", "text/csv"},
@@ -620,13 +868,15 @@ def create_app() -> FastAPI:
             overrides = parse_manual_overrides_csv(content)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return Response(
-            content=json.dumps([override.model_dump() for override in overrides], indent=2),
-            media_type="application/json",
-        )
+        return overrides
 
-    @app.post("/api/obstructions/import/json")
-    async def obstruction_import_json(request: Request) -> Response:
+    @app.post(
+        "/api/obstructions/import/json",
+        response_model=list[ObstructionManualOverride],
+        responses=OBSTRUCTION_IMPORT_ERROR_RESPONSES,
+        openapi_extra=OBSTRUCTION_JSON_REQUEST_BODY,
+    )
+    async def obstruction_import_json(request: Request) -> list[ObstructionManualOverride]:
         content = await _read_obstruction_import(
             request,
             accepted_media_types={"application/json"},
@@ -635,40 +885,32 @@ def create_app() -> FastAPI:
             overrides = manual_overrides_from_json(content)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return Response(
-            content=json.dumps([override.model_dump() for override in overrides], indent=2),
-            media_type="application/json",
-        )
+        return overrides
 
-    @app.get("/api/validation/cases")
-    def validation_cases() -> Response:
-        content = json.dumps(
-            [case.model_dump() for case in DEFAULT_VALIDATION_CASES],
-            indent=2,
-        )
-        return Response(content=content, media_type="application/json")
+    @app.get("/api/validation/cases", response_model=list[ValidationCase])
+    def validation_cases() -> list[ValidationCase]:
+        return list(DEFAULT_VALIDATION_CASES)
 
-    @app.get("/api/validation")
-    def validation_report() -> Response:
-        report = run_validation_cases()
-        content = json.dumps(validation_report_to_json(report), indent=2)
-        return Response(content=content, media_type="application/json")
+    @app.get("/api/validation", response_model=ValidationReport)
+    def validation_report() -> ValidationReport:
+        return run_validation_cases()
 
     @app.get("/api/validation/report/html", response_class=HTMLResponse)
     def validation_report_html() -> str:
         report = run_validation_cases()
         return render_validation_report_html(report)
 
-    @app.get("/api/calculation-validation")
-    def calculation_validation_report() -> Response:
-        content = json.dumps(
-            calculation_validation_report_to_json(run_calculation_validation_cases()),
-            indent=2,
-        )
-        return Response(content=content, media_type="application/json")
+    @app.get("/api/calculation-validation", response_model=CalculationValidationReport)
+    def calculation_validation_report() -> CalculationValidationReport:
+        return run_calculation_validation_cases()
 
-    @app.get("/api/reference-validation/7989")
-    def reference_calc_7989_validation(apply_reference_overrides: bool = False) -> Response:
+    @app.get(
+        "/api/reference-validation/7989",
+        response_model=ReferenceCalc7989ComparisonReport,
+    )
+    def reference_calc_7989_validation(
+        apply_reference_overrides: bool = False,
+    ) -> ReferenceCalc7989ComparisonReport:
         class_overrides = reference_calc_7989_class_overrides() if apply_reference_overrides else []
         request = WindWorkflowRequest(
             latitude=-27.520503,
@@ -688,18 +930,20 @@ def create_app() -> FastAPI:
             footprints=reference_calc_7989_osm_footprints(),
         )
         terrain_result = run_terrain_category_evidence(site_result, obstruction_result)
-        content = compare_reference_calc_7989(
+        return compare_reference_calc_7989(
             site_result=site_result,
             obstruction_result=obstruction_result,
             terrain_result=terrain_result,
             class_overrides=class_overrides,
-        ).model_dump_json(indent=2)
-        return Response(content=content, media_type="application/json")
+        )
 
-    @app.get("/api/wind-region/validation")
-    def wind_region_validation() -> Response:
-        content = json.dumps(run_wind_region_validation_cases(), indent=2)
-        return Response(content=content, media_type="application/json")
+    @app.get(
+        "/api/wind-region/validation",
+        response_model=list[WindRegionValidationResult],
+        response_model_exclude_none=True,
+    )
+    def wind_region_validation() -> list[dict[str, Any]]:
+        return run_wind_region_validation_cases()
 
     return app
 
@@ -1077,6 +1321,7 @@ def _obstruction_request_from_combined(
 ) -> ObstructionInventoryRequest:
     return ObstructionInventoryRequest(
         address=request.address,
+        site_label=request.site_label,
         latitude=request.latitude,
         longitude=request.longitude,
         radius_m=request.obstruction_radius_m,

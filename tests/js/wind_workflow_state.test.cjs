@@ -495,6 +495,11 @@ test("address autocomplete replaces a restored site with the selected suggestion
   assert.equal(persisted.address, newSite.display_name);
   assert.equal(persisted.latitude, newSite.latitude);
   assert.equal(persisted.longitude, newSite.longitude);
+  const payload = JSON.parse(
+    harness.evaluate("JSON.stringify(workflowPayload())"),
+  );
+  assert.equal(payload.site_label, newSite.display_name);
+  assert.equal(Object.hasOwn(payload, "address"), false);
   assert.equal(suggestions.hidden, true);
   assert.equal(suggestions.innerHTML, "");
   assert.match(mapFrame.srcdoc, /200 New Road, Melbourne VIC/);
@@ -555,6 +560,8 @@ test("a map drag persists adjusted coordinates and includes them in workflow pay
   );
   assert.equal(persisted.project_number, "OW-101");
   assert.equal(payload.project_number, "OW-101");
+  assert.equal(payload.site_label, "1 Old Street, Sydney NSW");
+  assert.equal(Object.hasOwn(payload, "address"), false);
   assert.equal(
     harness.element("map-coordinate-readout").textContent,
     state.coordinateOverride.latitude.toFixed(6)

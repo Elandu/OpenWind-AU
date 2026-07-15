@@ -20,6 +20,7 @@ from openwind_au.models import (
 )
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    SUPPORTED_AU_WIND_REGIONS,
     regional_wind_speed,
     table_region_key,
 )
@@ -49,23 +50,24 @@ def regional_wind_speed_assessment(
     data = load_vr_tables()
     ari_years = parse_ari_years(annual_exceedance_probability)
     table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
-    table = data.get("tables", {}).get(table_key, {})
     source = source_reference(data)
     warnings = [
         "VR values are table lookups for engineering review; confirm against the current "
         "project standard."
     ]
     warnings.extend(lookup_metadata_warnings(data, VR_METADATA_WARNING))
-    if os.environ.get(VR_TABLE_ENV):
-        vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
-        vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
-    else:
-        vr_ult = regional_wind_speed(wind_region.wind_region, ari_years)
-        vr_serv = regional_wind_speed(wind_region.wind_region, 25)
-        interpolation = (
-            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
-            "rounded to the nearest 1 m/s."
-        )
+    vr_ult, interpolation = configured_regional_wind_speed(
+        wind_region.wind_region,
+        ari_years,
+        lookup_data=data,
+    )
+    vr_serv, service_note = configured_regional_wind_speed(
+        wind_region.wind_region,
+        25,
+        lookup_data=data,
+        serviceability=True,
+    )
+    if not os.environ.get(VR_TABLE_ENV):
         service_note = None
     if vr_ult is None:
         warnings.append(
@@ -353,6 +355,33 @@ def lookup_vr(
     ratio = (math.log(ari_years) - math.log(lower)) / (math.log(upper) - math.log(lower))
     value = numeric_table[lower] + (numeric_table[upper] - numeric_table[lower]) * ratio
     return round(value, 1), f"Interpolated between {lower} and {upper} year ARI rows."
+
+
+def configured_regional_wind_speed(
+    wind_region: str,
+    ari_years: int,
+    *,
+    lookup_data: dict[str, Any] | None = None,
+    serviceability: bool = False,
+) -> tuple[float | None, str | None]:
+    """Return VR through the same equation-or-configured-table path used by the API."""
+
+    if wind_region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    if not os.environ.get(VR_TABLE_ENV):
+        return (
+            regional_wind_speed(wind_region, ari_years),
+            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
+            "rounded to the nearest 1 m/s.",
+        )
+
+    data = lookup_data if lookup_data is not None else load_vr_tables()
+    table_key = table_region_key(wind_region, data.get("tables", {}))
+    table = data.get("tables", {}).get(table_key, {})
+    value_kind = "serviceability" if serviceability else "ultimate"
+    return lookup_vr(table.get(value_kind, {}), ari_years)
 
 
 def load_vr_tables() -> dict[str, Any]:

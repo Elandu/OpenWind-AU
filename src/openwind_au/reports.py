@@ -1598,7 +1598,12 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     ]
     region = result.wind_region_assessment
     speed = result.regional_wind_speed_assessment
-    site_label = result.input.address or result.site.display_name or "Not supplied"
+    site_label = (
+        result.input.address
+        or result.input.site_label
+        or result.site.display_name
+        or "Not supplied"
+    )
     summary_rows = [
         ["Project", result.input.project_number or "Not supplied"],
         ["Assessment status", _wind_report_status(result)],
@@ -3107,7 +3112,12 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         </tr>
         <tr>
           <th>Site</th>
-          <td>{{ (result.input.address or result.site.display_name or "Not supplied")|e }}</td>
+          <td>{{ (
+            result.input.address
+            or result.input.site_label
+            or result.site.display_name
+            or "Not supplied"
+          )|e }}</td>
         </tr>
         <tr>
           <th>Coordinates / RL</th>

@@ -25,6 +25,18 @@ let reviewedObstructions = [];
 let currentObstructionInventory = null;
 let currentTerrainCategoryEvidence = null;
 
+function normalizeLocationPayload(payload) {
+  const hasCoordinates = Number.isFinite(payload.latitude) && Number.isFinite(payload.longitude);
+  if (hasCoordinates) {
+    if (payload.address) payload.site_label = payload.address;
+    delete payload.address;
+  }
+  if (!payload.address) delete payload.address;
+  if (payload.latitude === null) delete payload.latitude;
+  if (payload.longitude === null) delete payload.longitude;
+  return payload;
+}
+
 function formPayload() {
   const data = new FormData(form);
   const payload = {
@@ -36,15 +48,15 @@ function formPayload() {
     sample_interval_m: Number(data.get("sample_interval_m")),
     mzcat_recommendation_mode: data.get("mzcat_recommendation_mode") || "conservative",
   };
-  if (!payload.address) delete payload.address;
-  if (payload.latitude === null) delete payload.latitude;
-  if (payload.longitude === null) delete payload.longitude;
-  return payload;
+  return normalizeLocationPayload(payload);
 }
 
 function manualOverrides() {
   return reviewedObstructions
-    .filter((item) => item.height_source === "manual_verified")
+    .filter((item) =>
+      item.height_source === "manual_verified"
+      && (Number.isFinite(item.height_m) || Number.isFinite(item.building_levels))
+    )
     .map((item) => ({
       obstruction_id: item.obstruction_id,
       height_m: item.height_m,
@@ -85,10 +97,7 @@ function obstructionPayload() {
     map_display_mode: data.get("map_display_mode") || "nearest_500",
     map_max_display_obstructions: 500,
   };
-  if (!payload.address) delete payload.address;
-  if (payload.latitude === null) delete payload.latitude;
-  if (payload.longitude === null) delete payload.longitude;
-  return payload;
+  return normalizeLocationPayload(payload);
 }
 
 function combinedMapPayload() {
@@ -673,23 +682,198 @@ function updateObstructionFromInput(input) {
   renderObstructionInventory(currentObstructionInventory);
 }
 
+async function requestManualOverrideImport(url, content, contentType) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": contentType },
+    body: content,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    const detail = typeof error.detail === "string"
+      ? error.detail
+      : JSON.stringify(error.detail || response.statusText);
+    throw new Error(detail);
+  }
+  const overrides = await response.json();
+  if (!Array.isArray(overrides) || overrides.some((item) => !isValidatedManualOverride(item))) {
+    throw new Error("Obstruction import API returned an invalid manual override response.");
+  }
+  return overrides;
+}
+
+function isValidatedManualOverride(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (typeof value.obstruction_id !== "string" || !value.obstruction_id.trim()) return false;
+  const heightValid = Number.isFinite(value.height_m)
+    && value.height_m >= 0
+    && value.height_m <= 500;
+  const levelsValid = Number.isFinite(value.building_levels)
+    && value.building_levels >= 0
+    && value.building_levels <= 200;
+  return heightValid || levelsValid;
+}
+
+function reviewedImportRecords(imported) {
+  const records = Array.isArray(imported) ? imported : imported?.obstructions;
+  if (!Array.isArray(records)) {
+    throw new Error("JSON must be an array or an object containing an obstructions array.");
+  }
+  return records;
+}
+
+function declaresReviewedFootprint(value) {
+  return value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, "footprint_geometry");
+}
+
+function hasValidReviewedFootprint(value) {
+  const geometry = value?.footprint_geometry;
+  return declaresReviewedFootprint(value)
+    && geometry
+    && typeof geometry === "object"
+    && ["Polygon", "MultiPolygon"].includes(geometry.type)
+    && Array.isArray(geometry.coordinates);
+}
+
+function isReviewedInventoryEnvelope(imported) {
+  if (!imported || typeof imported !== "object" || Array.isArray(imported)) return false;
+  if (imported.export_format === "openwind-au-reviewed-obstructions-v1") return true;
+  return imported.input
+    && typeof imported.input === "object"
+    && imported.site
+    && typeof imported.site === "object"
+    && Array.isArray(imported.obstructions);
+}
+
+function assertNoDuplicateJsonObjectKeys(content) {
+  let index = 0;
+  const skipWhitespace = () => {
+    while (/\s/.test(content[index] || "")) index += 1;
+  };
+  const readString = () => {
+    const start = index;
+    index += 1;
+    while (content[index] !== '"') {
+      if (content[index] === "\\") index += 1;
+      index += 1;
+    }
+    index += 1;
+    return JSON.parse(content.slice(start, index));
+  };
+  const scanValue = () => {
+    skipWhitespace();
+    if (content[index] === "{") {
+      scanObject();
+      return;
+    }
+    if (content[index] === "[") {
+      scanArray();
+      return;
+    }
+    if (content[index] === '"') {
+      readString();
+      return;
+    }
+    while (index < content.length && !/[\s,\]}]/.test(content[index])) index += 1;
+  };
+  const scanObject = () => {
+    index += 1;
+    skipWhitespace();
+    const keys = new Set();
+    if (content[index] === "}") {
+      index += 1;
+      return;
+    }
+    while (index < content.length) {
+      const key = readString();
+      if (keys.has(key)) throw new Error(`JSON contains duplicate key: ${key}`);
+      keys.add(key);
+      skipWhitespace();
+      index += 1;
+      scanValue();
+      skipWhitespace();
+      if (content[index] === "}") {
+        index += 1;
+        return;
+      }
+      index += 1;
+      skipWhitespace();
+    }
+  };
+  const scanArray = () => {
+    index += 1;
+    skipWhitespace();
+    if (content[index] === "]") {
+      index += 1;
+      return;
+    }
+    while (index < content.length) {
+      scanValue();
+      skipWhitespace();
+      if (content[index] === "]") {
+        index += 1;
+        return;
+      }
+      index += 1;
+      skipWhitespace();
+    }
+  };
+  scanValue();
+}
+
+async function importObstructionCsvText(content) {
+  const overrides = await requestManualOverrideImport(
+    "/api/obstructions/import/csv",
+    content,
+    "text/csv",
+  );
+  applyBrowserOverrides(overrides);
+}
+
+async function importObstructionJsonText(content) {
+  const imported = JSON.parse(content);
+  const records = reviewedImportRecords(imported);
+  const footprintDeclarations = records.filter(declaresReviewedFootprint).length;
+  const reviewedEnvelope = isReviewedInventoryEnvelope(imported);
+  if (footprintDeclarations || reviewedEnvelope) {
+    assertNoDuplicateJsonObjectKeys(content);
+    if (records.length && footprintDeclarations !== records.length) {
+      throw new Error("Reviewed obstruction JSON cannot mix footprint records and overrides.");
+    }
+    if (!records.every(hasValidReviewedFootprint)) {
+      throw new Error("Reviewed obstruction JSON contains an invalid footprint geometry.");
+    }
+    applyBrowserOverrides(records, { reviewedFootprints: true });
+    return;
+  }
+  const overrides = await requestManualOverrideImport(
+    "/api/obstructions/import/json",
+    content,
+    "application/json",
+  );
+  applyBrowserOverrides(overrides);
+}
+
 obstructionCsv.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  const overrides = parseCsvOverrides(await file.text());
-  applyBrowserOverrides(overrides);
+  try {
+    await importObstructionCsvText(await file.text());
+  } catch (error) {
+    summary.textContent = `Obstruction CSV import failed: ${error.message}`;
+  } finally {
+    event.target.value = "";
+  }
 });
 
 obstructionJson.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
   try {
-    const imported = JSON.parse(await file.text());
-    const overrides = Array.isArray(imported) ? imported : imported?.obstructions;
-    if (!Array.isArray(overrides)) {
-      throw new Error("JSON must be an array or an object containing an obstructions array.");
-    }
-    applyBrowserOverrides(overrides);
+    await importObstructionJsonText(await file.text());
   } catch (error) {
     summary.textContent = `Obstruction JSON import failed: ${error.message}`;
   } finally {
@@ -700,6 +884,7 @@ obstructionJson.addEventListener("change", async (event) => {
 obstructionExport.addEventListener("click", () => {
   const exportData = {
     ...(currentObstructionInventory || {}),
+    export_format: "openwind-au-reviewed-obstructions-v1",
     obstructions: reviewedObstructions,
   };
   const blob = new Blob([JSON.stringify(exportData, null, 2)], {
@@ -713,36 +898,39 @@ obstructionExport.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
-function parseCsvOverrides(text) {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((header) => header.trim());
-  return lines.slice(1).map((line) => {
-    const values = line.split(",");
-    return Object.fromEntries(headers.map((header, index) => [header, values[index]?.trim()]));
-  });
-}
-
-function applyBrowserOverrides(overrides) {
+function applyBrowserOverrides(overrides, options = {}) {
+  const reviewedFootprintImport = options.reviewedFootprints === true;
   for (const rawOverride of overrides) {
     const override = normaliseImportedOverride(rawOverride);
     if (!override) continue;
+    const hasReviewedHeight = override.height_m !== null || override.building_levels !== null;
+    if (!hasReviewedHeight && !reviewedFootprintImport) continue;
+    if (reviewedFootprintImport && !override.footprint_geometry) continue;
     const id = override.obstruction_id;
     let item = reviewedObstructions.find((obstruction) => obstruction.obstruction_id === id);
-    if (!item && override.footprint_geometry) {
+    if (!item && reviewedFootprintImport) {
       item = override;
       reviewedObstructions.push(item);
     }
     if (!item) continue;
+    if (reviewedFootprintImport) {
+      item.footprint_geometry = override.footprint_geometry;
+      item.footprint_source = "manual_reviewed";
+      item.classification = override.classification;
+      item.distance_m = override.distance_m;
+      item.bearing_deg = override.bearing_deg;
+      item.centroid_latitude = override.centroid_latitude;
+      item.centroid_longitude = override.centroid_longitude;
+    }
     item.height_m = parseOptionalNumber(override.height_m);
     item.building_levels = parseOptionalNumber(override.building_levels);
     if (item.height_m === null && item.building_levels !== null) {
       item.height_m = item.building_levels * Number(document.getElementById("default_storey_height_m").value || 3);
     }
-    item.height_source = "manual_verified";
+    item.height_source = hasReviewedHeight ? "manual_verified" : "missing";
     item.selected_height_m = item.height_m;
     item.raw_source_height_m = item.height_m;
-    item.raw_source_height_source = item.height_m === null ? null : "manual_verified";
+    item.raw_source_height_source = hasReviewedHeight ? "manual_verified" : null;
     item.confidence = item.height_m === null ? "unknown" : "high";
     item.manual_review_required = item.height_m === null;
     item.review_required = item.height_m === null;
