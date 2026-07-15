@@ -361,7 +361,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260712-review-controls-1" in page.text
+    assert "20260715-address-state-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:

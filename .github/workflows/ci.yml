@@ -10,12 +10,65 @@ permissions:
   contents: read
 
 jobs:
+  frontend:
+    name: Test browser state flows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Check browser scripts
+        run: |
+          node --check src/openwind_au/static/app.js
+          node --check src/openwind_au/static/validation.js
+          node --check src/openwind_au/static/wind_workflow.js
+
+      - name: Test browser state flows
+        run: node --test tests/js/*.test.cjs
+
+  lockfile:
+    name: Verify dependency lock
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.28"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify lockfile matches project metadata
+        run: uv lock --check
+
+      - name: Audit locked dependencies
+        run: uv audit --locked --preview-features audit-command
+
+      - name: Install the locked development environment
+        run: uv sync --locked --extra dev --python 3.12
+
+      - name: Test the locked dependency graph
+        run: uv run --locked --no-sync pytest
+
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - name: Check out repository
@@ -46,7 +99,7 @@ jobs:
 
   package:
     name: Build consumer artifacts
-    needs: test
+    needs: [frontend, lockfile, test]
     runs-on: ubuntu-latest
 
     steps:

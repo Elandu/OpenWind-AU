@@ -7,6 +7,9 @@ Use this checklist before tagging a public release.
 - Run `pytest`.
 - Run `ruff check .`.
 - Run `ruff format --check .`.
+- Run `node --check src/openwind_au/static/wind_workflow.js` and
+  `node --test tests/js/*.test.cjs`.
+- Run `uv lock --check` and `uv audit --locked --preview-features audit-command`.
 - Confirm CI passes on the release branch.
 
 ## Documentation
@@ -14,7 +17,10 @@ Use this checklist before tagging a public release.
 - Confirm README describes current capabilities and maturity.
 - Confirm README does not claim certified design compliance.
 - Update `CHANGELOG.md`.
-- Update `docs/releases/v0.6.0.md` or the current release note file.
+- Confirm `pyproject.toml`, `openwind_au.__version__`, `CITATION.cff`, and `uv.lock` identify the
+  same release version.
+- Update the current changelog section and add dedicated release notes only when extra migration
+  detail is required.
 - Confirm `docs/workflow.md` and `docs/reviewer-checklist.md` match the current workflow.
 - Confirm `docs/installation.md`, `docs/api.md`, `docs/reports.md`, `docs/validation.md`,
   and `docs/limitations.md` still match current behaviour.

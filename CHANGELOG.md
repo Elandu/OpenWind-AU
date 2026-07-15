@@ -38,6 +38,18 @@ All notable project milestones are documented here.
 - Added an operator preflight command (`openwind-au check` and `--json`) backed by the same readiness
   report as `/health`, plus validated host/port options for the server command while retaining the
   safe loopback default.
+- Synchronised package, citation, and locked-environment versions; added CI lock, locked-graph, and
+  vulnerability checks; corrected the effective Pydantic floor; and migrated FastAPI test clients
+  to Starlette's maintained `httpx2` backend.
+- Removed source-only `openwind` compatibility shims that were never included in consumer wheels
+  but leaked into source distributions.
+- Added browser-state regression tests and corrected saved-location invalidation so editing an
+  address immediately clears the previous map, autocomplete can adopt the replacement site, and
+  fallback workflow reports bind to the resolved coordinates.
+- Removed repeated calculated values from Raw Data override cells while retaining one calculated
+  column and the complete optional override controls.
+- Verified Python 3.13 and 3.14 support and normalised Windows extended-path aliases so concurrent
+  Microsoft footprint requests share one download lock on current Python releases.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 
