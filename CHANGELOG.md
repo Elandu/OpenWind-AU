@@ -29,7 +29,8 @@ All notable project milestones are documented here.
   full region polygons from normal JSON responses, and sanitised PDF failures while retaining
   detailed server-side incident logs.
 - Added CI construction, required-file inspection, isolated installation smoke tests, and retained
-  distribution artifacts for the consumer wheel and source package.
+  distribution artifacts for the consumer wheel and source package, using current Node 24-based
+  GitHub Actions and least-privilege repository permissions.
 - Classified invalid deployment settings and required local datasets as HTTP 503 readiness
   failures, retained 4xx responses for consumer input errors and 502 for required upstream
   failures, sanitised low-level 502 details, and applied the same status contract to terminal
