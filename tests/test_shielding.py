@@ -305,6 +305,29 @@ def test_steep_slope_building_below_subject_top_is_rejected() -> None:
     assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
 
 
+def test_reviewed_subject_base_rl_controls_ground_gradient_check() -> None:
+    records = build_obstruction_records(
+        [rectangle_footprint("reviewed-base-gradient", 0, 40, 20, 10, 10)],
+        site_latitude=SITE_LAT,
+        site_longitude=SITE_LON,
+        radius_m=300,
+    )
+    records[0] = records[0].model_copy(update={"ground_rl_m": 0.0})
+
+    sectors = run_shielding_sector_analysis(
+        site(),
+        records,
+        subject_height_m=10,
+        subject_base_rl_m=10.0,
+    )
+    north = next(sector for sector in sectors if sector.direction == "N")
+
+    assert north.subject_base_rl_m == 10.0
+    assert north.subject_rl_source == "reviewed_base_rl"
+    assert north.ns == 0
+    assert north.rejection_reason_counts == {"steep_upwind_ground_gradient": 1}
+
+
 def test_steep_slope_building_above_subject_top_is_retained_for_review() -> None:
     records = build_obstruction_records(
         [rectangle_footprint("steep-tall", 0, 40, 20, 10, 30)],

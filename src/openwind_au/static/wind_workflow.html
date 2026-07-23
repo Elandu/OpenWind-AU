@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260715-address-state-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260715-consumer-readiness-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -105,6 +105,14 @@
               <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
             </label>
             <label>
+              Wind direction multiplier use
+              <select id="wind_direction_multiplier_case" name="wind_direction_multiplier_case" required>
+                <option value="main_structure" selected>Main structure</option>
+                <option value="cladding_or_immediate_support">Cladding or immediate support</option>
+                <option value="circular_or_polygonal_chimney_tank_or_pole">Circular/polygonal chimney, tank or pole</option>
+              </select>
+            </label>
+            <label>
               Orientation (deg)
               <select id="structure_orientation_deg" name="structure_orientation_deg">
                 <option value="-90">-90</option>
@@ -189,8 +197,8 @@
               <input id="roof_pitch_deg" name="roof_pitch_deg" type="number" min="0" max="90" step="0.1" />
             </label>
             <label>
-              Average height (m)
-              <input id="average_height_m" name="average_height_m" type="number" step="0.1" />
+              Average roof height (m)
+              <input id="average_roof_height_m" name="average_roof_height_m" type="number" step="0.1" />
             </label>
             <label>
               Base RL (m)
@@ -271,6 +279,15 @@
               <span class="kicker">Building location</span>
               <strong id="map-coordinate-readout">Not positioned</strong>
             </div>
+            <div class="map-nudge-control" role="group" aria-label="Move the design building in one metre steps">
+              <span class="kicker">Move building 1 m</span>
+              <div class="map-nudge-buttons">
+                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="1" aria-label="Move building north one metre" title="Move north 1 m" disabled>&uarr;</button>
+                <button type="button" data-map-nudge data-map-nudge-east="-1" data-map-nudge-north="0" aria-label="Move building west one metre" title="Move west 1 m" disabled>&larr;</button>
+                <button type="button" data-map-nudge data-map-nudge-east="1" data-map-nudge-north="0" aria-label="Move building east one metre" title="Move east 1 m" disabled>&rarr;</button>
+                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="-1" aria-label="Move building south one metre" title="Move south 1 m" disabled>&darr;</button>
+              </div>
+            </div>
           </div>
           <iframe
             id="workflow-map-frame"
@@ -318,17 +335,26 @@
         <div id="wind-inputs-summary" class="workflow-card">
           <p class="note">Run the assessment to display its basis.</p>
         </div>
+        <div class="assessment-basis-variable-grid">
+          <section id="wind-region-vr" class="workflow-anchor assessment-basis-variable" data-step="4">
+            <h3>Regional Wind Speed, VR</h3>
+            <p class="note">Calculated regional speed shown once, with an optional engineering override.</p>
+          </section>
+          <section id="climate-change-mc" class="workflow-anchor assessment-basis-variable" data-step="5">
+            <h3>Climate Change Multiplier, Mc</h3>
+            <p class="note">Deterministic Table 3.3 multiplier shown once; generic Region B is blocked until B1/B2 is confirmed.</p>
+          </section>
+        </div>
       </section>
 
       <section id="vsitb-summary" class="panel workflow-step" data-step="3">
         <h2>Directional Site Wind Speed, Vsit,b</h2>
-        <p class="note">Selected calculation summary: VR x Md x Mz,cat x Ms x Mt.</p>
+        <p class="note">Selected calculation summary: VR x Mc x Md x Mz,cat x Ms x Mt. VR and Mc are non-directional and are shown once in the assessment basis.</p>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Direction</th>
-                <th>VR</th>
                 <th>Md</th>
                 <th>Mz,cat</th>
                 <th>Ms</th>
@@ -337,7 +363,7 @@
               </tr>
             </thead>
             <tbody id="vsitb-table">
-              <tr><td colspan="7">Run the workflow to see the directional Vsit,b summary.</td></tr>
+              <tr><td colspan="6">Run the workflow to see the directional Vsit,b summary.</td></tr>
             </tbody>
           </table>
         </div>
@@ -346,27 +372,22 @@
       <details class="raw-detail-group">
         <summary>Engineering overrides</summary>
         <div class="raw-detail-stack">
-      <section id="wind-region-vr" class="panel workflow-anchor workflow-step" data-step="4">
-        <h2>Regional Wind Speed, VR</h2>
-        <p class="note">Calculated regional speed available for engineering override.</p>
-      </section>
-
-      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="5">
+      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="6">
         <h2>Wind Direction Multiplier, Md</h2>
         <p class="note">Table-derived direction multipliers for the assessed wind region.</p>
       </section>
 
-      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="6">
+      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="7">
         <h2>Terrain Category / Mz,cat</h2>
         <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
 
-      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="7">
+      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="8">
         <h2>Shielding Multiplier, Ms</h2>
         <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
 
-      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="8">
+      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="9">
         <h2>Topographic Multiplier, Mt</h2>
         <p class="note">Directional calculated values with optional engineering overrides.</p>
       </section>
@@ -384,7 +405,7 @@
       </section>
 
       <section id="workspace-panel-documents" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-documents" data-workspace-panel="documents" hidden>
-        <section id="workflow-reporting" class="panel workflow-step" data-step="9">
+        <section id="workflow-reporting" class="panel workflow-step" data-step="10">
           <h2>Reports</h2>
           <p class="note">Generate a concise assessment summary without raw calculation repetition.</p>
           <div class="report-actions">
@@ -400,6 +421,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260715-location-contract-2"></script>
+    <script src="/static/wind_workflow.js?v=20260715-location-contract-2-consumer-readiness-1"></script>
   </body>
 </html>

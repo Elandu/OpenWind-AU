@@ -19,6 +19,7 @@ import numpy as np
 import requests
 
 from openwind_au.errors import ServiceNotReadyError
+from openwind_au.http_client import APPLICATION_USER_AGENT
 
 DEM_PROVIDER_ENV = "OPENWIND_DEM_PROVIDER"
 OPEN_METEO_ELEVATION_URL_ENV = "OPENWIND_OPEN_METEO_ELEVATION_URL"
@@ -268,7 +269,12 @@ def _get_json(url: str, params: dict[str, Any], timeout_seconds: float) -> dict:
     """Fetch JSON, falling back to curl for Windows Python TLS issues."""
 
     try:
-        response = requests.get(url, params=params, timeout=timeout_seconds)
+        response = requests.get(
+            url,
+            params=params,
+            headers={"User-Agent": APPLICATION_USER_AGENT},
+            timeout=timeout_seconds,
+        )
         response.raise_for_status()
         return response.json()
     except Exception as requests_exc:
@@ -276,7 +282,15 @@ def _get_json(url: str, params: dict[str, Any], timeout_seconds: float) -> dict:
         if not curl:
             raise requests_exc
         query = urlencode(params)
-        command = [curl, "--fail", "--location", "--silent", "--show-error"]
+        command = [
+            curl,
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--user-agent",
+            APPLICATION_USER_AGENT,
+        ]
         if os.name == "nt":
             command.append("--ssl-no-revoke")
         command.append(f"{url}?{query}")
@@ -304,7 +318,15 @@ def _download_file(url: str, target: Path) -> None:
 
     curl = shutil.which("curl") or shutil.which("curl.exe")
     if curl:
-        command = [curl, "--fail", "--location", "--silent", "--show-error"]
+        command = [
+            curl,
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--user-agent",
+            APPLICATION_USER_AGENT,
+        ]
         if os.name == "nt":
             command.append("--ssl-no-revoke")
         command.extend([url, "--output", str(target)])
@@ -319,6 +341,10 @@ def _download_file(url: str, target: Path) -> None:
             raise RuntimeError(completed.stderr.strip() or f"curl exited {completed.returncode}")
         return
 
-    response = requests.get(url, timeout=60)
+    response = requests.get(
+        url,
+        headers={"User-Agent": APPLICATION_USER_AGENT},
+        timeout=60,
+    )
     response.raise_for_status()
     target.write_bytes(response.content)

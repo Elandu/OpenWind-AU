@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from openwind_au.http_client import APPLICATION_USER_AGENT
 from openwind_au.models import SUPPORTED_LATITUDE_RANGE, SUPPORTED_LONGITUDE_RANGE
 
 EARTH_RADIUS_M = 6_371_008.8
@@ -20,7 +21,7 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 DEFAULT_PHOTON_URL = "https://photon.komoot.io/api/"
 
 
-def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[str, Any]:
+def geocode_address(address: str, user_agent: str = APPLICATION_USER_AGENT) -> dict[str, Any]:
     """Geocode an address with OpenStreetMap Nominatim.
 
     Args:
@@ -66,7 +67,7 @@ def geocode_address(address: str, user_agent: str = "OpenWind-AU/0.1") -> dict[s
 def geocode_address_suggestions(
     query: str,
     limit: int = 5,
-    user_agent: str = "OpenWind-AU/0.1",
+    user_agent: str = APPLICATION_USER_AGENT,
 ) -> list[dict[str, Any]]:
     """Return candidate Australian address matches from a Photon search service."""
 

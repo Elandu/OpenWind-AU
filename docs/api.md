@@ -33,7 +33,16 @@ The NDJSON workflow stream always starts with HTTP 200, so clients must also ins
 `error` event's `data.status_code` for the equivalent 400, 502, 503, or 500 classification.
 
 All JSON request models are strict. Unknown fields, booleans used as numbers, and numeric strings
-such as `"10"` are rejected with HTTP 422 instead of being ignored or coerced.
+such as `"10"` are rejected with HTTP 422 instead of being ignored or coerced. Request bodies are
+capped at 1 MiB before route parsing, except the completed-result HTML/PDF routes, which use a
+separate 4 MiB cap so a valid signed workflow result can be rendered. JSON duplicate members,
+`NaN`, and infinite/overflowing numbers are rejected. Validation responses omit submitted values
+and cap the number of errors.
+
+Set `OPENWIND_ENVIRONMENT=production` and an explicit comma-separated
+`OPENWIND_TRUSTED_HOSTS` allowlist for production. In that mode, OpenAPI documentation is disabled
+and assessment/completed-report routes return HTTP 503 until `/health` is ready. Dynamic responses
+use `Cache-Control: no-store` and baseline browser security headers.
 
 Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
 disabled by default. For a trusted local troubleshooting session only, set
@@ -80,6 +89,10 @@ The response includes:
 - 8 terrain profiles for N, NE, E, SE, S, SW, W, and NW;
 - preliminary topographic screening results for each direction;
 - assumptions, limitations, and disclaimer text.
+
+`POST /api/full-analysis` runs the combined site, obstruction, terrain-category, wind-input, and
+map workflow used by the legacy dashboard. New integrations should prefer the explicit
+`/api/wind-workflow` contract when they need the signed directional site-wind result.
 
 ## Export JSON
 
@@ -197,6 +210,8 @@ POST /api/wind-workflow/stream
 POST /api/wind-workflow/map
 POST /api/wind-workflow/report/html
 POST /api/wind-workflow/report/pdf
+POST /api/wind-workflow/result/report/html
+POST /api/wind-workflow/result/report/pdf
 ```
 
 Wind-workflow requests use the same strict location and type contract. In particular, legacy
@@ -211,12 +226,33 @@ Use the two explicit override collections instead:
 - A terrain category selects `Mz,cat` from Table 4.1. Project-specific shielding (`FS/PS/NS`) and
   topographic (`T0-T5`) class labels are provenance only; they do not imply a standard multiplier.
   Supply an explicit reviewed `ms` or `mt` to replace the calculated Clause 4.3 or 4.4 value.
-- `workflow_overrides` accepts at most one entry for each variable/direction pair. A `VR` override
-  is non-directional and must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` overrides
+- `workflow_overrides` accepts at most one entry for each variable/direction pair. `VR`
+  overrides are non-directional and must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` overrides
   require one of `N`, `NE`, `E`, `SE`, `S`, `SW`, `W`, or `NW`. Every entry requires a positive
   `override_value` and a non-empty `reason`.
 
-These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
+`wind_direction_multiplier_case` records whether `Md` is being applied to the main structure,
+cladding/immediate supports, or a circular/polygonal chimney, tank or pole. The workflow enforces
+the mandatory Clause 3.3 value `Md = 1.0` for the latter case in every region and for the cladding
+case in B2, C and D. `Mc` is selected once from Clause 3.4/Table 3.3 and included in the Clause 2.2
+product `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`. Generic Region `B` is rejected until B1/B2 is
+confirmed.
+
+Generic Region A is also rejected by the combined workflow until A0, A1, A2, A3, A4, or A5 is
+confirmed. This is required because A0 has special terrain-height and topographic rules, A4 has a
+high-elevation topographic rule, and the direction multiplier requires a specific regional row.
+
+Mandatory standard values cannot be replaced through either override collection. In Region A0,
+the terrain-independent Table 4.1 Mz,cat value is retained. When average roof height h exceeds
+25 m, Clause 4.3.1 requires Ms = 1.0. Numeric overrides for either case are rejected.
+
+Use `average_roof_height_m` for the common AS/NZS reference height `h` used by
+`Mz,cat`, the Clause 4.3 shielding-height checks, and Clause 4.4 topographic calculations.
+When it is omitted, the workflow conservatively uses `building_height_m`. The request-only
+`average_height_m` alias remains accepted for migration, but responses and OpenAPI use the
+unambiguous `average_roof_height_m` name.
+
+`Mc` is a deterministic Table 3.3 mapping and is not overrideable. These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
 and do not certify the automated GIS evidence or final design outcome.
 
 `assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
@@ -240,11 +276,14 @@ GET /api/validation/cases
 GET /api/validation
 GET /api/validation/report/html
 GET /api/calculation-validation
-GET /api/reference-validation/7989
+GET /api/reference-validation/anonymized
+GET /api/wind-region/validation
 ```
 
 Validation responses are qualitative audit outputs. They are not proof of engineering accuracy or
-code compliance. The reference calculation 7989 endpoint compares the current OpenWind workflow against the
-stored Byambee Street reference classes: `TC3` terrain, `FS` shielding, and `T0`/`T1` topography.
-Use `GET /api/reference-validation/7989?apply_reference_overrides=true` to rerun the comparison
-with the encoded reference calculation classes applied through `class_multiplier_overrides`.
+code compliance. The anonymized-reference endpoint compares the current OpenWind workflow against
+stored class-level expectations: `TC3` terrain, `FS` shielding, and `T0`/`T1` topography. Its
+published coordinates and OSM-derived footprint geometry are deliberately translated, with source
+feature IDs and tags removed. Use
+`GET /api/reference-validation/anonymized?apply_reference_overrides=true` to rerun the comparison
+with the encoded reference classes applied through `class_multiplier_overrides`.

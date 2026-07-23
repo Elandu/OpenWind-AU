@@ -69,6 +69,11 @@ def calculate_topographic_multiplier(
         raise ValueError(f"Unsupported topographic feature type: {feature_type}")
     if wind_region not in SUPPORTED_AU_WIND_REGIONS:
         raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if wind_region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Clause 4.4 Mt because Regions A0 and A4 "
+            "have special rules; confirm A0, A1, A2, A3, A4, or A5."
+        )
     if z_m < 0 or z_m > 200:
         raise ValueError("Reference height z must be non-negative and at most 200 m.")
     if average_roof_height_m <= 0 or average_roof_height_m > 200:

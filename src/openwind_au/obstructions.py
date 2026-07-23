@@ -31,6 +31,7 @@ from openwind_au.height_estimation import (
     height_source_summary,
     resolve_operational_heights,
 )
+from openwind_au.http_client import APPLICATION_USER_AGENT
 from openwind_au.microsoft_footprints import (
     MICROSOFT_FOOTPRINT_SOURCE,
     MicrosoftFootprintResult,
@@ -352,7 +353,7 @@ def query_building_footprints(
     latitude: float,
     longitude: float,
     radius_m: int,
-    user_agent: str = "OpenWind-AU/0.1",
+    user_agent: str = APPLICATION_USER_AGENT,
 ) -> list[dict[str, Any]]:
     """Query OpenStreetMap obstruction footprints around a site using Overpass."""
 
@@ -369,7 +370,7 @@ def query_building_footprints_with_debug(
     latitude: float,
     longitude: float,
     radius_m: int,
-    user_agent: str = "OpenWind-AU/0.1",
+    user_agent: str = APPLICATION_USER_AGENT,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Query OpenStreetMap building footprints and return pipeline diagnostics."""
 

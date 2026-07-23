@@ -9,6 +9,7 @@ from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import DEMProvider
 from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.report_lineage import CALCULATION_BASIS_URL
 from openwind_au.reports import (
     combined_map_html,
     map_html,
@@ -54,7 +55,7 @@ def test_report_helpers_render_outputs() -> None:
     assert "Preliminary Topographic Screening" in html
     assert "no significant feature" in html
     assert "competent engineer" in html
-    assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
+    assert CALCULATION_BASIS_URL in html
     assert "plotly" in plot.lower()
     assert "Plotly.newPlot" in plot
     assert 'src="/vendor/plotly.min.js"' in plot

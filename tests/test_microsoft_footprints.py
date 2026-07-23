@@ -170,7 +170,8 @@ def test_microsoft_provider_downloads_required_index_tile(tmp_path, monkeypatch)
             del chunk_size
             yield self.content
 
-    def fake_get(url: str, timeout: int, stream: bool):
+    def fake_get(url: str, headers: dict[str, str], timeout: int, stream: bool):
+        assert headers["User-Agent"].startswith("OpenWind-AU/")
         assert stream is True
         requested_urls.append(url)
         return FakeResponse()

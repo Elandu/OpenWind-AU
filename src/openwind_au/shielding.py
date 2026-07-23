@@ -150,7 +150,7 @@ def shielding_sector_result(
             ground_gradient_unchecked.append(obstruction.obstruction_id)
         elif obstruction.distance_m > 0:
             average_ground_gradient = (
-                abs(obstruction.ground_rl_m - site.ground_elevation_m) / obstruction.distance_m
+                abs(obstruction.ground_rl_m - resolved_subject_base_rl_m) / obstruction.distance_m
             )
             if average_ground_gradient > 0.2:
                 obstruction_top_rl_m = shielding_top_rl_m(obstruction, height)

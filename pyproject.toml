@@ -71,7 +71,7 @@ Issues = "https://github.com/Elandu/OpenWind-AU/issues"
 packages = ["src/openwind_au"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"data/validation/reference_calc_7989_osm_footprints.json" = "openwind_au/data/reference_calc_7989_osm_footprints.json"
+"data/validation/anonymized_reference_osm_footprints.json" = "openwind_au/data/anonymized_reference_osm_footprints.json"
 
 [tool.ruff]
 line-length = 100

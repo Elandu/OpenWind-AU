@@ -43,10 +43,15 @@ Use this checklist before tagging a public release.
 - Check that no private addresses, client details, claim numbers, API keys, or credentials are
   included.
 - Confirm public wording remains preliminary and review-focused.
+- If sensitive material ever entered public Git history, coordinate an explicit history rewrite
+  and host-side cleanup; deleting it in a later commit does not retract prior objects or diffs.
 
 ## Release
 
+- Build wheel and sdist into a clean output directory from the final commit, then inspect their
+  file lists and installed-package smoke tests. Never reuse an older `dist/` artifact.
 - Tag the release.
 - Publish release notes with known limitations.
+- Attach the verified wheel and sdist to the GitHub release.
 - Include screenshots or screenshot placeholders.
 - Confirm GitHub issue templates and pull request template are present.

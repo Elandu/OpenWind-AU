@@ -30,8 +30,11 @@ const reviewMetadataFields = document.getElementById("review-metadata-fields");
 const reviewedByControl = document.getElementById("reviewed_by");
 const engineerNotesControl = document.getElementById("engineer_notes");
 const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
+const mapNudgeButtons = Array.from(document.querySelectorAll("[data-map-nudge]"));
+const windDirectionMultiplierCaseControl = document.getElementById("wind_direction_multiplier_case");
 const DESIGN_LOCATION_STORAGE_KEY = "openwindDesignBuildingLocation";
 const PROJECT_NUMBER_STORAGE_KEY = "openwindProjectNumber";
+const WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY = "openwindWindDirectionMultiplierCase";
 const DESIGN_LOCATION_STORAGE_VERSION = 1;
 const SUPPORTED_LATITUDE_RANGE = [-44.5, -9.0];
 const SUPPORTED_LONGITUDE_RANGE = [112.0, 154.5];
@@ -56,15 +59,25 @@ const orientationOptions = [
   90,
 ];
 const directionOrder = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-const variableOrder = ["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
+const variableOrder = ["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
 const variableAnchors = {
   VR: "wind-region-vr",
   Md: "wind-direction-md",
   Mzcat: "terrain-category-mzcat",
   Ms: "shielding-ms",
   Mt: "topographic-mt",
+  Mc: "climate-change-mc",
   Vsitb: "vsitb-summary",
 };
+const workflowOverrideMaximums = Object.freeze({
+  VR: 200,
+  Md: 2,
+  Mzcat: 10,
+  Ms: 1,
+  Mt: 10,
+  Vsitb: 500,
+});
+const workflowOverrideReasonMaximum = 2000;
 
 const hiddenWindInputWarningPatterns = [
   /GIS interpretation/i,
@@ -96,6 +109,9 @@ let currentMapSite = {
   longitude: 151.2093,
   display_name: "Sydney CBD",
 };
+
+restoreWindDirectionMultiplierCase();
+windDirectionMultiplierCaseControl?.addEventListener("change", persistWindDirectionMultiplierCase);
 
 if (dashboardProjectNumber) {
   try {
@@ -150,6 +166,16 @@ window.addEventListener("mouseup", endMapDesignInteraction, true);
 window.addEventListener("pointerup", endMapDesignInteraction, true);
 window.addEventListener("blur", endMapDesignInteraction);
 
+mapNudgeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    if (locationMode !== "coordinates" || !coordinateOverride) return;
+    postWorkflowMapCommand("nudge", {
+      east_m: Number(button.dataset.mapNudgeEast || 0),
+      north_m: Number(button.dataset.mapNudgeNorth || 0),
+    });
+  });
+});
+
 workflowForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (document.activeElement === dashboardAddress) {
@@ -164,7 +190,10 @@ workflowForm.addEventListener("input", () => {
   updateReportAvailability();
 });
 
-workflowForm.addEventListener("change", updateReportAvailability);
+workflowForm.addEventListener("change", () => {
+  cancelActiveWorkflow();
+  updateReportAvailability();
+});
 
 assessmentStatusControl?.addEventListener("change", syncReviewControls);
 reviewedByControl?.addEventListener("input", syncReviewControls);
@@ -177,6 +206,7 @@ if (locationMode === "coordinates" && coordinateOverride) {
   renderPendingMapFrame("Enter an address and select a suggestion to position the building.");
 }
 syncDesignBuildingOverlay();
+updateMapNudgeAvailability();
 
 workflowMapFrame?.addEventListener("load", () => {
   syncCurrentMapSiteToFrame();
@@ -327,7 +357,7 @@ async function runWorkflow() {
   if (!workflowForm.reportValidity()) {
     setWorkflowProgress(0, "Complete the required assessment inputs", "error");
     workflowSummary.textContent = "Complete the required assessment inputs before running the assessment.";
-    return;
+    return false;
   }
   cancelAddressResolution();
   closeAddressSuggestions();
@@ -342,12 +372,19 @@ async function runWorkflow() {
   resetWorkflowSections();
   try {
     await runWorkflowStream(requestPayload, runId, controller.signal);
+    if (runId !== workflowRunId) return false;
+    if (!currentWorkflow || !currentWorkflowFingerprint) {
+      renderWorkflowFailure(new Error("Workflow stream ended without a completed assessment result."));
+      return false;
+    }
+    return true;
   } catch (error) {
-    if (error.name === "AbortError" || runId !== workflowRunId) return;
+    if (error.name === "AbortError" || runId !== workflowRunId) return false;
     if (error.allowWorkflowFallback) {
-      await runWorkflowFallback(error, requestPayload, runId, controller.signal);
+      return await runWorkflowFallback(error, requestPayload, runId, controller.signal);
     } else {
       renderWorkflowFailure(error);
+      return false;
     }
   } finally {
     if (runId === workflowRunId) activeWorkflowController = null;
@@ -434,7 +471,7 @@ async function runWorkflowFallback(originalError, requestPayload, runId, signal)
     const reason = originalError?.message ? ` (${originalError.message})` : "";
     setWorkflowProgress(32, `Live progress unavailable${reason}; calculating full workflow`, "running");
     const response = await postJson("/api/wind-workflow", requestPayload, { signal });
-    if (runId !== workflowRunId) return;
+    if (runId !== workflowRunId) return false;
     currentWorkflow = await response.json();
     renderSiteAnalysisProgress({
       input: currentWorkflow.input,
@@ -446,11 +483,13 @@ async function runWorkflowFallback(originalError, requestPayload, runId, signal)
     setWorkflowProgress(78, "Rendering combined map layers", "running");
     await renderWorkflowMap(requestPayload, { runId, signal });
     await renderTerrainProfileGraph(requestPayload, { runId, signal });
-    if (runId !== workflowRunId) return;
+    if (runId !== workflowRunId) return false;
     setWorkflowProgress(100, "Assessment complete", "complete");
+    return true;
   } catch (fallbackError) {
-    if (fallbackError.name === "AbortError" || runId !== workflowRunId) return;
+    if (fallbackError.name === "AbortError" || runId !== workflowRunId) return false;
     renderWorkflowFailure(fallbackError.message ? fallbackError : originalError);
+    return false;
   }
 }
 
@@ -469,6 +508,7 @@ function workflowPayload() {
     obstruction_radius_m: Number(data.get("obstruction_radius_m") || 500),
     default_storey_height_m: Number(data.get("default_storey_height_m") || 3),
     annual_exceedance_probability: data.get("annual_exceedance_probability") || "1/500",
+    wind_direction_multiplier_case: data.get("wind_direction_multiplier_case") || "main_structure",
     importance_level: data.get("importance_level") || null,
     structure_class: data.get("structure_class") || null,
     structure_orientation_deg: optionalNumber("structure_orientation_deg"),
@@ -476,7 +516,7 @@ function workflowPayload() {
     building_width_m: optionalNumber("building_width_m"),
     building_length_m: optionalNumber("building_length_m"),
     roof_pitch_deg: optionalNumber("roof_pitch_deg"),
-    average_height_m: optionalNumber("average_height_m"),
+    average_roof_height_m: optionalNumber("average_roof_height_m"),
     base_rl_m: optionalNumber("base_rl_m"),
     assessment_status: data.get("assessment_status") || "draft",
     mzcat_recommendation_mode: "conservative",
@@ -503,7 +543,7 @@ function workflowPayload() {
     "building_width_m",
     "building_length_m",
     "roof_pitch_deg",
-    "average_height_m",
+    "average_roof_height_m",
     "base_rl_m",
   ].forEach((key) => {
     if (payload[key] === null || Number.isNaN(payload[key])) delete payload[key];
@@ -528,6 +568,29 @@ function syncReviewControls() {
   engineerNotesControl?.setCustomValidity(
     reviewed && !engineerNotesControl.value.trim() ? "Enter engineer review notes." : "",
   );
+}
+
+function restoreWindDirectionMultiplierCase() {
+  if (!windDirectionMultiplierCaseControl) return;
+  try {
+    const savedValue = localStorage.getItem(WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY);
+    const allowedValues = Array.from(windDirectionMultiplierCaseControl.options || [])
+      .map((option) => option.value);
+    if (allowedValues.includes(savedValue)) windDirectionMultiplierCaseControl.value = savedValue;
+  } catch (_error) {
+    // Browser storage is optional; the visible default remains main structure.
+  }
+}
+
+function persistWindDirectionMultiplierCase() {
+  try {
+    localStorage.setItem(
+      WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY,
+      windDirectionMultiplierCaseControl?.value || "main_structure",
+    );
+  } catch (_error) {
+    // The selection still participates in the current workflow request.
+  }
 }
 
 function assessmentFingerprint() {
@@ -566,7 +629,10 @@ function updateReportAvailability() {
   if (!reportStatus) return;
   if (currentWorkflow && !isCurrent) {
     reportStatus.textContent = "Inputs changed. Run the assessment again before generating reports.";
-  } else if (isCurrent && !reportStatus.textContent.includes("generated")) {
+  } else if (
+    isCurrent
+    && !/\b(?:generating|generated|failed)\b/i.test(reportStatus.textContent)
+  ) {
     reportStatus.textContent = "Reports are ready for the current assessment.";
   } else if (!currentWorkflow) {
     reportStatus.textContent = "";
@@ -611,7 +677,7 @@ function renderWorkflowFailure(error) {
   const message = formatApiError(error?.message || error || "Unknown error");
   setWorkflowProgress(100, "Assessment failed", "error");
   workflowSummary.textContent = `Workflow failed: ${message}`;
-  vsitbTable.innerHTML = "<tr><td colspan=\"7\">Workflow failed.</td></tr>";
+  vsitbTable.innerHTML = "<tr><td colspan=\"6\">Workflow failed.</td></tr>";
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
   updateReportAvailability();
@@ -664,7 +730,7 @@ function renderWorkflow(workflow) {
     renderVariableSection(variable, grouped[variable] || []);
   });
   renderVsitbTable(workflow.directional_vsitb || []);
-  renderRawProvenance(workflow.variables || []);
+  renderRawProvenance(workflow.variables || [], workflow.warnings || []);
 }
 
 function renderDashboardHeader(workflow) {
@@ -1264,6 +1330,7 @@ function updateDesignBuildingState(state, options = {}) {
   designBuildingState.orientation_deg = orientation;
   const userMapChange = positionModified || orientationModified;
   if (positionModified && adjustedLocation) {
+    clearWorkflowOverridesForSiteChange();
     coordinateOverride = {
       ...adjustedLocation,
       display_name: currentMapSite.display_name || "Saved building location",
@@ -1312,10 +1379,23 @@ function adjustedLocationFromDesignState(state) {
 }
 
 function renderMapCoordinates(location) {
-  if (!mapCoordinateReadout) return;
-  mapCoordinateReadout.textContent = location
-    ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
-    : "Not positioned";
+  if (mapCoordinateReadout) {
+    mapCoordinateReadout.textContent = location
+      ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
+      : "Not positioned";
+  }
+  updateMapNudgeAvailability();
+}
+
+function updateMapNudgeAvailability() {
+  const positioned = locationMode === "coordinates" && Boolean(coordinateOverride);
+  mapNudgeButtons.forEach((button) => {
+    button.disabled = !positioned;
+  });
+}
+
+function clearWorkflowOverridesForSiteChange() {
+  workflowOverrides = [];
 }
 
 function saveDesignLocation(location) {
@@ -1396,6 +1476,7 @@ function restoreSavedDesignLocation() {
 function invalidateDesignLocationForProject() {
   cancelAddressResolution();
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "address";
   coordinateOverride = null;
   designBuildingState = null;
@@ -1408,6 +1489,7 @@ function invalidateDesignLocationForProject() {
 function invalidateDesignLocationForAddress() {
   cancelAddressResolution();
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "address";
   coordinateOverride = null;
   designBuildingState = null;
@@ -1572,6 +1654,7 @@ function applyAddressSuggestion(suggestion) {
     return;
   }
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "coordinates";
   coordinateOverride = { ...currentMapSite };
   designBuildingState = {
@@ -1792,7 +1875,7 @@ function renderSiteInputs(workflow) {
     input.building_width_m !== null && input.building_width_m !== undefined ? `<tr><th>Width</th><td>${formatNullableNumber(input.building_width_m, 2, "m")}</td></tr>` : "",
     input.building_length_m !== null && input.building_length_m !== undefined ? `<tr><th>Length</th><td>${formatNullableNumber(input.building_length_m, 2, "m")}</td></tr>` : "",
     input.roof_pitch_deg !== null && input.roof_pitch_deg !== undefined ? `<tr><th>Roof pitch</th><td>${formatNullableNumber(input.roof_pitch_deg, 2, "deg")}</td></tr>` : "",
-    input.average_height_m !== null && input.average_height_m !== undefined ? `<tr><th>Average height</th><td>${formatNullableNumber(input.average_height_m, 2, "m")}</td></tr>` : "",
+    input.average_roof_height_m !== null && input.average_roof_height_m !== undefined ? `<tr><th>Average roof height</th><td>${formatNullableNumber(input.average_roof_height_m, 2, "m")}</td></tr>` : "",
     input.base_rl_m !== null && input.base_rl_m !== undefined ? `<tr><th>Base RL</th><td>${formatNullableNumber(input.base_rl_m, 2, "m")}</td></tr>` : "",
   ].join("");
   siteInputSummary.innerHTML = `
@@ -1837,8 +1920,21 @@ function renderWindInputs(workflow) {
         ${badge(region.confidence, region.confidence)}
         <span class="muted">${escapeHtml(region.dataset_name || "dataset not configured")}</span>
       </div>
+      <div>
+        <span class="kicker">Md application</span>
+        <strong>${escapeHtml(windDirectionMultiplierCaseLabel(workflow.input?.wind_direction_multiplier_case))}</strong>
+        <span class="muted">AS/NZS 1170.2 Clause 3.3 case</span>
+      </div>
     </div>
   `;
+}
+
+function windDirectionMultiplierCaseLabel(value) {
+  return {
+    main_structure: "Main structure",
+    cladding_or_immediate_support: "Cladding or immediate support",
+    circular_or_polygonal_chimney_tank_or_pole: "Circular/polygonal chimney, tank or pole",
+  }[value] || "Main structure";
 }
 
 function resetWorkflowSections() {
@@ -1866,7 +1962,7 @@ function resetWorkflowSections() {
   if (dashboardGoverningDirection) dashboardGoverningDirection.textContent = "-";
   if (dashboardGoverningVsitb) dashboardGoverningVsitb.textContent = "Calculating";
   if (vsitbTable) {
-    vsitbTable.innerHTML = "<tr><td colspan=\"7\">Waiting for directional variables.</td></tr>";
+    vsitbTable.innerHTML = "<tr><td colspan=\"6\">Waiting for directional variables.</td></tr>";
   }
   if (rawProvenance) {
     rawProvenance.innerHTML = "<p class=\"note\">Waiting for calculation sources and warnings...</p>";
@@ -1894,8 +1990,8 @@ function renderVariableSection(variable, rows) {
   section.querySelectorAll(".workflow-card").forEach((card) => card.remove());
   const table = variable === "Md"
     ? mdWorkflowTable(rows)
-    : variable === "VR"
-      ? sourceWorkflowTable(rows)
+    : ["VR", "Mc"].includes(variable)
+      ? sourceWorkflowTable(rows, { allowOverride: variable === "VR" })
       : workflowTable(rows);
   section.insertAdjacentHTML("beforeend", `
     <article class="workflow-card">
@@ -1926,7 +2022,7 @@ function workflowTable(rows) {
   `;
 }
 
-function sourceWorkflowTable(rows) {
+function sourceWorkflowTable(rows, { allowOverride = true } = {}) {
   if (!rows.length) return "<p class=\"note\">No workflow results generated.</p>";
   return `
     <div class="table-wrap">
@@ -1936,11 +2032,11 @@ function sourceWorkflowTable(rows) {
             <th>Value</th>
             <th>Calculated</th>
             <th>Confidence</th>
-            <th>Override (optional)</th>
+            ${allowOverride ? "<th>Override (optional)</th>" : ""}
           </tr>
         </thead>
         <tbody>
-          ${rows.map((row) => variableRow(row)).join("")}
+          ${rows.map((row) => variableRow(row, { allowOverride })).join("")}
         </tbody>
       </table>
     </div>
@@ -1986,13 +2082,13 @@ function mdStandardCell(row, highest) {
   return `<td class="${isGoverning ? "governing-md-cell" : ""}">${value.toFixed(2)}${isGoverning ? "<span class=\"muted\">governing</span>" : ""}</td>`;
 }
 
-function variableRow(row) {
+function variableRow(row, { allowOverride = true } = {}) {
   return `
     <tr>
       <td>${escapeHtml(row.direction || "all")}</td>
       <td>${recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
-      <td>${inlineAssessmentValueCell(row)}</td>
+      ${allowOverride ? `<td>${inlineAssessmentValueCell(row)}</td>` : ""}
     </tr>
   `;
 }
@@ -2011,13 +2107,12 @@ function warningListHtml(warnings) {
 
 function renderVsitbTable(rows) {
   if (!rows.length) {
-    vsitbTable.innerHTML = "<tr><td colspan=\"7\">No Vsit,b rows generated.</td></tr>";
+    vsitbTable.innerHTML = "<tr><td colspan=\"6\">No Vsit,b rows generated.</td></tr>";
     return;
   }
   vsitbTable.innerHTML = rows.map((row) => `
     <tr class="${row.is_governing ? "governing-row" : ""}">
       <td>${row.direction}${row.is_governing ? "<span class=\"muted\">governing direction</span>" : ""}</td>
-      <td>${formatWorkflowValue(row.vr, "m/s")}</td>
       <td>${formatWorkflowValue(row.md, "")}</td>
       <td>${formatWorkflowValue(row.mzcat, "")}</td>
       <td>${formatWorkflowValue(row.ms, "")}</td>
@@ -2027,10 +2122,13 @@ function renderVsitbTable(rows) {
   `).join("");
 }
 
-function renderRawProvenance(variables) {
+function renderRawProvenance(variables, workflowWarnings = []) {
   if (!rawProvenance) return;
   const uniqueWarnings = [...new Set(
-    variables.flatMap((row) => visibleWarnings(row.warnings || [])),
+    [
+      ...visibleWarnings(workflowWarnings),
+      ...variables.flatMap((row) => visibleWarnings(row.warnings || [])),
+    ],
   )];
   const byVariable = variableOrder
     .filter((variable) => variable !== "Vsitb")
@@ -2069,10 +2167,12 @@ function inlineAssessmentValueCell(row) {
   const finalValue = existing?.override_value ?? row.override_value ?? "";
   const placeholder = "optional override";
   const reason = existing?.reason || row.override_reason || "";
+  const maximum = workflowOverrideMaximums[row.variable];
+  const maximumAttribute = maximum === undefined ? "" : ` max="${maximum}"`;
   return `
     <div class="inline-override" data-key="${key}">
-      <input data-override-field="override_value" data-key="${key}" type="number" step="0.001" value="${finalValue}" placeholder="${escapeHtml(placeholder)}" aria-label="Optional ${escapeHtml(row.variable)} override for ${escapeHtml(row.direction || "all directions")}" />
-      <input data-override-field="reason" data-key="${key}" value="${escapeHtml(reason)}" placeholder="reason if edited" aria-label="Override reason" />
+      <input data-override-field="override_value" data-key="${key}" type="number" min="0.001"${maximumAttribute} step="0.001" value="${finalValue}" placeholder="${escapeHtml(placeholder)}" aria-label="Optional ${escapeHtml(row.variable)} override for ${escapeHtml(row.direction || "all directions")}" />
+      <input data-override-field="reason" data-key="${key}" maxlength="${workflowOverrideReasonMaximum}" value="${escapeHtml(reason)}" placeholder="reason if edited" aria-label="Override reason" />
       <button type="button" data-override-action="apply" data-key="${key}">Save</button>
       ${row.is_overridden || existing ? `<button type="button" data-override-action="clear" data-key="${key}">Reset</button>` : ""}
       ${row.is_overridden ? `<span class="badge badge-warn">override</span>` : ""}
@@ -2097,11 +2197,13 @@ async function updateOverride(button) {
   const key = button.dataset.key;
   const [variable, directionValue] = key.split(":");
   const direction = directionValue || null;
+  const previousOverrides = workflowOverrides.map((item) => ({ ...item }));
+  const previousState = captureCompletedWorkflowState();
   if (button.dataset.overrideAction === "clear") {
     workflowOverrides = workflowOverrides.filter((item) =>
       !(item.variable === variable && (item.direction || null) === direction)
     );
-    await runWorkflow();
+    await rerunAfterOverrideChange(previousOverrides, previousState, "Override reset");
     return;
   }
   const panel = button.closest(".inline-override") || button.closest(".override-panel");
@@ -2113,6 +2215,36 @@ async function updateOverride(button) {
     workflowSummary.textContent = "Override value must be a number greater than zero.";
     return;
   }
+  const maximum = workflowOverrideMaximums[variable];
+  if (maximum !== undefined && overrideValue > maximum) {
+    workflowSummary.textContent = `${variable} override must be no greater than ${maximum}.`;
+    return;
+  }
+  if (reason.length > workflowOverrideReasonMaximum) {
+    workflowSummary.textContent = `Override reason must be ${workflowOverrideReasonMaximum} characters or fewer.`;
+    return;
+  }
+  if (variable === "Md") {
+    const restriction = mandatoryMdOverrideRestriction();
+    if (restriction) {
+      workflowSummary.textContent = restriction;
+      return;
+    }
+  }
+  if (variable === "Ms") {
+    const restriction = mandatoryMsOverrideRestriction();
+    if (restriction) {
+      workflowSummary.textContent = restriction;
+      return;
+    }
+  }
+  if (variable === "Mzcat") {
+    const restriction = mandatoryMzcatOverrideRestriction();
+    if (restriction) {
+      workflowSummary.textContent = restriction;
+      return;
+    }
+  }
   workflowOverrides = workflowOverrides.filter((item) =>
     !(item.variable === variable && (item.direction || null) === direction)
   );
@@ -2122,7 +2254,80 @@ async function updateOverride(button) {
     override_value: overrideValue,
     reason,
   });
-  await runWorkflow();
+  await rerunAfterOverrideChange(previousOverrides, previousState, "Override save");
+}
+
+async function rerunAfterOverrideChange(previousOverrides, previousState, actionLabel) {
+  const runIdBeforeAttempt = workflowRunId;
+  const succeeded = await runWorkflow();
+  if (succeeded) return true;
+  if (workflowRunId > runIdBeforeAttempt + 1) return false;
+  const failureMessage = workflowSummary.textContent;
+  workflowOverrides = previousOverrides;
+  restoreCompletedWorkflowState(
+    previousState,
+    `${actionLabel} was not applied. The previous completed assessment was restored. ${failureMessage}`,
+  );
+  return false;
+}
+
+function captureCompletedWorkflowState() {
+  return {
+    workflow: currentWorkflow,
+    fingerprint: currentWorkflowFingerprint,
+    payload: activeWorkflowPayload,
+    mapHtml: workflowMapFrame?.srcdoc || "",
+    terrainProfileHtml: terrainProfileFrame?.srcdoc || "",
+  };
+}
+
+function restoreCompletedWorkflowState(state, message) {
+  currentWorkflow = state.workflow;
+  currentWorkflowFingerprint = state.fingerprint;
+  activeWorkflowPayload = state.payload;
+  if (currentWorkflow) renderWorkflow(currentWorkflow);
+  if (workflowMapFrame && state.mapHtml) setIframeHtml(workflowMapFrame, state.mapHtml);
+  if (terrainProfileFrame && state.terrainProfileHtml) {
+    setIframeHtml(terrainProfileFrame, state.terrainProfileHtml);
+  }
+  setWorkflowProgress(100, "Previous assessment restored", "complete");
+  updateReportAvailability();
+  workflowSummary.textContent = message;
+}
+
+function mandatoryMdOverrideRestriction() {
+  const payload = workflowPayload();
+  const designCase = payload.wind_direction_multiplier_case;
+  if (
+    designCase === "circular_or_polygonal_chimney_tank_or_pole"
+    || payload.structure_class === "monopole"
+  ) {
+    return "Md cannot be overridden because the selected Clause 3.3 design case requires Md = 1.0.";
+  }
+  const windRegion = currentWorkflow?.direction_multiplier_assessment?.wind_region
+    || currentWorkflow?.wind_region_assessment?.region_subclassification
+    || currentWorkflow?.wind_region_assessment?.wind_region;
+  if (designCase === "cladding_or_immediate_support" && ["B2", "C", "D"].includes(windRegion)) {
+    return `Md cannot be overridden because Clause 3.3 requires Md = 1.0 for cladding and its immediate supporting structure in wind region ${windRegion}.`;
+  }
+  return null;
+}
+
+function mandatoryMsOverrideRestriction() {
+  const payload = workflowPayload();
+  const referenceHeight = Number(payload.average_roof_height_m ?? payload.building_height_m);
+  if (referenceHeight > 25) {
+    return "Ms cannot be overridden because Clause 4.3.1 requires Ms = 1.0 when average roof height h exceeds 25 m.";
+  }
+  return null;
+}
+
+function mandatoryMzcatOverrideRestriction() {
+  const windRegion = currentWorkflow?.wind_region_assessment?.wind_region;
+  if (windRegion === "A0") {
+    return "Mz,cat cannot be overridden because the Region A0 Table 4.1 value is terrain-independent and mandatory.";
+  }
+  return null;
 }
 
 function overrideForKey(key) {

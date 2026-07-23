@@ -13,6 +13,10 @@ validation before non-expert users should rely on the output.
   `B2`, `C`, and `D`, but named independent reviewer/date sign-off remains pending. Readiness
   checks both that sign-off and the labels actually exposed by the configured GIS dataset, so a
   custom generic or unknown region remains blocked unless it has an approved row.
+- `Mc` is now a first-class Clause 3.4/Table 3.3 factor in the workflow, reports, integrity seal,
+  API and MCP tools. Generic Region B is rejected because B1 and B2 use different values.
+- Clause 3.3 `Md = 1.0` cases are explicit and enforced for chimneys/tanks/poles and B2/C/D
+  cladding or immediate supports.
 - `Mz,cat` Table 4.1 and `Ms` Table 4.2 values now have structured packaged assets, source/table
   metadata, canonical value digests, deployment overrides, deterministic snapshots, and readiness
   checks. Independent named reviewer/date sign-off is still required before a certified release.
@@ -24,10 +28,15 @@ validation before non-expert users should rely on the output.
   an authentic completed result.
 - Public assessment JSON omits local wind-region dataset paths and raw region geometry; diagnostic
   routes are hidden unless explicitly enabled for a trusted local session.
-- Reference calculation 7989 can be reproduced through `/api/reference-validation/7989`.
-- Applying reviewed class overrides for reference calculation 7989 matches all directional
-  `Mz,cat`, `Ms`, and `Mt` comparison points, which confirms the workflow can carry reviewed
-  classes through the calculation.
+- Production mode now requires a trusted Host allowlist, disables interactive API documentation,
+  bounds request bodies and request collections, rejects ambiguous JSON, sanitises validation
+  errors, adds browser security headers, and fails assessment traffic closed on readiness.
+- The anonymized class-level reference can be reproduced through
+  `/api/reference-validation/anonymized`; its OSM-derived geometry is translated and stripped of
+  original identifiers and tags.
+- Applying the encoded reviewed class overrides makes all 24 class-label comparison points match.
+  This checks override transport and class mapping only; numeric `Mz,cat`, `Ms`, and `Mt`
+  calculations are covered separately by deterministic calculation tests.
 - The default public-data run still differs from the reference classes, which means the automated
   evidence-to-class logic is not ready to stand alone.
 
@@ -58,8 +67,8 @@ third-party binary format.
    coefficients, and any further rules intended to be automated.
 2. Add independent named reviewer/date sign-off to every derived lookup and extend the current
    deterministic snapshots and digests to all remaining tables without exposing licensed text.
-3. Expand reference validation beyond job 7989 to cover multiple regions, terrain categories,
-   shielding states, heights, and topographic classes.
+3. Expand reference validation beyond the anonymized baseline to cover multiple regions, terrain
+   categories, shielding states, heights, and topographic classes.
 4. Promote `Mz,cat`, `Ms`, and `Mt` from indicative to reviewed/certified only after the lookup
    tables, class selection logic, and edge cases have independent engineering sign-off.
 5. Complete consumer-facing guardrails beyond the implemented review states and report watermark:
@@ -68,6 +77,13 @@ third-party binary format.
 6. Replace live-network assumptions with cache-first data services and visible data-source health
    checks.
 7. Add licensing and attribution checks for all bundled and live data sources.
+8. Implement or reviewed-input-block the Clause 4.2.3 mixed-terrain weighted average, Cyclonic
+   C/D coastal interpolation, and the Clause 4.4.2 most-adverse cross-section/escarpment checks.
+9. Validate the production wind-region boundary dataset against an Amendment 2-reviewed edition
+   and record a content digest in result provenance.
+10. Add provider redirect/SSRF controls, bounded response downloads and total deadlines,
+    concurrency/rate limits, cache quotas and atomic OSM cache writes before exposing live public
+    provider integrations at consumer scale.
 
 ## Release Gate
 

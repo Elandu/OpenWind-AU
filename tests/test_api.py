@@ -317,7 +317,7 @@ def test_vendored_map_assets_are_served() -> None:
     plotly = client.get("/vendor/plotly.min.js")
     assert plotly.status_code == 200
     assert plotly.headers["content-type"].startswith("application/javascript")
-    assert plotly.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert plotly.headers["cache-control"] == "public, max-age=0, must-revalidate"
     assert b"plotly.js" in plotly.content[:500]
 
 
@@ -927,8 +927,8 @@ def test_openapi_has_typed_success_schemas_for_all_published_json_operations() -
         ("/api/validation/cases", "get"): ("ValidationCase", True),
         ("/api/validation", "get"): ("ValidationReport", False),
         ("/api/calculation-validation", "get"): ("CalculationValidationReport", False),
-        ("/api/reference-validation/7989", "get"): (
-            "ReferenceCalc7989ComparisonReport",
+        ("/api/reference-validation/anonymized", "get"): (
+            "AnonymizedReferenceComparisonReport",
             False,
         ),
         ("/api/wind-region/validation", "get"): ("WindRegionValidationResult", True),

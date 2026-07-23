@@ -17,9 +17,21 @@ function importContext(fetchImpl) {
   assert.ok(helperStart >= 0 && helperEnd > helperStart);
   const applications = [];
   const context = vm.createContext({
+    AbortController,
     fetch: fetchImpl,
     applyBrowserOverrides(overrides, options) {
       applications.push({ overrides: structuredClone(overrides), options });
+    },
+    finishImportRequest() {},
+    importRequestIsCurrent() {
+      return true;
+    },
+    startImportRequest() {
+      return {
+        requestId: 1,
+        controller: new AbortController(),
+        fingerprint: "test-inputs",
+      };
     },
   });
   vm.runInContext(source.slice(helperStart, helperEnd), context);
@@ -171,6 +183,8 @@ test("geometry-only reviewed records remain missing instead of becoming manual o
   const context = vm.createContext({
     reviewedObstructions: [],
     currentObstructionInventory: null,
+    cancelMapRequest() {},
+    cancelTerrainReportRequest() {},
     document: { getElementById: () => ({ value: "3" }) },
     refreshShieldingSectors() {},
     renderObstructionInventory() {},
@@ -198,6 +212,6 @@ test("geometry-only reviewed records remain missing instead of becoming manual o
   assert.equal(imported.footprint_source, "manual_reviewed");
 });
 
-test("legacy app cache revision includes the strict obstruction import flow", () => {
-  assert.match(indexSource, /app\.js\?v=20260715-strict-import-7/);
+test("legacy app cache revision includes the state-safe obstruction review flow", () => {
+  assert.match(indexSource, /app\.js\?v=20260715-state-safety-1/);
 });

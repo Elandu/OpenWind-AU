@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openwind_au.models import (
     DirectionMultiplierAssessment,
+    DirectionMultiplierRow,
     ObstructionInventoryResult,
     RegionalWindSpeedAssessment,
     SiteAnalysisResult,
@@ -28,7 +29,10 @@ from openwind_au.mzcat import (
 from openwind_au.result_integrity import seal_workflow_result
 from openwind_au.shielding import DIRECTION_AZIMUTHS
 from openwind_au.standard_calculations import (
+    MC_STANDARD_REFERENCE,
     MS_METADATA_WARNING,
+    climate_change_multiplier,
+    shielding_reduction_height_limit_m,
     site_wind_speed,
 )
 from openwind_au.topographic_multiplier import calculate_topographic_multiplier
@@ -36,6 +40,14 @@ from openwind_au.wind_inputs import direction_multiplier_assessment, regional_wi
 from openwind_au.wind_region import assess_wind_region
 
 DIRECTIONS: list[WindDirection] = [direction for direction, _azimuth in DIRECTION_AZIMUTHS]
+MIXED_TERRAIN_REVIEW_WARNING = (
+    "Clause 4.2.3 mixed-terrain weighted averaging is not automated; Mz,cat assumes "
+    "one reviewed or recommended category at the common reference height."
+)
+TOPOGRAPHIC_SECTION_REVIEW_WARNING = (
+    "Clause 4.4.2 most-adverse topographic cross-section within +/-22.5 degrees and "
+    "escarpment downwind-slope eligibility are not automated; Mt requires engineer review."
+)
 
 
 def run_wind_workflow(
@@ -53,21 +65,38 @@ def run_wind_workflow(
 
     overrides = override_lookup(request.workflow_overrides)
     class_overrides = class_override_lookup(request.class_multiplier_overrides)
+    reject_mandatory_ms_overrides(request)
     variables: list[WindVariableAssessment] = []
     mzcat_lookup = mzcat_lookup_data if mzcat_lookup_data is not None else load_mzcat_table()
     mzcat_issues = mzcat_lookup_issues(mzcat_lookup, require_reviewed=False)
     if mzcat_issues:
         raise ValueError(f"Invalid Table 4.1 lookup data: {'; '.join(mzcat_issues)}")
     wind_region = wind_region or assess_wind_region(site_result.site)
+    if wind_region.wind_region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for the site wind workflow; confirm whether the "
+            "site is in A0, A1, A2, A3, A4, or A5."
+        )
+    if wind_region.wind_region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for the site wind workflow; confirm whether the "
+            "site is in B1 or B2."
+        )
+    reject_mandatory_a0_mzcat_overrides(request, wind_region)
     regional_speed = regional_speed or regional_wind_speed_assessment(
         wind_region,
         importance_level=request.importance_level,
         annual_exceedance_probability=request.annual_exceedance_probability,
     )
     direction_multipliers = direction_multipliers or direction_multiplier_assessment(wind_region)
+    direction_multipliers = effective_direction_multiplier_assessment(
+        request,
+        direction_multipliers,
+    )
     vr = vr_assessment(request, regional_speed, overrides)
     variables.append(vr)
-    variables.extend(md_assessments(direction_multipliers, overrides))
+    variables.append(mc_assessment(wind_region, overrides))
+    variables.extend(md_assessments(request, direction_multipliers, overrides))
     variables.extend(
         mzcat_assessments(
             request,
@@ -99,6 +128,8 @@ def run_wind_workflow(
             "engineering review."
         ),
         "Pressure calculations are not included.",
+        MIXED_TERRAIN_REVIEW_WARNING,
+        TOPOGRAPHIC_SECTION_REVIEW_WARNING,
     ]
     warnings.extend(wind_region.warnings)
     warnings.extend(regional_speed.warnings)
@@ -152,16 +183,47 @@ def class_override_lookup(
     return {override.direction: override for override in overrides}
 
 
+def reject_mandatory_a0_mzcat_overrides(
+    request: WindWorkflowRequest,
+    wind_region: WindRegionAssessment,
+) -> None:
+    """Reject numeric overrides of the terrain-independent Region A0 rule."""
+
+    if wind_region.wind_region != "A0":
+        return
+    has_workflow_override = any(item.variable == "Mzcat" for item in request.workflow_overrides)
+    has_class_override = any(item.mzcat is not None for item in request.class_multiplier_overrides)
+    if has_workflow_override or has_class_override:
+        raise ValueError(
+            "Region A0 Table 4.1 Mz,cat is terrain-independent and mandatory; numeric "
+            "Mz,cat overrides are not permitted."
+        )
+
+
+def reject_mandatory_ms_overrides(request: WindWorkflowRequest) -> None:
+    """Reject override paths that could bypass the mandatory high-rise Ms value."""
+
+    height_limit_m = shielding_reduction_height_limit_m()
+    if request.reference_height_m <= height_limit_m:
+        return
+    has_workflow_override = any(item.variable == "Ms" for item in request.workflow_overrides)
+    has_class_override = any(item.ms is not None for item in request.class_multiplier_overrides)
+    if has_workflow_override or has_class_override:
+        raise ValueError(
+            "Clause 4.3.1 requires Ms = 1.0 when average roof height h exceeds "
+            f"{height_limit_m:g} m; numeric Ms overrides are not permitted."
+        )
+
+
 def apply_override(
     assessment: WindVariableAssessment,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
 ) -> WindVariableAssessment:
     override = overrides.get((assessment.variable, assessment.direction))
     if override is None:
-        return assessment.model_copy(update={"calculated_value": assessment.final_value})
+        return assessment
     return assessment.model_copy(
         update={
-            "calculated_value": assessment.final_value,
             "final_value": override.override_value,
             "final_label": override.label or "Override value",
             "override_value": override.override_value,
@@ -222,30 +284,55 @@ def vr_assessment(
 
 
 def md_assessments(
+    request: WindWorkflowRequest,
     direction_multipliers: DirectionMultiplierAssessment,
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
 ) -> list[WindVariableAssessment]:
+    mandatory_one_reason = mandatory_md_one_reason(
+        request,
+        direction_multipliers.wind_region,
+    )
+    if mandatory_one_reason and any(key[0] == "Md" for key in overrides):
+        raise ValueError(
+            "Md overrides are not permitted because the selected Clause 3.3 design case "
+            "requires Md = 1.0."
+        )
     assessments = []
     for row in direction_multipliers.directions:
         direction = row.direction
-        value = row.md
+        value = 1.0 if mandatory_one_reason else row.md
+        warnings = list(direction_multipliers.warnings)
+        if mandatory_one_reason and mandatory_one_reason not in warnings:
+            warnings.append(mandatory_one_reason)
         assessment = WindVariableAssessment(
             variable="Md",
             label="Wind direction multiplier, Md",
             direction=direction,
             recommended_value=value,
             recommended_label=(
-                f"Selected Md for {direction}"
+                "Clause 3.3 mandatory Md"
+                if mandatory_one_reason
+                else f"Selected Md for {direction}"
                 if value is not None
                 else f"Md for {direction} required"
             ),
             confidence="medium" if value is not None else "low",
             calculated_value=value,
             final_value=value,
-            final_label=f"Calculated Md lookup for {direction}" if value is not None else None,
-            warnings=list(direction_multipliers.warnings),
+            final_label=(
+                "Clause 3.3 mandatory Md = 1.0"
+                if mandatory_one_reason
+                else f"Calculated Md lookup for {direction}"
+                if value is not None
+                else None
+            ),
+            warnings=warnings,
             evidence_link="#wind-direction-md",
-            source_reference=direction_multipliers.source_table,
+            source_reference=(
+                "AS/NZS 1170.2:2021 Clause 3.3"
+                if mandatory_one_reason
+                else direction_multipliers.source_table
+            ),
             detail_label="Show source",
             formula_basis="Wind direction multiplier selected for the assessed wind direction.",
             calculation_inputs=[
@@ -255,7 +342,11 @@ def md_assessments(
             ],
             detail_items=[
                 f"Selected region: {direction_multipliers.wind_region}",
-                f"Source table: {direction_multipliers.source_table}",
+                (
+                    "Source: AS/NZS 1170.2:2021 Clause 3.3"
+                    if mandatory_one_reason
+                    else f"Source table: {direction_multipliers.source_table}"
+                ),
                 f"Direction: {direction}",
                 _format_lookup_detail("Lookup value: Md", value, ""),
             ],
@@ -267,6 +358,91 @@ def md_assessments(
         )
         assessments.append(apply_override(assessment, overrides))
     return assessments
+
+
+def mandatory_md_one_reason(
+    request: WindWorkflowRequest,
+    wind_region: str,
+) -> str | None:
+    """Return the Clause 3.3 reason that makes Md exactly 1.0, if applicable."""
+
+    design_case = request.wind_direction_multiplier_case
+    if (
+        design_case == "circular_or_polygonal_chimney_tank_or_pole"
+        or request.structure_class == "monopole"
+    ):
+        return "Clause 3.3 requires Md = 1.0 for circular or polygonal chimneys, tanks, and poles."
+    if design_case == "cladding_or_immediate_support" and wind_region in {"B2", "C", "D"}:
+        return (
+            "Clause 3.3 requires Md = 1.0 for cladding and its immediate supporting "
+            f"structure in wind region {wind_region}."
+        )
+    return None
+
+
+def effective_direction_multiplier_assessment(
+    request: WindWorkflowRequest,
+    assessment: DirectionMultiplierAssessment,
+) -> DirectionMultiplierAssessment:
+    """Return the effective Md source and values for the selected design case."""
+
+    reason = mandatory_md_one_reason(request, assessment.wind_region)
+    if reason is None:
+        return assessment
+    directions = [
+        DirectionMultiplierRow(direction=row.direction, md=1.0, is_governing=True)
+        for row in assessment.directions
+    ]
+    return assessment.model_copy(
+        update={
+            "source_table": "AS/NZS 1170.2:2021 Clause 3.3",
+            "directions": directions,
+            "highest_md": 1.0,
+            "governing_directions": [row.direction for row in directions],
+            "lookup_values": [
+                f"Selected wind region: {assessment.wind_region}",
+                f"Selected design case: {request.wind_direction_multiplier_case}",
+                *[f"{row.direction}: Md 1.00" for row in directions],
+            ],
+            "warnings": [reason],
+        }
+    )
+
+
+def mc_assessment(
+    wind_region: WindRegionAssessment,
+    overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
+) -> WindVariableAssessment:
+    """Build the non-directional Table 3.3 climate-change multiplier assessment."""
+
+    value = climate_change_multiplier(wind_region.wind_region)
+    warnings: list[str] = []
+    assessment = WindVariableAssessment(
+        variable="Mc",
+        label="Climate change multiplier, Mc",
+        recommended_value=value,
+        recommended_label=f"Table 3.3 Mc for region {wind_region.wind_region}",
+        confidence=wind_region.confidence,
+        calculated_value=value,
+        final_value=value,
+        final_label="Calculated Mc lookup",
+        warnings=warnings,
+        evidence_link="#project-site-inputs",
+        source_reference=MC_STANDARD_REFERENCE,
+        detail_label="Show source",
+        formula_basis="Climate-change multiplier selected for the assessed wind region.",
+        calculation_inputs=[
+            f"Assessed wind region: {wind_region.wind_region}",
+            f"Table 3.3 Mc: {value:.3f}",
+        ],
+        detail_items=[
+            f"Source: {MC_STANDARD_REFERENCE}",
+            f"Assessed wind region: {wind_region.wind_region}",
+            *warnings,
+        ],
+        calculation_result=f"Mc = {value:.3f}",
+    )
+    return apply_override(assessment, overrides)
 
 
 def mzcat_assessments(
@@ -281,8 +457,17 @@ def mzcat_assessments(
     assessments = []
     for item in terrain_result.mzcat_assessment:
         class_override = class_overrides.get(item.direction)
+        mandatory_a0 = wind_region.wind_region == "A0"
+        if mandatory_a0 and (
+            overrides.get(("Mzcat", item.direction)) is not None
+            or (class_override is not None and class_override.mzcat is not None)
+        ):
+            raise ValueError(
+                "Region A0 Table 4.1 Mz,cat is terrain-independent and mandatory; numeric "
+                "Mz,cat overrides are not permitted."
+            )
         warnings = list(item.warnings)
-        value = (
+        calculated_value = (
             indicative_mzcat(
                 item.recommended_terrain_category,
                 request.reference_height_m,
@@ -292,6 +477,7 @@ def mzcat_assessments(
             if item.recommended_terrain_category
             else None
         )
+        value = calculated_value
         final_label = (
             f"Calculated TC {item.recommended_terrain_category}"
             if item.recommended_mzcat is not None
@@ -340,7 +526,7 @@ def mzcat_assessments(
                 else "Recommended TC review required; Recommended Mz,cat review required"
             ),
             confidence=confidence,
-            calculated_value=value,
+            calculated_value=calculated_value,
             final_value=value,
             final_label=final_label,
             warnings=warnings,
@@ -397,9 +583,21 @@ def ms_assessments(
     class_overrides: dict[WindDirection, WindClassMultiplierOverride],
 ) -> list[WindVariableAssessment]:
     assessments = []
+    height_limit_m = shielding_reduction_height_limit_m()
     for sector in obstruction_result.shielding_sectors:
         class_override = class_overrides.get(sector.direction)
+        mandatory_ms = sector.subject_height_m > height_limit_m
+        if mandatory_ms and (
+            overrides.get(("Ms", sector.direction)) is not None
+            or (class_override is not None and class_override.ms is not None)
+        ):
+            raise ValueError(
+                "Clause 4.3.1 requires Ms = 1.0 when average roof height h exceeds "
+                f"{height_limit_m:g} m; numeric Ms overrides are not permitted."
+            )
         calculated_value = sector.indicative_ms
+        if mandatory_ms:
+            calculated_value = 1.0
         value = calculated_value
         confidence = _confidence(sector.overall_confidence)
         final_label = "Calculated Ms"
@@ -645,24 +843,37 @@ def mt_assessments(
 def vsitb_directional_rows(variables: list[WindVariableAssessment]) -> list[SiteWindSpeedRow]:
     rows = []
     vr = variable_for(variables, "VR", None)
+    mc = variable_for(variables, "Mc", None)
     for direction in DIRECTIONS:
         md = variable_for(variables, "Md", direction)
         mzcat = variable_for(variables, "Mzcat", direction)
         ms = variable_for(variables, "Ms", direction)
         mt = variable_for(variables, "Mt", direction)
-        input_variables = [vr, md, mzcat, ms, mt]
+        input_variables = [vr, mc, md, mzcat, ms, mt]
         values = [item.final_value for item in input_variables if item is not None]
         warnings = []
-        complete = len(values) == 5 and all(value is not None for value in values)
+        complete = len(values) == 6 and all(value is not None for value in values)
         if not complete:
             warnings.append(
                 "Vsit,b could not be calculated because one or more inputs are missing."
             )
-        final_vsitb = site_wind_speed(*(float(value) for value in values)) if complete else None
+        final_vsitb = (
+            site_wind_speed(
+                vr=float(values[0]),
+                mc=float(values[1]),
+                md=float(values[2]),
+                mzcat=float(values[3]),
+                ms=float(values[4]),
+                mt=float(values[5]),
+            )
+            if complete
+            else None
+        )
         rows.append(
             SiteWindSpeedRow(
                 direction=direction,
                 vr=vr.final_value if vr else None,
+                mc=mc.final_value if mc else None,
                 md=md.final_value if md else None,
                 mzcat=mzcat.final_value if mzcat else None,
                 ms=ms.final_value if ms else None,
@@ -720,9 +931,10 @@ def vsitb_assessments(
                 evidence_link="#vsitb-summary",
                 source_reference="Reviewed site wind speed variable product.",
                 detail_label="Show calculation",
-                formula_basis="Vsit,b = VR x Md x Mz,cat x Ms x Mt",
+                formula_basis="Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt",
                 calculation_inputs=[
                     f"VR: {_format_value(row.vr)}",
+                    f"Mc: {_format_value(row.mc)}",
                     f"Md: {_format_value(row.md)}",
                     f"Mz,cat: {_format_value(row.mzcat)}",
                     f"Ms: {_format_value(row.ms)}",

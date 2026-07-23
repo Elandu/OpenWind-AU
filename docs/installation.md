@@ -11,6 +11,31 @@ preliminary terrain and topographic screening, not certified wind design.
 - A platform capable of installing geospatial Python packages such as Rasterio, GeoPandas,
   Shapely, and PyProj.
 
+## Install From A Wheel Artifact
+
+Create and activate a virtual environment, then install a wheel built from the exact reviewed
+commit. CI uploads wheel and sdist artifacts for validated commits; no v0.8.0 GitHub release has
+been published yet.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install .\openwind_au-0.8.0-py3-none-any.whl
+```
+
+Verify both console entry points and run the deployment-readiness diagnostic:
+
+```powershell
+openwind-au --help
+openwind-au-mcp --help
+openwind-au check --json
+```
+
+The readiness command returns exit status 1 and `not_ready` until the production wind datasets,
+durable signing key, and engineering review metadata are configured. This is an actionable
+deployment diagnostic, not an installation failure.
+
 ## Install From Source
 
 ```bash
@@ -31,7 +56,7 @@ Activate the virtual environment on macOS or Linux:
 source .venv/bin/activate
 ```
 
-Install the package and development tools:
+Install the package and development tools for contributors:
 
 ```bash
 python -m pip install --upgrade pip

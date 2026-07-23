@@ -124,7 +124,7 @@ def test_wind_workflow_accepts_structured_building_inputs() -> None:
         building_width_m=4,
         building_length_m=5,
         roof_pitch_deg=15,
-        average_height_m=3,
+        average_roof_height_m=3,
         base_rl_m=0,
     )
 
@@ -133,6 +133,23 @@ def test_wind_workflow_accepts_structured_building_inputs() -> None:
     assert request.roof_shape == "gable"
     assert request.building_width_m == 4
     assert request.building_length_m == 5
+    assert request.average_roof_height_m == 3
+    assert request.reference_height_m == 3
+
+
+def test_wind_workflow_normalizes_legacy_average_height_alias() -> None:
+    request = WindWorkflowRequest.model_validate(
+        {
+            "latitude": -34.550445,
+            "longitude": 150.848728,
+            "building_height_m": 4,
+            "average_height_m": 3,
+        }
+    )
+
+    assert request.average_roof_height_m == 3
+    assert "average_height_m" not in request.model_dump()
+    assert request.model_dump()["average_roof_height_m"] == 3
 
 
 def test_wind_workflow_rejects_orientation_outside_reference_range() -> None:

@@ -50,7 +50,7 @@ certified design tool. Suitable for exploration, review, contribution, and regre
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
-- Exposes traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
+- Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
 
 ## What It Does Not Do
 
@@ -90,6 +90,26 @@ Screenshot coverage is tracked in [`docs/screenshots.md`](docs/screenshots.md):
 - Validation report: `docs/screenshots/validation-report.placeholder.md`
 
 ## Quick Start
+
+If you have a wheel artifact built from this exact commit, install it in a fresh virtual
+environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install .\openwind_au-0.8.0-py3-none-any.whl
+openwind-au --help
+openwind-au-mcp --help
+openwind-au check --json
+openwind-au
+```
+
+`openwind-au check --json` intentionally reports `not_ready` with exit status 1 until the
+production datasets, signing key, and engineering review metadata are configured. That diagnostic
+does not mean the wheel failed to install.
+
+For a development checkout, install from source:
 
 ```bash
 git clone https://github.com/Elandu/OpenWind-AU.git
@@ -190,7 +210,7 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
-- [v0.8.0 milestone changes](CHANGELOG.md#v080---standards-provenance-and-preliminary-issue-guardrails)
+- [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-preliminary-issue-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
 ## API Overview
@@ -217,6 +237,9 @@ GET  /health
 POST /api/geocode/suggest
 POST /api/geocode/resolve
 POST /api/analyse
+POST /api/wind-workflow
+POST /api/wind-workflow/stream
+POST /api/wind-workflow/map
 POST /api/export/json
 POST /api/report/html
 POST /api/report/pdf

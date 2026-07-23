@@ -16,6 +16,7 @@ from openwind_au.mcp_server import (
     _allowed_host,
     _transport_security_settings,
     calculate_all_wind_variables,
+    calculate_climate_change_multiplier,
     calculate_regional_wind_speed,
     calculate_shielding_multiplier,
     calculate_site_wind_speed,
@@ -35,6 +36,7 @@ def test_mcp_registers_traceable_wind_calculation_tools() -> None:
 
     assert {tool.name for tool in tools} == {
         "calculate_regional_wind_speed",
+        "calculate_climate_change_multiplier",
         "get_direction_multipliers",
         "calculate_terrain_height_multiplier",
         "calculate_shielding_multiplier",
@@ -54,7 +56,12 @@ def test_mcp_initialize_reports_application_version() -> None:
 def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None:
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
     regional_schema = tools["calculate_regional_wind_speed"].inputSchema
+    climate_schema = tools["calculate_climate_change_multiplier"].inputSchema
     combined_schema = tools["calculate_all_wind_variables"].inputSchema
+    direction_schema = tools["get_direction_multipliers"].inputSchema
+    terrain_schema = tools["calculate_terrain_height_multiplier"].inputSchema
+    topographic_schema = tools["calculate_topographic_wind_multiplier"].inputSchema
+    site_speed_schema = tools["calculate_site_wind_speed"].inputSchema
     output_schema = tools["calculate_regional_wind_speed"].outputSchema
 
     assert regional_schema["properties"]["wind_region"]["enum"] == [
@@ -72,6 +79,37 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         "D",
     ]
     assert regional_schema["properties"]["ari_years"]["minimum"] == 1
+    assert climate_schema["properties"]["wind_region"]["enum"] == [
+        "A",
+        "A0",
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5",
+        "B1",
+        "B2",
+        "C",
+        "D",
+    ]
+    specific_regions = ["A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D"]
+    exposure_regions = [
+        "A0",
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5",
+        "B",
+        "B1",
+        "B2",
+        "C",
+        "D",
+    ]
+    assert direction_schema["properties"]["wind_region"]["enum"] == specific_regions
+    assert combined_schema["properties"]["wind_region"]["enum"] == specific_regions
+    assert terrain_schema["properties"]["wind_region"]["enum"] == exposure_regions
+    assert topographic_schema["properties"]["wind_region"]["enum"] == exposure_regions
     assert combined_schema["properties"]["direction"]["enum"] == [
         "N",
         "NE",
@@ -90,6 +128,14 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         "TC3",
         "TC4",
     ]
+    assert combined_schema["properties"]["wind_direction_multiplier_case"]["enum"] == [
+        "main_structure",
+        "cladding_or_immediate_support",
+        "circular_or_polygonal_chimney_tank_or_pole",
+    ]
+    assert "average_roof_height_m" in combined_schema["required"]
+    assert "height_m" not in combined_schema["properties"]
+    assert "mc" in site_speed_schema["required"]
     assert output_schema is not None
     assert set(output_schema["required"]) == {
         "standard",
@@ -116,7 +162,7 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         ),
         (
             "calculate_site_wind_speed",
-            {"vr_mps": 45, "md": True, "mzcat": 1, "ms": 1, "mt": 1},
+            {"vr_mps": 45, "mc": 1, "md": True, "mzcat": 1, "ms": 1, "mt": 1},
             "md",
         ),
         (
@@ -147,18 +193,20 @@ def test_mcp_call_boundary_rejects_coercible_engineering_inputs(
 
 def test_mcp_individual_tools_return_structured_traceability() -> None:
     vr = calculate_regional_wind_speed("A2", 500)
+    mc = calculate_climate_change_multiplier("A2")
     md = get_direction_multipliers("A2")
     mzcat = calculate_terrain_height_multiplier("TC3", 10.0, "A2")
     ms = calculate_shielding_multiplier(4.5, 10.0)
-    vsitb = calculate_site_wind_speed(45.0, 0.85, 0.83, 0.85, 1.0)
+    vsitb = calculate_site_wind_speed(45.0, 1.0, 0.85, 0.83, 0.85, 1.0)
 
     assert vr["outputs"]["vr_mps"] == 45.0
     assert "regional equation" in vr["outputs"]["source_reference"]
+    assert mc["outputs"]["mc"] == 1.0
     assert md["outputs"]["md"]["N"] == 0.85
     assert mzcat["outputs"]["mzcat"] == 0.83
     assert ms["outputs"]["ms"] == 0.85
     assert vsitb["outputs"]["vsitb_mps"] == pytest.approx(26.985375)
-    assert all(result["engineering_review_required"] for result in (vr, md, mzcat, ms, vsitb))
+    assert all(result["engineering_review_required"] for result in (vr, mc, md, mzcat, ms, vsitb))
 
 
 def test_mcp_regional_speed_matches_api_configured_table(monkeypatch, tmp_path) -> None:
@@ -185,8 +233,9 @@ def test_mcp_regional_speed_matches_api_configured_table(monkeypatch, tmp_path) 
         wind_region="A2",
         ari_years=500,
         direction="N",
+        wind_direction_multiplier_case="main_structure",
         terrain_category="TC3",
-        height_m=10.0,
+        average_roof_height_m=10.0,
         shielding_parameter=4.5,
         building_height_m=10.0,
         feature_type="no significant feature",
@@ -205,6 +254,21 @@ def test_mcp_regional_speed_matches_api_configured_table(monkeypatch, tmp_path) 
     assert combined_result["outputs"]["vsitb_mps"] == pytest.approx(31.1831)
 
 
+def test_mcp_identical_configured_table_attributes_equation_fallback(monkeypatch, tmp_path) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
+    table_path = tmp_path / "regional-wind-speeds.json"
+    table_path.write_text(json.dumps(table), encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
+
+    result = calculate_regional_wind_speed("A2", 30)
+
+    assert result["outputs"]["vr_mps"] == 38.0
+    assert result["outputs"]["source_reference"] == (
+        "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
+    )
+    assert any("regional equation" in warning for warning in result["warnings"])
+
+
 def test_mcp_configured_vr_table_missing_value_fails_closed(monkeypatch, tmp_path) -> None:
     table = load_packaged_lookup_data(VR_DATA_FILE)
     table["tables"]["A"]["ultimate"] = {"25": 37.0}
@@ -221,8 +285,9 @@ def test_mcp_all_variables_matches_component_product() -> None:
         wind_region="A2",
         ari_years=500,
         direction="N",
+        wind_direction_multiplier_case="main_structure",
         terrain_category="TC3",
-        height_m=10.0,
+        average_roof_height_m=10.0,
         shielding_parameter=4.5,
         building_height_m=10.0,
         feature_type="no significant feature",
@@ -237,7 +302,9 @@ def test_mcp_all_variables_matches_component_product() -> None:
         "vr_source_reference": (
             "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
         ),
+        "mc": 1.0,
         "md": 0.85,
+        "md_source_reference": ("AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.2(A)"),
         "mzcat": 0.83,
         "ms": 0.85,
         "mt": 1.0,
@@ -250,8 +317,9 @@ def test_mcp_all_variables_uses_full_precision_mt_before_rounding_vsitb() -> Non
         wind_region="A2",
         ari_years=500,
         direction="N",
+        wind_direction_multiplier_case="main_structure",
         terrain_category="TC3",
-        height_m=10.0,
+        average_roof_height_m=10.0,
         shielding_parameter=4.5,
         building_height_m=10.0,
         feature_type="ridge",
@@ -265,6 +333,174 @@ def test_mcp_all_variables_uses_full_precision_mt_before_rounding_vsitb() -> Non
     assert result["outputs"]["vsitb_mps"] == pytest.approx(32.079139)
 
 
+def test_mcp_b2_climate_change_multiplier_uplifts_site_wind_speed() -> None:
+    mc = calculate_climate_change_multiplier("B2")
+    result = calculate_all_wind_variables(
+        wind_region="B2",
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="main_structure",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert mc["outputs"]["mc"] == 1.05
+    assert result["outputs"]["mc"] == 1.05
+    assert result["outputs"]["vsitb_mps"] == pytest.approx(
+        result["outputs"]["vr_mps"]
+        * 1.05
+        * result["outputs"]["md"]
+        * result["outputs"]["mzcat"]
+        * result["outputs"]["ms"]
+        * result["outputs"]["mt"]
+    )
+
+
+def test_mcp_clause_3_3_cladding_case_forces_md_one_in_b2() -> None:
+    result = calculate_all_wind_variables(
+        wind_region="B2",
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="cladding_or_immediate_support",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert result["outputs"]["mc"] == 1.05
+    assert result["outputs"]["md"] == 1.0
+    assert "Clause 3.3" in result["outputs"]["md_source_reference"]
+    assert any("Md = 1.0" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize("wind_region", ["A2", "B1", "C", "D"])
+def test_mcp_clause_3_3_circular_case_forces_md_one_in_every_region(wind_region: str) -> None:
+    result = calculate_all_wind_variables(
+        wind_region=wind_region,
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="circular_or_polygonal_chimney_tank_or_pole",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert result["outputs"]["md"] == 1.0
+    assert "Clause 3.3" in result["outputs"]["md_source_reference"]
+
+
+@pytest.mark.parametrize("wind_region", ["A2", "B1"])
+def test_mcp_cladding_case_retains_table_3_2_outside_b2_c_d(wind_region: str) -> None:
+    result = calculate_all_wind_variables(
+        wind_region=wind_region,
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="cladding_or_immediate_support",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    expected = get_direction_multipliers(wind_region)["outputs"]["md"]["N"]
+    assert result["outputs"]["md"] == expected
+    assert "Table 3.2(A)" in result["outputs"]["md_source_reference"]
+
+
+def test_mcp_rejects_ambiguous_generic_b_climate_mapping() -> None:
+    with pytest.raises(ValueError, match="B1 or B2"):
+        calculate_climate_change_multiplier("B")
+    with pytest.raises(ValueError, match="B1 or B2"):
+        calculate_all_wind_variables(
+            wind_region="B",
+            ari_years=500,
+            direction="N",
+            wind_direction_multiplier_case="main_structure",
+            terrain_category="TC3",
+            average_roof_height_m=10.0,
+            shielding_parameter=4.5,
+            building_height_m=10.0,
+            feature_type="no significant feature",
+            h_m=0.0,
+            lu_m=0.0,
+            x_m=0.0,
+            site_elevation_m=100.0,
+        )
+
+
+def test_mcp_rejects_generic_region_a_for_exposure_calculations() -> None:
+    calls = [
+        lambda: get_direction_multipliers("A"),
+        lambda: calculate_terrain_height_multiplier("TC3", 10.0, "A"),
+        lambda: calculate_topographic_wind_multiplier(
+            "no significant feature", 0, 0, 0, 10, 10, "A", 100
+        ),
+        lambda: calculate_all_wind_variables(
+            wind_region="A",
+            ari_years=500,
+            direction="N",
+            wind_direction_multiplier_case="circular_or_polygonal_chimney_tank_or_pole",
+            terrain_category="TC3",
+            average_roof_height_m=10.0,
+            shielding_parameter=4.5,
+            building_height_m=10.0,
+            feature_type="no significant feature",
+            h_m=0.0,
+            lu_m=0.0,
+            x_m=0.0,
+            site_elevation_m=100.0,
+        ),
+    ]
+
+    for call in calls:
+        with pytest.raises(ValueError, match="A0, A1, A2, A3, A4, or A5"):
+            call()
+
+
+def test_mcp_combined_uses_average_roof_height_for_shielding_rule() -> None:
+    result = calculate_all_wind_variables(
+        wind_region="A2",
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="main_structure",
+        terrain_category="TC3",
+        average_roof_height_m=20.0,
+        shielding_parameter=1.0,
+        building_height_m=30.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert result["outputs"]["ms"] == pytest.approx(0.7)
+
+
 def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
     result = calculate_shielding_multiplier(1.0, 25.1)
 
@@ -275,8 +511,8 @@ def test_mcp_shielding_for_structure_over_25_m_is_one() -> None:
 @pytest.mark.parametrize(
     ("call", "error"),
     [
-        (lambda: calculate_site_wind_speed(float("nan"), 1, 1, 1, 1), "finite"),
-        (lambda: calculate_site_wind_speed(45, float("inf"), 1, 1, 1), "finite"),
+        (lambda: calculate_site_wind_speed(float("nan"), 1, 1, 1, 1, 1), "finite"),
+        (lambda: calculate_site_wind_speed(45, float("inf"), 1, 1, 1, 1), "finite"),
         (lambda: calculate_terrain_height_multiplier("TC3", float("nan"), "A2"), "finite"),
         (lambda: calculate_shielding_multiplier(float("nan"), 10), "finite"),
         (
@@ -352,8 +588,9 @@ def test_mcp_topographic_tools_block_unresolved_qualifying_geometry() -> None:
             wind_region="A2",
             ari_years=500,
             direction="N",
+            wind_direction_multiplier_case="main_structure",
             terrain_category="TC3",
-            height_m=10.0,
+            average_roof_height_m=10.0,
             shielding_parameter=4.5,
             building_height_m=10.0,
             feature_type="hill",
@@ -364,14 +601,15 @@ def test_mcp_topographic_tools_block_unresolved_qualifying_geometry() -> None:
         )
 
 
-def test_mcp_combined_tool_rejects_reference_height_above_building_height() -> None:
-    with pytest.raises(ValueError, match="Reference height.*building height"):
+def test_mcp_combined_tool_rejects_average_roof_height_above_building_height() -> None:
+    with pytest.raises(ValueError, match="Average roof height.*building height"):
         calculate_all_wind_variables(
             wind_region="A2",
             ari_years=500,
             direction="N",
+            wind_direction_multiplier_case="main_structure",
             terrain_category="TC3",
-            height_m=11.0,
+            average_roof_height_m=11.0,
             shielding_parameter=4.5,
             building_height_m=10.0,
             feature_type="no significant feature",

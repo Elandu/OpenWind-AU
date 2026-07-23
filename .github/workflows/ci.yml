@@ -132,6 +132,7 @@ jobs:
               "openwind_au/data/terrain_height_multipliers.json",
               "openwind_au/errors.py",
               "openwind_au/main.py",
+              "openwind_au/report_lineage.py",
               "openwind_au/result_integrity.py",
               "openwind_au/standard_lookup_tables.py",
               "openwind_au/static/wind_workflow.js",

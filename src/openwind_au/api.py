@@ -11,12 +11,22 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from plotly.offline import get_plotlyjs
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from openwind_au import __version__
 from openwind_au.analysis import run_site_analysis
+from openwind_au.anonymized_reference_validation import (
+    ANONYMIZED_REFERENCE_LATITUDE,
+    ANONYMIZED_REFERENCE_LONGITUDE,
+    AnonymizedReferenceComparisonReport,
+    anonymized_reference_class_overrides,
+    anonymized_reference_osm_footprints,
+    compare_anonymized_reference,
+)
 from openwind_au.calculation_validation import (
     CalculationValidationReport,
     run_calculation_validation_cases,
@@ -24,6 +34,13 @@ from openwind_au.calculation_validation import (
 from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider, configured_dem_provider
 from openwind_au.errors import ServiceNotReadyError
 from openwind_au.geo import geocode_address, geocode_address_suggestions
+from openwind_au.http_security import (
+    BoundedJsonRequestMiddleware,
+    ProductionReadinessMiddleware,
+    SecurityHeadersMiddleware,
+    configured_trusted_hosts,
+    production_mode,
+)
 from openwind_au.models import (
     ApiErrorResponse,
     ApiValidationErrorResponse,
@@ -56,12 +73,6 @@ from openwind_au.obstructions import (
     manual_overrides_from_json,
     parse_manual_overrides_csv,
     run_obstruction_inventory,
-)
-from openwind_au.reference_calc_validation import (
-    ReferenceCalc7989ComparisonReport,
-    compare_reference_calc_7989,
-    reference_calc_7989_class_overrides,
-    reference_calc_7989_osm_footprints,
 )
 from openwind_au.reports import (
     combined_map_html,
@@ -116,13 +127,23 @@ from openwind_au.wind_region import (
     dataset_metadata,
     wind_region_debug,
 )
-from openwind_au.wind_workflow import run_wind_workflow
+from openwind_au.wind_workflow import effective_direction_multiplier_assessment, run_wind_workflow
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
 LOGGER = logging.getLogger(__name__)
 MAX_OBSTRUCTION_IMPORT_BYTES = 1_000_000
+MAX_VALIDATION_ERROR_ITEMS = 50
 DEBUG_ENDPOINTS_ENV = "OPENWIND_ENABLE_DEBUG_ENDPOINTS"
+READINESS_EXEMPT_API_PATHS = (
+    "/api/geocode/suggest",
+    "/api/geocode/resolve",
+    "/api/obstructions/import/csv",
+    "/api/obstructions/import/json",
+    "/api/validation/cases",
+    "/api/terrain-category/validation/cases",
+    "/api/calculation-validation",
+)
 DEPENDENCY_FAILURE_DETAIL = (
     "Required data provider failed; retry the request or inspect the server logs."
 )
@@ -260,6 +281,32 @@ def _log_dependency_failure(exc: RuntimeError) -> None:
     )
 
 
+def _sanitized_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """Return useful validation details without reflecting submitted values."""
+
+    errors = list(exc.errors())
+    sanitized: list[dict[str, Any]] = []
+    for error in errors[:MAX_VALIDATION_ERROR_ITEMS]:
+        raw_location = error.get("loc", ())
+        location = [item if isinstance(item, int) else str(item)[:100] for item in raw_location]
+        sanitized.append(
+            {
+                "type": str(error.get("type", "validation_error"))[:100],
+                "loc": location,
+                "msg": str(error.get("msg", "Invalid request value."))[:500],
+            }
+        )
+    if len(errors) > MAX_VALIDATION_ERROR_ITEMS:
+        sanitized.append(
+            {
+                "type": "too_many_validation_errors",
+                "loc": ["body"],
+                "msg": "Additional validation errors were omitted.",
+            }
+        )
+    return sanitized
+
+
 async def _read_obstruction_import(
     request: Request,
     *,
@@ -304,13 +351,41 @@ async def _read_obstruction_import(
 def create_app() -> FastAPI:
     """Create the FastAPI app."""
 
+    is_production = production_mode()
     app = FastAPI(
         title="OpenWind-AU",
         description=(
             "Preliminary wind site terrain and topographic analysis for Australian buildings."
         ),
         version=__version__,
+        docs_url=None if is_production else "/docs",
+        redoc_url=None if is_production else "/redoc",
+        openapi_url=None if is_production else "/openapi.json",
     )
+
+    app.add_middleware(BoundedJsonRequestMiddleware)
+    if is_production:
+        app.add_middleware(
+            ProductionReadinessMiddleware,
+            readiness_check=readiness_report,
+            exempt_api_paths=READINESS_EXEMPT_API_PATHS,
+        )
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=configured_trusted_hosts(production=is_production),
+        www_redirect=False,
+    )
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        _request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _sanitized_validation_errors(exc)},
+        )
 
     @app.exception_handler(ServiceNotReadyError)
     async def service_not_ready_handler(
@@ -378,7 +453,7 @@ def create_app() -> FastAPI:
         return Response(
             content=get_plotlyjs(),
             media_type="application/javascript",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            headers={"Cache-Control": "public, max-age=0, must-revalidate"},
         )
 
     @app.post(
@@ -905,16 +980,19 @@ def create_app() -> FastAPI:
         return run_calculation_validation_cases()
 
     @app.get(
-        "/api/reference-validation/7989",
-        response_model=ReferenceCalc7989ComparisonReport,
+        "/api/reference-validation/anonymized",
+        response_model=AnonymizedReferenceComparisonReport,
     )
-    def reference_calc_7989_validation(
+    def anonymized_reference_validation(
         apply_reference_overrides: bool = False,
-    ) -> ReferenceCalc7989ComparisonReport:
-        class_overrides = reference_calc_7989_class_overrides() if apply_reference_overrides else []
+    ) -> AnonymizedReferenceComparisonReport:
+        class_overrides = (
+            anonymized_reference_class_overrides() if apply_reference_overrides else []
+        )
         request = WindWorkflowRequest(
-            latitude=-27.520503,
-            longitude=152.936814,
+            site_label="Anonymized Region B1 reference fixture",
+            latitude=ANONYMIZED_REFERENCE_LATITUDE,
+            longitude=ANONYMIZED_REFERENCE_LONGITUDE,
             building_height_m=4.0,
             radius_m=2000,
             obstruction_radius_m=500,
@@ -927,10 +1005,10 @@ def create_app() -> FastAPI:
         obstruction_result = _run_obstruction_inventory_for_site(
             request,
             site_result,
-            footprints=reference_calc_7989_osm_footprints(),
+            footprints=anonymized_reference_osm_footprints(),
         )
         terrain_result = run_terrain_category_evidence(site_result, obstruction_result)
-        return compare_reference_calc_7989(
+        return compare_anonymized_reference(
             site_result=site_result,
             obstruction_result=obstruction_result,
             terrain_result=terrain_result,
@@ -984,7 +1062,7 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
         yield event(
             "site",
             16,
-            "Site resolved; calculating wind region, VR, and Md",
+            "Site resolved; calculating wind region, VR, Mc, and Md",
             {"site_analysis": result_to_json(site_result)},
         )
 
@@ -994,7 +1072,10 @@ def _wind_workflow_stream_events(request: WindWorkflowRequest):
             importance_level=request.importance_level,
             annual_exceedance_probability=request.annual_exceedance_probability,
         )
-        direction_multipliers = direction_multiplier_assessment(wind_region)
+        direction_multipliers = effective_direction_multiplier_assessment(
+            request,
+            direction_multiplier_assessment(wind_region),
+        )
         yield event(
             "wind_inputs",
             30,
