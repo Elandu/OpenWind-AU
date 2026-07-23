@@ -28,6 +28,13 @@ class FlatDEM(DEMProvider):
         return 50.0
 
 
+def test_calculation_basis_lineage_uses_an_immutable_commit() -> None:
+    assert re.fullmatch(
+        r"https://github\.com/Elandu/OpenWind-AU/blob/[0-9a-f]{40}/docs/calculation-basis\.md",
+        CALCULATION_BASIS_URL,
+    )
+
+
 def test_report_helpers_render_outputs() -> None:
     result = run_site_analysis(
         SiteAnalysisRequest(
