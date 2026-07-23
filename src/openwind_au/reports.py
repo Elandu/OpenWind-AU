@@ -32,7 +32,10 @@ from openwind_au.models import (
     WindRegionAssessment,
     WindWorkflowResult,
 )
-from openwind_au.report_lineage import CALCULATION_BASIS_REPORT_TEXT
+from openwind_au.report_lineage import (
+    CALCULATION_BASIS_REPORT_TEXT,
+    CALCULATION_BASIS_URL,
+)
 from openwind_au.shielding import shielding_sector_polygon
 
 HTML_TEMPLATE_ENV = Environment(
@@ -1737,8 +1740,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             ),
         ]
     )
-    if reference := calculation_basis_report_reference():
-        story.append(Paragraph(escape(reference), lineage_style))
+    story.append(Paragraph(_wind_pdf_lineage_reference(), lineage_style))
     doc.build(story, onFirstPage=_draw_wind_pdf_page, onLaterPages=_draw_wind_pdf_page)
     return output.getvalue()
 
@@ -1897,6 +1899,17 @@ def _draw_wind_pdf_page(canvas, doc) -> None:
     canvas.drawRightString(width - 14 * mm, 9 * mm, f"Page {doc.page}")
     canvas.drawString(14 * mm, 9 * mm, "PRELIMINARY - NOT FOR CERTIFICATION")
     canvas.restoreState()
+
+
+def _wind_pdf_lineage_reference() -> str:
+    """Return compact, clickable lineage text for the issued workflow PDF."""
+
+    revision = CALCULATION_BASIS_URL.split("/blob/", maxsplit=1)[1].split("/", maxsplit=1)[0]
+    return (
+        "Calculation basis/data lineage: "
+        f'<link href="{CALCULATION_BASIS_URL}" color="#475467">'
+        f"source snapshot {revision}</link>."
+    )
 
 
 def calculation_basis_report_reference() -> str:

@@ -11,6 +11,7 @@ from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.report_lineage import CALCULATION_BASIS_URL
 from openwind_au.reports import (
+    _wind_pdf_lineage_reference,
     combined_map_html,
     map_html,
     obstruction_map_html,
@@ -32,6 +33,18 @@ def test_calculation_basis_lineage_uses_an_immutable_commit() -> None:
     assert re.fullmatch(
         r"https://github\.com/Elandu/OpenWind-AU/blob/[0-9a-f]{40}/docs/calculation-basis\.md",
         CALCULATION_BASIS_URL,
+    )
+
+
+def test_wind_pdf_lineage_is_compact_clickable_and_immutable() -> None:
+    revision = CALCULATION_BASIS_URL.split("/blob/", maxsplit=1)[1].split("/", maxsplit=1)[0]
+    reference = _wind_pdf_lineage_reference()
+
+    assert f'href="{CALCULATION_BASIS_URL}"' in reference
+    assert f"source snapshot {revision}" in reference
+    assert CALCULATION_BASIS_URL not in reference.replace(
+        f'href="{CALCULATION_BASIS_URL}"',
+        "",
     )
 
 
