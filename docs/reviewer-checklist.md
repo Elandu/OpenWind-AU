@@ -30,6 +30,8 @@ Use this checklist before relying on OpenWind-AU outputs.
 ## Independent Code Work
 
 - Confirm AS/NZS calculations independently.
+- Confirm the selected Clause 3.3 `Md` design case and the B1/B2 wind-region subclassification.
+- Confirm the Clause 3.4/Table 3.3 `Mc` value is included in the Clause 2.2 site-wind product.
 - Confirm the packaged `VR`, `Md`, `Mz,cat`, and `Ms` lookup tables remain tested against
   independently defined AS/NZS 1170.2:2021 expected values and that their review metadata and
   digests are current.

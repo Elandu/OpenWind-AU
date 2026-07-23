@@ -20,6 +20,8 @@ import requests
 from shapely.errors import ShapelyError
 from shapely.geometry import Point, shape
 
+from openwind_au.http_client import APPLICATION_USER_AGENT
+
 MICROSOFT_AUSTRALIA_DATASET_URL = "https://github.com/microsoft/AustraliaBuildingFootprints"
 MICROSOFT_AUSTRALIA_DOWNLOAD_URL = (
     "https://usbuildingdata.blob.core.windows.net/australia-buildings/Australia.geojson.zip"
@@ -286,7 +288,12 @@ def download_indexed_tiles(
                     downloaded.append(target)
                     continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            response = requests.get(url, timeout=60, stream=True)
+            response = requests.get(
+                url,
+                headers={"User-Agent": APPLICATION_USER_AGENT},
+                timeout=60,
+                stream=True,
+            )
             try:
                 response.raise_for_status()
                 response_url = str(getattr(response, "url", url))
@@ -302,7 +309,7 @@ def download_indexed_tiles(
 def microsoft_target_lock(target: Path) -> threading.Lock:
     """Return the process-local lock for an indexed cache target."""
 
-    key = os.path.normcase(os.path.abspath(os.fspath(target)))
+    key = normalized_path_for_comparison(Path(os.path.abspath(os.fspath(target))))
     with MICROSOFT_TARGET_LOCKS_LOCK:
         return MICROSOFT_TARGET_LOCKS.setdefault(key, threading.Lock())
 
@@ -472,7 +479,12 @@ def load_tile_index(cache_root: Path) -> dict[str, Any] | None:
         return None
     if not index_url.lower().startswith("https://"):
         raise ValueError("Microsoft footprint index URLs must use HTTPS")
-    response = requests.get(index_url, timeout=30, stream=True)
+    response = requests.get(
+        index_url,
+        headers={"User-Agent": APPLICATION_USER_AGENT},
+        timeout=30,
+        stream=True,
+    )
     try:
         response.raise_for_status()
         response_url = str(getattr(response, "url", index_url))

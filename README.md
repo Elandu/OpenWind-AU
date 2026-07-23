@@ -24,7 +24,8 @@ certified design tool. Suitable for exploration, review, contribution, and regre
 
 ## What It Does
 
-- Accepts an Australian street address or latitude/longitude.
+- Accepts either an Australian street address or latitude/longitude, with an optional non-geocoded
+  `site_label` for map-selected coordinates.
 - Generates 8-direction terrain profiles: N, NE, E, SE, S, SW, W, and NW.
 - Supports analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Performs conservative rule-based screening for candidate ridge, hill, escarpment, valley, or no
@@ -49,7 +50,7 @@ certified design tool. Suitable for exploration, review, contribution, and regre
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
-- Exposes traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
+- Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
 
 ## What It Does Not Do
 
@@ -90,6 +91,26 @@ Screenshot coverage is tracked in [`docs/screenshots.md`](docs/screenshots.md):
 
 ## Quick Start
 
+If you have a wheel artifact built from this exact commit, install it in a fresh virtual
+environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install .\openwind_au-0.8.0-py3-none-any.whl
+openwind-au --help
+openwind-au-mcp --help
+openwind-au check --json
+openwind-au
+```
+
+`openwind-au check --json` intentionally reports `not_ready` with exit status 1 until the
+production datasets, signing key, and engineering review metadata are configured. That diagnostic
+does not mean the wheel failed to install.
+
+For a development checkout, install from source:
+
 ```bash
 git clone https://github.com/Elandu/OpenWind-AU.git
 cd OpenWind-AU
@@ -118,6 +139,19 @@ The terrain category evidence and legacy site-analysis pages are also available 
 http://127.0.0.1:8000/site-analysis
 http://127.0.0.1:8000/terrain-category
 ```
+
+Before routing production assessment traffic, run the same readiness checks used by `/health`
+without starting a server:
+
+```bash
+openwind-au check
+openwind-au check --json
+```
+
+The command exits with status 0 only when the deployment is ready and status 1 when any required
+dataset, reviewed lookup, digest, signing key, or DEM check fails. A source checkout without the
+project-specific production inputs is expected to report `NOT_READY`. Invalid command-line usage
+exits with status 2.
 
 ## Microsoft Building Footprint Cache
 
@@ -176,6 +210,7 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
+- [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-preliminary-issue-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
 ## API Overview
@@ -202,6 +237,9 @@ GET  /health
 POST /api/geocode/suggest
 POST /api/geocode/resolve
 POST /api/analyse
+POST /api/wind-workflow
+POST /api/wind-workflow/stream
+POST /api/wind-workflow/map
 POST /api/export/json
 POST /api/report/html
 POST /api/report/pdf

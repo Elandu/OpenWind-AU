@@ -5,13 +5,23 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 import openwind_au.api as api_module
-from openwind_au.models import WindVariableAssessment, WindWorkflowRequest
+import openwind_au.wind_workflow as workflow_module
+from openwind_au.models import (
+    WindRegionAssessment,
+    WindVariableAssessment,
+    WindWorkflowRequest,
+    WindWorkflowResult,
+)
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.reports import concise_workflow_warnings
+from openwind_au.wind_inputs import VR_EQUATION_REFERENCE
 from openwind_au.wind_workflow import mark_governing_vsitb, vsitb_directional_rows
 from tests.test_api import FlatDEM, sample_footprints
 
@@ -47,6 +57,21 @@ def sample_overrides() -> list[dict]:
     ]
 
 
+def _pydantic_model_types(annotation):
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        yield annotation
+        return
+    for argument in get_args(annotation):
+        yield from _pydantic_model_types(argument)
+
+
+def _nested_value(payload, path):
+    value = payload
+    for key in path:
+        value = value[key]
+    return value
+
+
 def client(monkeypatch) -> TestClient:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
     monkeypatch.setenv(
@@ -63,6 +88,18 @@ def client(monkeypatch) -> TestClient:
 
     monkeypatch.setattr(api_module, "run_obstruction_inventory", fake_inventory)
     return TestClient(api_module.create_app())
+
+
+def test_workflow_invalid_signing_configuration_returns_service_unavailable(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "too-short")
+
+    response = test_client.post("/api/wind-workflow", json=workflow_payload())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "OPENWIND_RESULT_SIGNING_KEY must contain at least 32 UTF-8 bytes."
+    )
 
 
 def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
@@ -84,8 +121,9 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         "Interactive Wind Map",
         "Map Layers",
         "Assessment Basis",
-        "Directional Site Wind Speed, Vsit,b",
         "Regional Wind Speed, VR",
+        "Climate Change Multiplier, Mc",
+        "Directional Site Wind Speed, Vsit,b",
         "Wind Direction Multiplier, Md",
         "Terrain Category / Mz,cat",
         "Shielding Multiplier, Ms",
@@ -135,6 +173,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
     assert 'data-step="9"' in body
+    assert 'data-step="10"' in body
     assert '<script src="/static/wind_workflow.js?v=' in body
     assert "detail-workspace-active" in script.text
     assert "setIframeHtml(workflowMapFrame, event.data.map_html)" in script.text
@@ -191,7 +230,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Review status" not in body
     assert "Accept</button>" not in body
     assert "Override" not in body
-    assert "Calculated regional speed available for engineering override." in body
+    assert "Calculated regional speed shown once, with an optional engineering override." in body
     assert "Interactive wind assessment map" in body
     assert 'id="workflow-map-frame"' in body
     assert "Terrain Profile Graph" in body
@@ -311,11 +350,13 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     schemas = test_client.get("/openapi.json").json()["components"]["schemas"]
 
     request_properties = schemas["WindWorkflowRequest"]["properties"]
-    result_properties = schemas["WindWorkflowResult-Output"]["properties"]
-    wind_region_properties = schemas["WindRegionAssessment-Output"]["properties"]
+    result_properties = schemas["WindWorkflowResult"]["properties"]
+    wind_region_properties = schemas["PublicWindRegionAssessment"]["properties"]
 
     assert request_properties["assessment_status"]["enum"] == ["draft", "reviewed"]
     assert "reviewed_by" in request_properties
+    assert "average_roof_height_m" in request_properties
+    assert "average_height_m" not in request_properties
     assert "assessment_status" not in result_properties
     assert "reviewed_by" not in result_properties
     assert "engineer_notes" not in result_properties
@@ -342,6 +383,9 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert 'name="reviewed_by"' in page.text
     assert 'id="engineer_notes"' in page.text
     assert 'name="engineer_notes"' in page.text
+    assert 'id="average_roof_height_m"' in page.text
+    assert 'name="average_roof_height_m"' in page.text
+    assert "Average roof height (m)" in page.text
     assert "syncReviewControls();" in script.text
     assert 'assessment_status: data.get("assessment_status") || "draft"' in script.text
     assert "payload.reviewed_by" in script.text
@@ -349,7 +393,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260712-review-controls-1" in page.text
+    assert "20260715-location-contract-2" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -381,7 +425,10 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Profiles" not in response.text
     assert "configured Geoscience Australia 1170.2 GIS dataset" in response.text
     assert "Table 3.1(A)" in response.text
+    assert "Table 3.3" in response.text
     assert "Table 3.2(A)" in response.text
+    assert "Clause 4.2.3 mixed-terrain weighted averaging is not automated" in response.text
+    assert "Clause 4.4.2 most-adverse topographic cross-section" in response.text
     assert "verified_against_standard" not in response.text
     assert "local path" not in response.text
     assert "Overrides Applied" not in response.text
@@ -389,8 +436,40 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Assessment reviewed for test issue." in response.text
     assert "enclosed industrial building" not in response.text
     assert "30 m x 20 m x 10 m" not in response.text
-    assert "Vsit,b = VR x Md x Mz,cat x Ms x Mt" in response.text
+    assert "Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt" in response.text
     assert response.text.count("No final design pressures") == 1
+
+
+def test_cyclonic_coastal_vr_limit_is_prioritized_in_compact_reports(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-20.0,
+            longitude=146.0,
+            wind_region="C",
+            source="test reviewed region",
+            confidence="low",
+            near_boundary=True,
+            warnings=[
+                "Boundary distance requires project review.",
+                "GIS interpretation requires independent confirmation.",
+            ],
+        ),
+    )
+
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
+    report_response = test_client.post("/api/wind-workflow/report/html", json=workflow_payload())
+
+    assert workflow_response.status_code == 200
+    assert report_response.status_code == 200
+    result = WindWorkflowResult.model_validate(workflow_response.json())
+    compact_warnings = concise_workflow_warnings(result, limit=4)
+    assert any("smoothed coastline" in warning for warning in compact_warnings)
+    assert (
+        "Region C distance-based coastal VR interpolation is not automated" in report_response.text
+    )
 
 
 def test_final_issue_status_is_rejected_by_workflow_and_request_report_routes(monkeypatch) -> None:
@@ -482,6 +561,11 @@ def test_completed_result_report_routes_require_valid_server_integrity_token(mon
 
     tampered = json.loads(json.dumps(authentic))
     tampered["directional_vsitb"][0]["final_vsitb"] += 10
+    mc_tampered = json.loads(json.dumps(authentic))
+    mc_variable = next(item for item in mc_tampered["variables"] if item["variable"] == "Mc")
+    mc_variable["final_value"] = 1.05
+    md_source_tampered = json.loads(json.dumps(authentic))
+    md_source_tampered["direction_multiplier_assessment"]["directions"][0]["md"] = 1.0
     unsigned = json.loads(json.dumps(authentic))
     unsigned.pop("integrity_token")
 
@@ -490,12 +574,198 @@ def test_completed_result_report_routes_require_valid_server_integrity_token(mon
         "/api/wind-workflow/result/report/pdf",
     ):
         tampered_response = test_client.post(path, json=tampered)
+        mc_tampered_response = test_client.post(path, json=mc_tampered)
+        md_source_tampered_response = test_client.post(path, json=md_source_tampered)
         unsigned_response = test_client.post(path, json=unsigned)
 
         assert tampered_response.status_code == 422
         assert "inconsistent" in tampered_response.text.lower()
+        assert mc_tampered_response.status_code == 422
+        assert "inconsistent" in mc_tampered_response.text.lower()
+        assert md_source_tampered_response.status_code == 422
+        assert "direction multiplier assessment" in md_source_tampered_response.text.lower()
+        assert "inconsistent" in md_source_tampered_response.text.lower()
         assert unsigned_response.status_code == 422
         assert "missing" in unsigned_response.text.lower()
+
+
+def test_completed_result_routes_reject_retired_generic_region_and_mandatory_ms_state(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+
+    generic_region = json.loads(json.dumps(authentic))
+    generic_region["wind_region_assessment"]["wind_region"] = "A"
+    high_reference_height = json.loads(json.dumps(authentic))
+    high_reference_height["input"]["building_height_m"] = 30.0
+    high_reference_height["input"]["average_roof_height_m"] = 30.0
+    for item in high_reference_height["variables"]:
+        if item["variable"] == "Ms":
+            item["recommended_value"] = 0.8
+            item["calculated_value"] = 0.8
+            item["final_value"] = 0.8
+    for row in high_reference_height["directional_vsitb"]:
+        row["ms"] = 0.8
+    a0_mzcat = json.loads(json.dumps(authentic))
+    a0_mzcat["wind_region_assessment"]["wind_region"] = "A0"
+    a0_mzcat["regional_wind_speed_assessment"]["wind_region"] = "A0"
+    a0_mzcat["direction_multiplier_assessment"]["wind_region"] = "A0"
+
+    for path in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        generic_response = test_client.post(path, json=generic_region)
+        ms_response = test_client.post(path, json=high_reference_height)
+        a0_response = test_client.post(path, json=a0_mzcat)
+
+        assert generic_response.status_code == 422
+        assert "ambiguous wind region A" in generic_response.text
+        assert ms_response.status_code == 422
+        assert "Clause 4.3.1 mandatory Ms assessment is inconsistent" in ms_response.text
+        assert a0_response.status_code == 422
+        assert "Region A0 mandatory Mz,cat assessment is inconsistent" in a0_response.text
+
+
+def test_completed_result_model_graph_is_strict_and_has_no_excluded_payload_fields() -> None:
+    """Keep every accepted completed-result field inside the canonical signed projection."""
+
+    models = {WindWorkflowResult}
+    pending = [WindWorkflowResult]
+    while pending:
+        model = pending.pop()
+        for field in model.model_fields.values():
+            nested = list(_pydantic_model_types(field.annotation))
+            for nested_model in nested:
+                if nested_model not in models:
+                    models.add(nested_model)
+                    pending.append(nested_model)
+
+    for model in models:
+        assert model.model_config.get("extra") == "forbid", model.__name__
+        assert model.model_config.get("strict") is True, model.__name__
+        assert not {name for name, field in model.model_fields.items() if field.exclude is True}, (
+            model.__name__
+        )
+
+
+def test_completed_result_report_routes_reject_unknown_nested_fields(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload() | {"workflow_overrides": sample_overrides()},
+    )
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+    nested_paths = (
+        ("site",),
+        ("wind_region_assessment",),
+        ("regional_wind_speed_assessment",),
+        ("direction_multiplier_assessment",),
+        ("direction_multiplier_assessment", "directions", 0),
+        ("variables", 0),
+        ("directional_vsitb", 0),
+        ("input", "workflow_overrides", 0),
+    )
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        for path in nested_paths:
+            tampered = json.loads(json.dumps(authentic))
+            target = _nested_value(tampered, path)
+            target["unexpected_nested_field"] = "must not be discarded"
+
+            response = test_client.post(route, json=tampered)
+
+            assert response.status_code == 422
+            assert "Extra inputs are not permitted" in response.text
+
+
+def test_completed_result_report_routes_reject_null_core_assessments(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+
+    for field in (
+        "wind_region_assessment",
+        "regional_wind_speed_assessment",
+        "direction_multiplier_assessment",
+    ):
+        tampered = json.loads(json.dumps(authentic))
+        tampered[field] = None
+
+        for route in (
+            "/api/wind-workflow/result/report/html",
+            "/api/wind-workflow/result/report/pdf",
+        ):
+            response = test_client.post(route, json=tampered)
+            assert response.status_code == 422
+            assert field in response.text
+
+
+def test_completed_result_report_routes_reject_internal_region_polygon_tampering(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    authentic = workflow.json()
+    authentic_token = authentic["integrity_token"]
+    assert "region_polygon" not in authentic["wind_region_assessment"]
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        tampered = json.loads(json.dumps(authentic))
+        tampered["wind_region_assessment"]["region_polygon"] = {
+            "type": "Point",
+            "coordinates": [0, 0],
+        }
+        assert tampered["integrity_token"] == authentic_token
+
+        response = test_client.post(route, json=tampered)
+
+        assert response.status_code == 422
+        assert "region_polygon" in response.text
+        assert "Extra inputs are not permitted" in response.text
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("site", "latitude"), "-33.86"),
+        (("variables", 0, "final_value"), "45.0"),
+        (("variables", 0, "is_overridden"), 0),
+        (("directional_vsitb", 0, "is_governing"), 1),
+    ],
+)
+def test_completed_result_report_routes_reject_coercible_representations(
+    monkeypatch,
+    path,
+    replacement,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    tampered = workflow.json()
+    parent = _nested_value(tampered, path[:-1])
+    parent[path[-1]] = replacement
+
+    for route in (
+        "/api/wind-workflow/result/report/html",
+        "/api/wind-workflow/result/report/pdf",
+    ):
+        response = test_client.post(route, json=tampered)
+
+        assert response.status_code == 422
+        assert "Input should be" in response.text
 
 
 def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> None:
@@ -630,7 +900,7 @@ def test_wind_workflow_stream_sends_incremental_stage_payloads(monkeypatch) -> N
         "complete",
     ]
     assert "Resolving site location and elevation" in labels
-    assert "Site resolved; calculating wind region, VR, and Md" in labels
+    assert "Site resolved; calculating wind region, VR, Mc, and Md" in labels
     assert "Wind inputs calculated; building obstruction inventory" in labels
     assert "Obstructions analysed; calculating terrain category and Mz,cat" in labels
     assert "Terrain and Mz,cat calculated; calculating directional Vsit,b" in labels
@@ -641,6 +911,24 @@ def test_wind_workflow_stream_sends_incremental_stage_payloads(monkeypatch) -> N
     assert events[4]["data"]["terrain_category_evidence"]["mzcat_assessment"]
     assert events[5]["data"]["workflow"]["governing_direction"] is not None
     assert "L.control.layers" in events[6]["data"]["map_html"]
+
+
+def test_wind_workflow_stream_uses_effective_clause_3_3_md_values(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "wind_direction_multiplier_case": "circular_or_polygonal_chimney_tank_or_pole"
+    }
+
+    with test_client.stream("POST", "/api/wind-workflow/stream", json=payload) as response:
+        assert response.status_code == 200
+        events = [json.loads(line) for line in response.iter_lines() if line]
+
+    wind_inputs = next(event for event in events if event["stage"] == "wind_inputs")["data"]
+    assessment = wind_inputs["direction_multiplier_assessment"]
+    workflow = next(event for event in events if event["stage"] == "workflow")["data"]["workflow"]
+    assert "Clause 3.3" in assessment["source_table"]
+    assert {row["md"] for row in assessment["directions"]} == {1.0}
+    assert workflow["direction_multiplier_assessment"] == assessment
 
 
 def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
@@ -655,6 +943,7 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
     assert body["regional_wind_speed_assessment"]["vr_serv"] == 37.0
     assert len(body["direction_multiplier_assessment"]["directions"]) == 8
     vr = next(item for item in body["variables"] if item["variable"] == "VR")
+    mc = next(item for item in body["variables"] if item["variable"] == "Mc")
     md_north = next(
         item for item in body["variables"] if item["variable"] == "Md" and item["direction"] == "N"
     )
@@ -664,9 +953,12 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
         if item["variable"] == "Mzcat" and item["direction"] == "N"
     )
     assert vr["detail_label"] == "Show source"
-    assert "regional wind speed lookup table" in vr["source_reference"]
+    assert vr["source_reference"] == VR_EQUATION_REFERENCE
     assert vr["final_value"] == 45.0
     assert vr["calculated_value"] == 45.0
+    assert mc["direction"] is None
+    assert mc["final_value"] == 1.0
+    assert "Table 3.3" in mc["source_reference"]
     assert md_north["detail_label"] == "Show source"
     assert "Direction: N" in md_north["detail_items"]
     assert md_north["final_value"] == 0.85
@@ -693,6 +985,8 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
     assert all(variable["final_value"] is not None for variable in body["variables"])
     assert all("review_status" not in variable for variable in body["variables"])
     assert all("review_status" not in row for row in body["directional_vsitb"])
+    assert any("Clause 4.2.3 mixed-terrain" in warning for warning in body["warnings"])
+    assert any("Clause 4.4.2 most-adverse" in warning for warning in body["warnings"])
 
 
 def test_reasoned_override_values_propagate_to_workflow(monkeypatch) -> None:
@@ -766,6 +1060,15 @@ def test_invalid_or_duplicate_override_scopes_are_rejected(monkeypatch) -> None:
                 }
             ]
         },
+        {
+            "workflow_overrides": [
+                {
+                    "variable": "Mc",
+                    "override_value": 1.05,
+                    "reason": "invalid",
+                }
+            ]
+        },
         {"workflow_overrides": [{"variable": "Md", "override_value": 1, "reason": "invalid"}]},
         {"class_multiplier_overrides": [{"direction": "N", "ms": 0.9, "reason": "invalid"}]},
         {"class_multiplier_overrides": [{"direction": "N", "reason": "invalid"}]},
@@ -781,6 +1084,176 @@ def test_invalid_or_duplicate_override_scopes_are_rejected(monkeypatch) -> None:
         response = test_client.post("/api/wind-workflow", json=workflow_payload() | invalid)
 
         assert response.status_code == 422
+
+
+@pytest.mark.parametrize("override_kind", ["workflow", "class"])
+def test_high_reference_height_rejects_ms_overrides_in_every_direction(
+    monkeypatch,
+    override_kind: str,
+) -> None:
+    test_client = client(monkeypatch)
+    directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    payload = workflow_payload() | {
+        "building_height_m": 30.0,
+        "average_roof_height_m": 30.0,
+    }
+    if override_kind == "workflow":
+        payload["workflow_overrides"] = [
+            {
+                "variable": "Ms",
+                "direction": direction,
+                "override_value": 0.7,
+                "reason": "Attempted reviewed shielding override above the height limit.",
+            }
+            for direction in directions
+        ]
+    else:
+        payload["class_multiplier_overrides"] = [
+            {
+                "direction": direction,
+                "shielding_class": "FS",
+                "ms": 0.7,
+                "reason": "Attempted reviewed shielding class above the height limit.",
+            }
+            for direction in directions
+        ]
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 400
+    assert "Clause 4.3.1 requires Ms = 1.0" in response.text
+    assert "numeric Ms overrides are not permitted" in response.text
+
+
+def test_ms_override_remains_available_at_exact_25_m_reference_height(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "building_height_m": 25.0,
+        "average_roof_height_m": 25.0,
+        "workflow_overrides": [
+            {
+                "variable": "Ms",
+                "direction": "N",
+                "override_value": 0.9,
+                "reason": "Reviewed shielding override at the Clause 4.3.1 height boundary.",
+            }
+        ],
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    north = next(
+        item
+        for item in response.json()["variables"]
+        if item["variable"] == "Ms" and item["direction"] == "N"
+    )
+    assert north["final_value"] == 0.9
+    assert north["is_overridden"] is True
+
+
+@pytest.mark.parametrize("override_kind", ["workflow", "class"])
+def test_region_a0_rejects_numeric_mzcat_overrides_in_every_direction(
+    monkeypatch,
+    override_kind: str,
+) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-33.86,
+            longitude=151.21,
+            wind_region="A0",
+            source="test reviewed region",
+            confidence="high",
+        ),
+    )
+    directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    payload = workflow_payload()
+    if override_kind == "workflow":
+        payload["workflow_overrides"] = [
+            {
+                "variable": "Mzcat",
+                "direction": direction,
+                "override_value": 0.5,
+                "reason": "Attempted numeric override of the Region A0 rule.",
+            }
+            for direction in directions
+        ]
+    else:
+        payload["class_multiplier_overrides"] = [
+            {
+                "direction": direction,
+                "terrain_category": "TC4",
+                "mzcat": 0.5,
+                "reason": "Attempted class override of the Region A0 rule.",
+            }
+            for direction in directions
+        ]
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 400
+    assert "Region A0 Table 4.1 Mz,cat is terrain-independent and mandatory" in response.text
+    assert "numeric Mz,cat overrides are not permitted" in response.text
+
+
+def test_region_a0_allows_terrain_class_provenance_without_numeric_override(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-33.86,
+            longitude=151.21,
+            wind_region="A0",
+            source="test reviewed region",
+            confidence="high",
+        ),
+    )
+    payload = workflow_payload() | {
+        "class_multiplier_overrides": [
+            {
+                "direction": "N",
+                "terrain_category": "TC4",
+                "reason": "Terrain class retained for evidence only in Region A0.",
+            }
+        ]
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    mzcat_values = {
+        item["final_value"] for item in response.json()["variables"] if item["variable"] == "Mzcat"
+    }
+    assert mzcat_values == {1.0}
+
+
+def test_numeric_class_override_preserves_standard_calculated_value(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "class_multiplier_overrides": [
+            {
+                "direction": "N",
+                "terrain_category": "TC3",
+                "mzcat": 0.9,
+                "reason": "Reviewed numeric Mz,cat supplied for comparison.",
+            }
+        ]
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    north = next(
+        item
+        for item in response.json()["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert north["final_value"] == 0.9
+    assert north["calculated_value"] != north["final_value"]
 
 
 def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> None:
@@ -871,7 +1344,7 @@ def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
         "building_width_m": 4,
         "building_length_m": 5,
         "roof_pitch_deg": 15,
-        "average_height_m": 3,
+        "average_roof_height_m": 3,
         "base_rl_m": 0,
     }
 
@@ -886,6 +1359,8 @@ def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     assert body["input"]["roof_shape"] == "gable"
     assert body["input"]["building_width_m"] == 4
     assert body["input"]["building_length_m"] == 5
+    assert body["input"]["average_roof_height_m"] == 3
+    assert "average_height_m" not in body["input"]
     assert body["input"]["base_rl_m"] == 0
     assert report.status_code == 200
     assert "OW-2026-018" in report.text
@@ -915,6 +1390,7 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
     assert all(row["final_vsitb"] is not None for row in body["directional_vsitb"])
     assert {item["variable"] for item in body["variables"] if item["direction"] in {None, "N"}} >= {
         "VR",
+        "Mc",
         "Md",
         "Mzcat",
         "Ms",
@@ -930,9 +1406,116 @@ def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
     assert "schema_version=1" in mzcat_source and "values_sha256=" in mzcat_source
     assert "schema_version=1" in ms_source and "values_sha256=" in ms_source
     for row in body["directional_vsitb"]:
-        expected = row["vr"] * row["md"] * row["mzcat"] * row["ms"] * row["mt"]
+        expected = row["vr"] * row["mc"] * row["md"] * row["mzcat"] * row["ms"] * row["mt"]
         assert row["recommended_vsitb"] == pytest.approx(expected)
         assert row["final_vsitb"] == pytest.approx(expected)
+
+
+def test_b2_workflow_applies_table_3_3_mc_and_clause_3_3_cladding_md(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    b2_site = workflow_payload() | {"latitude": -20.30, "longitude": 148.70}
+
+    main_response = test_client.post("/api/wind-workflow", json=b2_site)
+    cladding_response = test_client.post(
+        "/api/wind-workflow",
+        json=b2_site | {"wind_direction_multiplier_case": "cladding_or_immediate_support"},
+    )
+
+    assert main_response.status_code == 200
+    assert cladding_response.status_code == 200
+    main = main_response.json()
+    cladding = cladding_response.json()
+    mc = next(item for item in main["variables"] if item["variable"] == "Mc")
+    main_north = next(row for row in main["directional_vsitb"] if row["direction"] == "N")
+    cladding_north = next(row for row in cladding["directional_vsitb"] if row["direction"] == "N")
+
+    assert mc["direction"] is None
+    assert mc["final_value"] == 1.05
+    assert main_north["mc"] == 1.05
+    assert main_north["md"] == 0.9
+    assert cladding_north["md"] == 1.0
+    assert cladding_north["recommended_vsitb"] == pytest.approx(
+        main_north["recommended_vsitb"] / 0.9
+    )
+    cladding_md = [item for item in cladding["variables"] if item["variable"] == "Md"]
+    assert all(item["final_value"] == 1.0 for item in cladding_md)
+    assert all("Clause 3.3" in item["source_reference"] for item in cladding_md)
+    effective_assessment = cladding["direction_multiplier_assessment"]
+    assert effective_assessment["source_table"] == "AS/NZS 1170.2:2021 Clause 3.3"
+    assert effective_assessment["highest_md"] == 1.0
+    assert effective_assessment["governing_directions"] == [
+        "N",
+        "NE",
+        "E",
+        "SE",
+        "S",
+        "SW",
+        "W",
+        "NW",
+    ]
+    assert all(row["md"] == 1.0 for row in effective_assessment["directions"])
+
+
+def test_a2_clause_3_3_design_cases_are_applied_only_when_required(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    circular = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {"wind_direction_multiplier_case": "circular_or_polygonal_chimney_tank_or_pole"},
+    )
+    cladding = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {"wind_direction_multiplier_case": "cladding_or_immediate_support"},
+    )
+
+    assert circular.status_code == 200
+    assert cladding.status_code == 200
+    circular_body = circular.json()
+    cladding_body = cladding.json()
+    assert all(row["md"] == 1.0 for row in circular_body["directional_vsitb"])
+    assert "Clause 3.3" in circular_body["direction_multiplier_assessment"]["source_table"]
+    assert [
+        row["md"] for row in cladding_body["direction_multiplier_assessment"]["directions"]
+    ] == [
+        0.85,
+        0.75,
+        0.85,
+        0.95,
+        0.95,
+        0.95,
+        1.0,
+        0.95,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("region", "required_subregion"),
+    [("A", "A0, A1, A2, A3, A4, or A5"), ("B", "B1 or B2")],
+)
+def test_workflow_rejects_ambiguous_generic_region(
+    monkeypatch,
+    region: str,
+    required_subregion: str,
+) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-33.86,
+            longitude=151.21,
+            wind_region=region,
+            source="test reviewed region",
+            confidence="high",
+        ),
+    )
+
+    response = test_client.post("/api/wind-workflow", json=workflow_payload())
+
+    assert response.status_code == 400
+    assert "ambiguous" in response.text.lower()
+    assert required_subregion in response.text
 
 
 def test_full_precision_product_controls_governing_direction_before_display_rounding() -> None:
@@ -952,7 +1535,7 @@ def test_full_precision_product_controls_governing_direction_before_display_roun
             calculation_result="test input",
         )
 
-    variables = [variable("VR", None, 1.0)]
+    variables = [variable("VR", None, 1.0), variable("Mc", None, 1.0)]
     for direction, md in (("N", 0.900040), ("NE", 0.900049)):
         variables.extend(
             [
@@ -978,7 +1561,7 @@ def test_average_height_cannot_exceed_overall_building_height() -> None:
             latitude=-33.86,
             longitude=151.21,
             building_height_m=10.0,
-            average_height_m=10.1,
+            average_roof_height_m=10.1,
             radius_m=500,
         )
 

@@ -18,7 +18,7 @@ OpenWind-AU also accepts structured building inputs for review workflows:
 - structure class: `building`, `house`, `monopole`, `tower`, or `other`;
 - orientation from `-90` to `90` degrees;
 - roof shape: `gable`, `hip`, or `monoslope`;
-- width, length, roof pitch, average height, and base RL.
+- width, length, roof pitch, average roof height, and base RL.
 
 ## 2. Terrain Profiles
 
@@ -121,10 +121,26 @@ and topographic classes are project/reference provenance rather than AS/NZS 1170
 a class alone does not invent an `Ms` or `Mt`; provide the reviewed numeric value when it should
 replace the Clause 4.3 or 4.4 calculation. Only one class override entry is accepted per direction.
 
-Direct reviewed variable values use `workflow_overrides`. `VR` is non-directional and must omit
-`direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` require a direction. Duplicate
-variable/direction pairs are rejected. Each entry requires `variable`, `override_value`, and
+Direct reviewed variable values use `workflow_overrides`. `VR` is non-directional and
+must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` require a direction. Duplicate
+variable/direction pairs are rejected. `Mc` is deterministic and cannot be overridden. Each entry requires `variable`, `override_value`, and
 `reason`, with an optional display `label`.
+
+The visible `wind_direction_multiplier_case` input distinguishes main-structure calculations from
+cladding/immediate-support and circular/polygonal chimney, tank or pole cases. The workflow
+enforces the mandatory Clause 3.3 `Md = 1.0` cases, selects one non-directional `Mc` from Clause
+3.4/Table 3.3, and calculates `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`.
+
+`average_roof_height_m` is the common AS/NZS reference height used for `Mz,cat`,
+shielding-height checks, and `Mt`. It defaults to `building_height_m` when omitted.
+The legacy request alias `average_height_m` is accepted only for migration; normalized
+workflow inputs use `average_roof_height_m`.
+
+Mandatory standard values remain fail-closed. Region A0 uses its terrain-independent Table 4.1
+Mz,cat value even when a terrain class is recorded for provenance, and numeric Mz,cat overrides are
+rejected. When average roof height h exceeds 25 m, Clause 4.3.1 requires Ms = 1.0 and numeric Ms
+overrides are rejected. Calculated values remain separate from reviewed override values in the
+result audit trail.
 
 The wind workflow request rejects unknown fields. Legacy fields that previously appeared to
 override a result but were ignored—`wind_region`, `regional_wind_speed_mps`,

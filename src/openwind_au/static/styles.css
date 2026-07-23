@@ -443,6 +443,36 @@ main {
   gap: 10px;
 }
 
+.primary-control-grid > label,
+.primary-control-grid input,
+.primary-control-grid select {
+  min-width: 0;
+}
+
+.primary-control-grid input,
+.primary-control-grid select {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.assessment-basis-variable-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.assessment-basis-variable {
+  min-width: 0;
+  border-top: 1px solid var(--panel-border);
+  padding-top: 10px;
+}
+
+.assessment-basis-variable h3 {
+  margin: 0 0 5px;
+  font-size: 0.96rem;
+}
+
 .map-summary-card {
   overflow: auto;
   max-height: 260px;
@@ -479,6 +509,49 @@ main {
 
 .map-coordinate-readout {
   min-width: 210px;
+}
+
+.map-nudge-control {
+  display: grid;
+  gap: 3px;
+  justify-items: center;
+}
+
+.map-nudge-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  grid-template-rows: repeat(3, 24px);
+  gap: 2px;
+}
+
+.map-nudge-buttons button {
+  min-width: 28px;
+  min-height: 24px;
+  margin: 0;
+  border-radius: 4px;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.map-nudge-buttons button:nth-child(1) {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.map-nudge-buttons button:nth-child(2) {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.map-nudge-buttons button:nth-child(3) {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.map-nudge-buttons button:nth-child(4) {
+  grid-column: 2;
+  grid-row: 3;
 }
 
 .map-toolbar strong,
@@ -1396,9 +1469,22 @@ iframe {
   }
 
   .dashboard-project {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 8px 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .dashboard-project .dashboard-inline-field,
+  .dashboard-address-field,
+  .address-autocomplete {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: none;
+  }
+
+  .dashboard-chevron {
+    display: none;
   }
 
   .dashboard-inline-input {
@@ -1407,12 +1493,19 @@ iframe {
   }
 
   .dashboard-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    box-sizing: border-box;
     width: 100%;
     max-width: none;
   }
 
   .dashboard-kpis > div {
+    min-width: 0;
     padding: 8px;
+  }
+
+  .dashboard-kpis strong {
+    overflow-wrap: anywhere;
   }
 
   .workflow-progress {

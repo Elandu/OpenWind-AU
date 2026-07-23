@@ -32,6 +32,10 @@ from openwind_au.models import (
     WindRegionAssessment,
     WindWorkflowResult,
 )
+from openwind_au.report_lineage import (
+    CALCULATION_BASIS_REPORT_TEXT,
+    CALCULATION_BASIS_URL,
+)
 from openwind_au.shielding import shielding_sector_polygon
 
 HTML_TEMPLATE_ENV = Environment(
@@ -40,10 +44,6 @@ HTML_TEMPLATE_ENV = Environment(
 
 DEFAULT_MAP_DISPLAY_LIMIT = 500
 MAX_POLYGON_GEOJSON_PAYLOAD_BYTES = 2_500_000
-CALCULATION_BASIS_DOC_PATH = Path("docs/calculation-basis.md")
-CALCULATION_BASIS_REPORT_TEXT = (
-    "Calculation basis and data lineage reference: docs/calculation-basis.md."
-)
 MAP_ASSET_URL_REPLACEMENTS = {
     "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js": (
         "/static/vendor/leaflet/leaflet.js"
@@ -1498,6 +1498,7 @@ def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
         result=result,
         report_warnings=concise_workflow_warnings(result),
         basis_summary=_wind_report_basis(result),
+        mc_value=_wind_report_variable_value(result, "Mc"),
         calculation_basis_reference=calculation_basis_report_reference(),
     )
 
@@ -1529,12 +1530,26 @@ def concise_workflow_warnings(result: WindWorkflowResult, limit: int = 6) -> lis
             continue
         seen.add(cleaned)
         warnings.append(cleaned)
+    warnings.sort(key=_workflow_warning_priority)
     if len(warnings) <= limit:
         return warnings
     return [
         *warnings[:limit],
         f"{len(warnings) - limit} additional warning(s) remain in the workflow diagnostics.",
     ]
+
+
+def _workflow_warning_priority(warning: str) -> int:
+    """Keep applicable normative limitations visible in compact issued reports."""
+
+    normalized = warning.lower()
+    if "coastal vr interpolation" in normalized or "smoothed coastline" in normalized:
+        return 0
+    if "clause 4.2.3 mixed-terrain" in normalized:
+        return 1
+    if "clause 4.4.2 most-adverse" in normalized:
+        return 2
+    return 3
 
 
 def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
@@ -1586,6 +1601,18 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         leading=9.5,
         textColor=colors.HexColor("#667085"),
     )
+    compact_body_style = ParagraphStyle(
+        "WindReportCompactBody",
+        parent=body_style,
+        spaceAfter=0.5 * mm,
+    )
+    lineage_style = ParagraphStyle(
+        "WindReportLineage",
+        parent=muted_style,
+        fontSize=7,
+        leading=8.5,
+        spaceAfter=0,
+    )
     story = [
         Paragraph("OpenWind-AU Site Wind Assessment", title_style),
         Paragraph("<b>PRELIMINARY - NOT FOR CERTIFICATION</b>", body_style),
@@ -1598,7 +1625,13 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     ]
     region = result.wind_region_assessment
     speed = result.regional_wind_speed_assessment
-    site_label = result.input.address or result.site.display_name or "Not supplied"
+    mc_value = _wind_report_variable_value(result, "Mc")
+    site_label = (
+        result.input.address
+        or result.input.site_label
+        or result.site.display_name
+        or "Not supplied"
+    )
     summary_rows = [
         ["Project", result.input.project_number or "Not supplied"],
         ["Assessment status", _wind_report_status(result)],
@@ -1609,19 +1642,21 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             f"(RL {result.site.ground_elevation_m:.2f} m)",
         ],
         ["Building", _wind_report_building_summary(result)],
+        ["Md design case", _wind_report_md_case(result.input.wind_direction_multiplier_case)],
         ["Wind region", region.wind_region if region else "Not available"],
         ["AEP / ARI", result.input.annual_exceedance_probability],
         [
             "VR,ult",
             f"{speed.vr_ult:.1f} m/s" if speed and speed.vr_ult is not None else "Not available",
         ],
+        ["Mc", _report_number(mc_value)],
         ["Governing result", _wind_report_governing_summary(result)],
     ]
     story.append(_wind_pdf_table(summary_rows, [38 * mm, 140 * mm], header=False))
     story.extend(
         [
             Paragraph("Directional site wind speeds", section_style),
-            Paragraph("Vsit,b = VR x Md x Mz,cat x Ms x Mt", muted_style),
+            Paragraph("Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt", muted_style),
         ]
     )
     direction_rows = [["Dir.", "Md", "Mz,cat", "Ms", "Mt", "Vsit,b"]]
@@ -1646,7 +1681,9 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             },
         )
     )
-    warnings = concise_workflow_warnings(result)
+    # Keep the issued PDF to a compact engineering-review summary. The HTML
+    # report and workflow diagnostics retain the broader warning set.
+    warnings = concise_workflow_warnings(result, limit=4)
     if (
         warnings
         or result.input.workflow_overrides
@@ -1656,7 +1693,9 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         story.append(Paragraph("Review items", section_style))
     if warnings:
         story.append(Paragraph("Warnings", body_style))
-        story.extend(Paragraph(f"- {escape(str(warning))}", body_style) for warning in warnings)
+        story.extend(
+            Paragraph(f"- {escape(str(warning))}", compact_body_style) for warning in warnings
+        )
     if result.input.workflow_overrides or result.input.class_multiplier_overrides:
         story.append(Paragraph("Overrides", body_style))
         override_rows = [["Variable", "Direction", "Value", "Reason"]]
@@ -1701,8 +1740,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             ),
         ]
     )
-    if reference := calculation_basis_report_reference():
-        story.append(Paragraph(escape(reference), muted_style))
+    story.append(Paragraph(_wind_pdf_lineage_reference(), lineage_style))
     doc.build(story, onFirstPage=_draw_wind_pdf_page, onLaterPages=_draw_wind_pdf_page)
     return output.getvalue()
 
@@ -1742,11 +1780,46 @@ def _wind_report_status(result: WindWorkflowResult) -> str:
     return "Draft preliminary"
 
 
+def _wind_report_md_case(value: str) -> str:
+    return {
+        "main_structure": "Main structure",
+        "cladding_or_immediate_support": "Cladding / immediate support",
+        "circular_or_polygonal_chimney_tank_or_pole": ("Circular/polygonal chimney, tank or pole"),
+    }.get(value, value.replace("_", " "))
+
+
 def _wind_report_basis(result: WindWorkflowResult) -> str:
+    md_clause = (
+        "Clause 3.3 mandatory value"
+        if any(
+            item.variable == "Md" and "Clause 3.3" in item.source_reference
+            for item in result.variables
+        )
+        else "Table 3.2(A)"
+    )
+    coastal_basis = ""
+    if result.wind_region_assessment.wind_region in {"C", "D"}:
+        coastal_basis = (
+            f" Region {result.wind_region_assessment.wind_region} distance-based coastal VR "
+            "interpolation is not automated and requires independent engineering review."
+        )
     return (
         "Wind region: configured Geoscience Australia 1170.2 GIS dataset. "
-        "VR: AS/NZS 1170.2:2021 Table 3.1(A). Md: Table 3.2(A). "
+        "VR: AS/NZS 1170.2:2021 Table 3.1(A). Mc: Clause 3.4 and Table 3.3. "
+        f"Md: {md_clause}. "
         "Mz,cat: Table 4.1. Ms: Clause 4.3 and Table 4.2. Mt: Clause 4.4."
+        f"{coastal_basis}"
+    )
+
+
+def _wind_report_variable_value(result: WindWorkflowResult, variable: str) -> float | None:
+    return next(
+        (
+            item.final_value
+            for item in result.variables
+            if item.variable == variable and item.direction is None
+        ),
+        None,
     )
 
 
@@ -1828,13 +1901,21 @@ def _draw_wind_pdf_page(canvas, doc) -> None:
     canvas.restoreState()
 
 
-def calculation_basis_report_reference() -> str | None:
-    """Return the calculation-basis report note when the docs file is available."""
+def _wind_pdf_lineage_reference() -> str:
+    """Return compact, clickable lineage text for the issued workflow PDF."""
 
-    repo_root = Path(__file__).resolve().parents[2]
-    if (repo_root / CALCULATION_BASIS_DOC_PATH).exists():
-        return CALCULATION_BASIS_REPORT_TEXT
-    return None
+    revision = CALCULATION_BASIS_URL.split("/blob/", maxsplit=1)[1].split("/", maxsplit=1)[0]
+    return (
+        "Calculation basis/data lineage: "
+        f'<link href="{CALCULATION_BASIS_URL}" color="#475467">'
+        f"source snapshot {revision}</link>."
+    )
+
+
+def calculation_basis_report_reference() -> str:
+    """Return a version-pinned calculation-basis reference in every installation."""
+
+    return CALCULATION_BASIS_REPORT_TEXT
 
 
 def terrain_category_map_html(
@@ -3107,7 +3188,12 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         </tr>
         <tr>
           <th>Site</th>
-          <td>{{ (result.input.address or result.site.display_name or "Not supplied")|e }}</td>
+          <td>{{ (
+            result.input.address
+            or result.input.site_label
+            or result.site.display_name
+            or "Not supplied"
+          )|e }}</td>
         </tr>
         <tr>
           <th>Coordinates / RL</th>
@@ -3131,6 +3217,10 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         </tr>
         <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability|e }}</td></tr>
         <tr>
+          <th>Md design case</th>
+          <td>{{ result.input.wind_direction_multiplier_case|replace("_", " ")|e }}</td>
+        </tr>
+        <tr>
           <th>Wind region</th>
           <td>
             {{ result.wind_region_assessment.wind_region
@@ -3147,6 +3237,10 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           </td>
         </tr>
         <tr>
+          <th>Mc</th>
+          <td>{{ "%.3f"|format(mc_value) if mc_value is not none else "Not available" }}</td>
+        </tr>
+        <tr>
           <th>Governing result</th>
           <td>
             {% if result.governing_vsitb is not none %}
@@ -3159,7 +3253,9 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
 
     <section>
       <h2>Directional site wind speeds</h2>
-      <p class="note">Vsit,b = VR x Md x Mz,cat x Ms x Mt. The governing row is highlighted.</p>
+      <p class="note">
+        Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt. The governing row is highlighted.
+      </p>
       <table>
         <tr><th>Direction</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th><th>Vsit,b</th></tr>
         {% for row in result.directional_vsitb %}

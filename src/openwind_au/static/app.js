@@ -24,6 +24,27 @@ const obstructionQualityTable = document.getElementById("obstruction-quality-tab
 let reviewedObstructions = [];
 let currentObstructionInventory = null;
 let currentTerrainCategoryEvidence = null;
+let successfulAnalysisFingerprint = null;
+let analysisRequestId = 0;
+let activeAnalysisController = null;
+let mapRequestId = 0;
+let activeMapController = null;
+let terrainReportRequestId = 0;
+let activeTerrainReportController = null;
+let importRequestId = 0;
+let activeImportController = null;
+
+function normalizeLocationPayload(payload) {
+  const hasCoordinates = Number.isFinite(payload.latitude) && Number.isFinite(payload.longitude);
+  if (hasCoordinates) {
+    if (payload.address) payload.site_label = payload.address;
+    delete payload.address;
+  }
+  if (!payload.address) delete payload.address;
+  if (payload.latitude === null) delete payload.latitude;
+  if (payload.longitude === null) delete payload.longitude;
+  return payload;
+}
 
 function formPayload() {
   const data = new FormData(form);
@@ -36,15 +57,15 @@ function formPayload() {
     sample_interval_m: Number(data.get("sample_interval_m")),
     mzcat_recommendation_mode: data.get("mzcat_recommendation_mode") || "conservative",
   };
-  if (!payload.address) delete payload.address;
-  if (payload.latitude === null) delete payload.latitude;
-  if (payload.longitude === null) delete payload.longitude;
-  return payload;
+  return normalizeLocationPayload(payload);
 }
 
 function manualOverrides() {
   return reviewedObstructions
-    .filter((item) => item.height_source === "manual_verified")
+    .filter((item) =>
+      item.height_source === "manual_verified"
+      && (Number.isFinite(item.height_m) || Number.isFinite(item.building_levels))
+    )
     .map((item) => ({
       obstruction_id: item.obstruction_id,
       height_m: item.height_m,
@@ -85,10 +106,7 @@ function obstructionPayload() {
     map_display_mode: data.get("map_display_mode") || "nearest_500",
     map_max_display_obstructions: 500,
   };
-  if (!payload.address) delete payload.address;
-  if (payload.latitude === null) delete payload.latitude;
-  if (payload.longitude === null) delete payload.longitude;
-  return payload;
+  return normalizeLocationPayload(payload);
 }
 
 function combinedMapPayload() {
@@ -125,6 +143,145 @@ function terrainCategoryReportPayload() {
   };
 }
 
+function legacyMapFingerprint() {
+  return JSON.stringify(combinedMapPayload());
+}
+
+function legacyReportFingerprint() {
+  return JSON.stringify(terrainCategoryReportPayload());
+}
+
+function legacyAnalysisFingerprint() {
+  const {
+    manual_overrides: _manualOverrides,
+    reviewed_footprints: _reviewedFootprints,
+    map_display_mode: _mapDisplayMode,
+    map_max_display_obstructions: _mapMaxDisplayObstructions,
+    ...calculationInputs
+  } = combinedMapPayload();
+  return JSON.stringify(calculationInputs);
+}
+
+function legacyAnalysisIsCurrent() {
+  return Boolean(
+    currentObstructionInventory
+    && currentTerrainCategoryEvidence
+    && successfulAnalysisFingerprint
+    && successfulAnalysisFingerprint === legacyAnalysisFingerprint()
+  );
+}
+
+function updateLegacyActionAvailability() {
+  const current = legacyAnalysisIsCurrent();
+  if (obstructionExport) obstructionExport.disabled = !current;
+  if (terrainReportButton) terrainReportButton.disabled = !current;
+}
+
+function clearLegacyResultState() {
+  reviewedObstructions = [];
+  currentObstructionInventory = null;
+  currentTerrainCategoryEvidence = null;
+  successfulAnalysisFingerprint = null;
+  updateLegacyActionAvailability();
+}
+
+function cancelAnalysisRequest() {
+  analysisRequestId += 1;
+  activeAnalysisController?.abort();
+  activeAnalysisController = null;
+}
+
+function startAnalysisRequest() {
+  cancelAnalysisRequest();
+  cancelMapRequest();
+  cancelTerrainReportRequest();
+  cancelImportRequest();
+  const controller = new AbortController();
+  activeAnalysisController = controller;
+  return { requestId: analysisRequestId, controller };
+}
+
+function analysisRequestIsCurrent(requestId, fingerprint) {
+  return requestId === analysisRequestId && fingerprint === legacyAnalysisFingerprint();
+}
+
+function finishAnalysisRequest(requestId) {
+  if (requestId === analysisRequestId) activeAnalysisController = null;
+}
+
+function cancelMapRequest() {
+  mapRequestId += 1;
+  activeMapController?.abort();
+  activeMapController = null;
+}
+
+function startMapRequest() {
+  cancelMapRequest();
+  const controller = new AbortController();
+  activeMapController = controller;
+  return { requestId: mapRequestId, controller };
+}
+
+function cancelTerrainReportRequest() {
+  terrainReportRequestId += 1;
+  activeTerrainReportController?.abort();
+  activeTerrainReportController = null;
+}
+
+function startTerrainReportRequest() {
+  cancelTerrainReportRequest();
+  const controller = new AbortController();
+  activeTerrainReportController = controller;
+  return { requestId: terrainReportRequestId, controller };
+}
+
+function cancelImportRequest() {
+  importRequestId += 1;
+  activeImportController?.abort();
+  activeImportController = null;
+}
+
+function startImportRequest() {
+  cancelImportRequest();
+  const controller = new AbortController();
+  activeImportController = controller;
+  return {
+    requestId: importRequestId,
+    controller,
+    fingerprint: legacyAnalysisFingerprint(),
+  };
+}
+
+function importRequestIsCurrent(requestId, fingerprint) {
+  return requestId === importRequestId && fingerprint === legacyAnalysisFingerprint();
+}
+
+function finishImportRequest(requestId) {
+  if (requestId === importRequestId) activeImportController = null;
+}
+
+function invalidateLegacyAnalysisState(message = "Inputs changed. Run the analysis again.") {
+  cancelAnalysisRequest();
+  cancelMapRequest();
+  cancelTerrainReportRequest();
+  cancelImportRequest();
+  clearLegacyResultState();
+  clearIframeHtml(profileFrame);
+  clearIframeHtml(mapFrame);
+  clearIframeHtml(terrainCategoryFrame);
+  summary.textContent = message;
+  profileSummary.innerHTML = "<p>Inputs changed. Run the terrain profile analysis again.</p>";
+  topographySummary.innerHTML = "<tr><td colspan=\"10\">Inputs changed. Run the analysis again.</td></tr>";
+  obstructionTable.innerHTML = "<tr><td colspan=\"10\">Inputs changed. Run the analysis again.</td></tr>";
+  obstructionQualityTable.innerHTML = "<tr><td>Inputs changed. Run the analysis again.</td></tr>";
+  shieldingSectorTable.innerHTML = "<tr><td colspan=\"10\">Inputs changed. Run the analysis again.</td></tr>";
+  terrainCategoryTable.innerHTML = "<tr><td colspan=\"12\">Inputs changed. Run the analysis again.</td></tr>";
+  mzCatTable.innerHTML = "<tr><td colspan=\"9\">Inputs changed. Run the analysis again.</td></tr>";
+  obstructionWarning.textContent = "Previous obstruction and review data were cleared because the analysis inputs changed.";
+  if (shieldingThresholdNote) shieldingThresholdNote.textContent = "";
+  if (msExplanation) msExplanation.textContent = "Run the analysis again to review shielding evidence.";
+}
+
 function clearIframeHtml(frame) {
   if (!frame) return;
   frame.removeAttribute("src");
@@ -144,11 +301,12 @@ function iframeHtml(html) {
   return `${base}${html}`;
 }
 
-async function postJson(url, payload) {
+async function postJson(url, payload, options = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal: options.signal,
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
@@ -160,6 +318,9 @@ async function postJson(url, payload) {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
   const mapPayload = combinedMapPayload();
+  const requestFingerprint = legacyAnalysisFingerprint();
+  const { requestId, controller } = startAnalysisRequest();
+  clearLegacyResultState();
   summary.textContent = "Running analysis...";
   clearIframeHtml(profileFrame);
   clearIframeHtml(mapFrame);
@@ -170,11 +331,15 @@ form.addEventListener("submit", async (event) => {
   obstructionQualityTable.innerHTML = "<tr><td>Querying obstruction source quality...</td></tr>";
   shieldingSectorTable.innerHTML = "<tr><td colspan=\"10\">Preparing shielding sectors...</td></tr>";
   terrainCategoryTable.innerHTML = "<tr><td colspan=\"12\">Preparing terrain category evidence...</td></tr>";
+  mzCatTable.innerHTML = "<tr><td colspan=\"9\">Preparing Mz,cat assessment...</td></tr>";
   obstructionWarning.textContent = "Querying obstruction footprints and height tags...";
 
   try {
-    const fullResponse = await postJson("/api/full-analysis", mapPayload);
+    const fullResponse = await postJson("/api/full-analysis", mapPayload, {
+      signal: controller.signal,
+    });
     const fullResult = await fullResponse.json();
+    if (!analysisRequestIsCurrent(requestId, requestFingerprint)) return;
     const result = fullResult.site_analysis;
     const inventory = fullResult.obstruction_inventory;
     const evidence = fullResult.terrain_category_evidence;
@@ -195,11 +360,15 @@ form.addEventListener("submit", async (event) => {
     reviewedObstructions = inventory.obstructions;
     renderObstructionInventory(inventory);
     currentTerrainCategoryEvidence = evidence;
+    successfulAnalysisFingerprint = requestFingerprint;
     renderTerrainCategoryEvidence(evidence);
     setIframeHtml(profileFrame, fullResult.profile_plot_html);
     setIframeHtml(terrainCategoryFrame, fullResult.terrain_category_map_html);
     setIframeHtml(mapFrame, fullResult.combined_map_html);
+    updateLegacyActionAvailability();
   } catch (error) {
+    if (error.name === "AbortError" || requestId !== analysisRequestId) return;
+    clearLegacyResultState();
     summary.textContent = `Analysis failed: ${error.message}`;
     profileSummary.innerHTML = "<p>Analysis failed.</p>";
     topographySummary.innerHTML = "<tr><td colspan=\"10\">Analysis failed.</td></tr>";
@@ -207,9 +376,21 @@ form.addEventListener("submit", async (event) => {
     obstructionQualityTable.innerHTML = "<tr><td>Analysis failed.</td></tr>";
     shieldingSectorTable.innerHTML = "<tr><td colspan=\"10\">Analysis failed.</td></tr>";
     terrainCategoryTable.innerHTML = "<tr><td colspan=\"12\">Analysis failed.</td></tr>";
+    mzCatTable.innerHTML = "<tr><td colspan=\"9\">Analysis failed.</td></tr>";
     obstructionWarning.textContent = "Obstruction inventory was not run.";
+  } finally {
+    finishAnalysisRequest(requestId);
   }
 });
+
+function handleLegacyFormMutation(event) {
+  if (event.target?.name === "map_display_mode") return;
+  invalidateLegacyAnalysisState();
+}
+
+form.addEventListener("input", handleLegacyFormMutation);
+form.addEventListener("change", handleLegacyFormMutation);
+updateLegacyActionAvailability();
 
 function renderProfileSummary(profiles) {
   profileSummary.innerHTML = profiles.map((profile) => `
@@ -241,25 +422,6 @@ function renderTopographySummary(features) {
       <td>${escapeHtml(feature.confidence)}</td>
     </tr>
   `).join("");
-}
-
-async function runObstructionInventory() {
-  const payload = obstructionPayload();
-  const inventoryResponse = await postJson("/api/obstructions/inventory", payload);
-  const inventory = await inventoryResponse.json();
-  currentObstructionInventory = inventory;
-  reviewedObstructions = inventory.obstructions;
-  renderObstructionInventory(inventory);
-}
-
-async function runTerrainCategoryEvidence(payload) {
-  const evidenceResponse = await postJson("/api/terrain-category/evidence", payload);
-  const evidence = await evidenceResponse.json();
-  currentTerrainCategoryEvidence = evidence;
-  renderTerrainCategoryEvidence(evidence);
-
-  const mapResponse = await postJson("/api/terrain-category/map", payload);
-  setIframeHtml(terrainCategoryFrame, await mapResponse.text());
 }
 
 function renderObstructionInventory(inventory) {
@@ -465,6 +627,7 @@ function mzcatAssessmentForDirection(direction) {
 function updateMzCatReviewInput(input) {
   const assessment = mzcatAssessmentForDirection(input.dataset.direction);
   if (!assessment) return;
+  cancelTerrainReportRequest();
   const field = input.dataset.mzcatField;
   if (field === "final_mzcat") {
     assessment.final_mzcat = input.value === "" ? null : Number(input.value);
@@ -476,6 +639,7 @@ function updateMzCatReviewInput(input) {
 function updateMzCatReview(button) {
   const assessment = mzcatAssessmentForDirection(button.dataset.direction);
   if (!assessment) return;
+  cancelTerrainReportRequest();
   if (button.dataset.mzcatAction === "accept") {
     if (assessment.recommended_mzcat === null || assessment.recommended_mzcat === undefined) return;
     assessment.final_terrain_category = assessment.recommended_terrain_category;
@@ -648,6 +812,8 @@ function updateObstructionFromInput(input) {
     (obstruction) => obstruction.obstruction_id === input.dataset.id,
   );
   if (!item) return;
+  cancelMapRequest();
+  cancelTerrainReportRequest();
   const value = input.value === "" ? null : Number(input.value);
   if (input.dataset.field === "height_m") {
     item.height_m = value;
@@ -673,24 +839,222 @@ function updateObstructionFromInput(input) {
   renderObstructionInventory(currentObstructionInventory);
 }
 
+async function requestManualOverrideImport(url, content, contentType, options = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": contentType },
+    body: content,
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: response.statusText }));
+    const detail = typeof error.detail === "string"
+      ? error.detail
+      : JSON.stringify(error.detail || response.statusText);
+    throw new Error(detail);
+  }
+  const overrides = await response.json();
+  if (!Array.isArray(overrides) || overrides.some((item) => !isValidatedManualOverride(item))) {
+    throw new Error("Obstruction import API returned an invalid manual override response.");
+  }
+  return overrides;
+}
+
+function isValidatedManualOverride(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (typeof value.obstruction_id !== "string" || !value.obstruction_id.trim()) return false;
+  const heightValid = Number.isFinite(value.height_m)
+    && value.height_m >= 0
+    && value.height_m <= 500;
+  const levelsValid = Number.isFinite(value.building_levels)
+    && value.building_levels >= 0
+    && value.building_levels <= 200;
+  return heightValid || levelsValid;
+}
+
+function reviewedImportRecords(imported) {
+  const records = Array.isArray(imported) ? imported : imported?.obstructions;
+  if (!Array.isArray(records)) {
+    throw new Error("JSON must be an array or an object containing an obstructions array.");
+  }
+  return records;
+}
+
+function declaresReviewedFootprint(value) {
+  return value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, "footprint_geometry");
+}
+
+function hasValidReviewedFootprint(value) {
+  const geometry = value?.footprint_geometry;
+  return declaresReviewedFootprint(value)
+    && geometry
+    && typeof geometry === "object"
+    && ["Polygon", "MultiPolygon"].includes(geometry.type)
+    && Array.isArray(geometry.coordinates);
+}
+
+function isReviewedInventoryEnvelope(imported) {
+  if (!imported || typeof imported !== "object" || Array.isArray(imported)) return false;
+  if (imported.export_format === "openwind-au-reviewed-obstructions-v1") return true;
+  return imported.input
+    && typeof imported.input === "object"
+    && imported.site
+    && typeof imported.site === "object"
+    && Array.isArray(imported.obstructions);
+}
+
+function assertNoDuplicateJsonObjectKeys(content) {
+  let index = 0;
+  const skipWhitespace = () => {
+    while (/\s/.test(content[index] || "")) index += 1;
+  };
+  const readString = () => {
+    const start = index;
+    index += 1;
+    while (content[index] !== '"') {
+      if (content[index] === "\\") index += 1;
+      index += 1;
+    }
+    index += 1;
+    return JSON.parse(content.slice(start, index));
+  };
+  const scanValue = () => {
+    skipWhitespace();
+    if (content[index] === "{") {
+      scanObject();
+      return;
+    }
+    if (content[index] === "[") {
+      scanArray();
+      return;
+    }
+    if (content[index] === '"') {
+      readString();
+      return;
+    }
+    while (index < content.length && !/[\s,\]}]/.test(content[index])) index += 1;
+  };
+  const scanObject = () => {
+    index += 1;
+    skipWhitespace();
+    const keys = new Set();
+    if (content[index] === "}") {
+      index += 1;
+      return;
+    }
+    while (index < content.length) {
+      const key = readString();
+      if (keys.has(key)) throw new Error(`JSON contains duplicate key: ${key}`);
+      keys.add(key);
+      skipWhitespace();
+      index += 1;
+      scanValue();
+      skipWhitespace();
+      if (content[index] === "}") {
+        index += 1;
+        return;
+      }
+      index += 1;
+      skipWhitespace();
+    }
+  };
+  const scanArray = () => {
+    index += 1;
+    skipWhitespace();
+    if (content[index] === "]") {
+      index += 1;
+      return;
+    }
+    while (index < content.length) {
+      scanValue();
+      skipWhitespace();
+      if (content[index] === "]") {
+        index += 1;
+        return;
+      }
+      index += 1;
+      skipWhitespace();
+    }
+  };
+  scanValue();
+}
+
+async function importObstructionCsvText(content, request = startImportRequest()) {
+  const { requestId, controller, fingerprint } = request;
+  try {
+    if (!importRequestIsCurrent(requestId, fingerprint)) return;
+    const overrides = await requestManualOverrideImport(
+      "/api/obstructions/import/csv",
+      content,
+      "text/csv",
+      { signal: controller.signal },
+    );
+    if (!importRequestIsCurrent(requestId, fingerprint)) return;
+    applyBrowserOverrides(overrides);
+  } finally {
+    finishImportRequest(requestId);
+  }
+}
+
+async function importObstructionJsonText(content, request = startImportRequest()) {
+  const { requestId, controller, fingerprint } = request;
+  try {
+    if (!importRequestIsCurrent(requestId, fingerprint)) return;
+    const imported = JSON.parse(content);
+    const records = reviewedImportRecords(imported);
+    const footprintDeclarations = records.filter(declaresReviewedFootprint).length;
+    const reviewedEnvelope = isReviewedInventoryEnvelope(imported);
+    if (footprintDeclarations || reviewedEnvelope) {
+      assertNoDuplicateJsonObjectKeys(content);
+      if (records.length && footprintDeclarations !== records.length) {
+        throw new Error("Reviewed obstruction JSON cannot mix footprint records and overrides.");
+      }
+      if (!records.every(hasValidReviewedFootprint)) {
+        throw new Error("Reviewed obstruction JSON contains an invalid footprint geometry.");
+      }
+      if (importRequestIsCurrent(requestId, fingerprint)) {
+        applyBrowserOverrides(records, { reviewedFootprints: true });
+      }
+      return;
+    }
+    const overrides = await requestManualOverrideImport(
+      "/api/obstructions/import/json",
+      content,
+      "application/json",
+      { signal: controller.signal },
+    );
+    if (!importRequestIsCurrent(requestId, fingerprint)) return;
+    applyBrowserOverrides(overrides);
+  } finally {
+    finishImportRequest(requestId);
+  }
+}
+
 obstructionCsv.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  const overrides = parseCsvOverrides(await file.text());
-  applyBrowserOverrides(overrides);
+  const request = startImportRequest();
+  try {
+    await importObstructionCsvText(await file.text(), request);
+  } catch (error) {
+    if (error.name === "AbortError" || request.requestId !== importRequestId) return;
+    summary.textContent = `Obstruction CSV import failed: ${error.message}`;
+  } finally {
+    event.target.value = "";
+  }
 });
 
 obstructionJson.addEventListener("change", async (event) => {
   const file = event.target.files[0];
   if (!file) return;
+  const request = startImportRequest();
   try {
-    const imported = JSON.parse(await file.text());
-    const overrides = Array.isArray(imported) ? imported : imported?.obstructions;
-    if (!Array.isArray(overrides)) {
-      throw new Error("JSON must be an array or an object containing an obstructions array.");
-    }
-    applyBrowserOverrides(overrides);
+    await importObstructionJsonText(await file.text(), request);
   } catch (error) {
+    if (error.name === "AbortError" || request.requestId !== importRequestId) return;
     summary.textContent = `Obstruction JSON import failed: ${error.message}`;
   } finally {
     event.target.value = "";
@@ -700,6 +1064,7 @@ obstructionJson.addEventListener("change", async (event) => {
 obstructionExport.addEventListener("click", () => {
   const exportData = {
     ...(currentObstructionInventory || {}),
+    export_format: "openwind-au-reviewed-obstructions-v1",
     obstructions: reviewedObstructions,
   };
   const blob = new Blob([JSON.stringify(exportData, null, 2)], {
@@ -713,36 +1078,41 @@ obstructionExport.addEventListener("click", () => {
   URL.revokeObjectURL(url);
 });
 
-function parseCsvOverrides(text) {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((header) => header.trim());
-  return lines.slice(1).map((line) => {
-    const values = line.split(",");
-    return Object.fromEntries(headers.map((header, index) => [header, values[index]?.trim()]));
-  });
-}
-
-function applyBrowserOverrides(overrides) {
+function applyBrowserOverrides(overrides, options = {}) {
+  cancelMapRequest();
+  cancelTerrainReportRequest();
+  const reviewedFootprintImport = options.reviewedFootprints === true;
   for (const rawOverride of overrides) {
     const override = normaliseImportedOverride(rawOverride);
     if (!override) continue;
+    const hasReviewedHeight = override.height_m !== null || override.building_levels !== null;
+    if (!hasReviewedHeight && !reviewedFootprintImport) continue;
+    if (reviewedFootprintImport && !override.footprint_geometry) continue;
     const id = override.obstruction_id;
     let item = reviewedObstructions.find((obstruction) => obstruction.obstruction_id === id);
-    if (!item && override.footprint_geometry) {
+    if (!item && reviewedFootprintImport) {
       item = override;
       reviewedObstructions.push(item);
     }
     if (!item) continue;
+    if (reviewedFootprintImport) {
+      item.footprint_geometry = override.footprint_geometry;
+      item.footprint_source = "manual_reviewed";
+      item.classification = override.classification;
+      item.distance_m = override.distance_m;
+      item.bearing_deg = override.bearing_deg;
+      item.centroid_latitude = override.centroid_latitude;
+      item.centroid_longitude = override.centroid_longitude;
+    }
     item.height_m = parseOptionalNumber(override.height_m);
     item.building_levels = parseOptionalNumber(override.building_levels);
     if (item.height_m === null && item.building_levels !== null) {
       item.height_m = item.building_levels * Number(document.getElementById("default_storey_height_m").value || 3);
     }
-    item.height_source = "manual_verified";
+    item.height_source = hasReviewedHeight ? "manual_verified" : "missing";
     item.selected_height_m = item.height_m;
     item.raw_source_height_m = item.height_m;
-    item.raw_source_height_source = item.height_m === null ? null : "manual_verified";
+    item.raw_source_height_source = hasReviewedHeight ? "manual_verified" : null;
     item.confidence = item.height_m === null ? "unknown" : "high";
     item.manual_review_required = item.height_m === null;
     item.review_required = item.height_m === null;
@@ -1060,23 +1430,51 @@ msExplanationSector?.addEventListener("change", () => {
 });
 
 mapDisplayMode?.addEventListener("change", async () => {
-  if (!currentObstructionInventory?.site) return;
+  if (!legacyAnalysisIsCurrent() || !currentObstructionInventory?.site) return;
+  const mapPayload = combinedMapPayload();
+  const mapFingerprint = JSON.stringify(mapPayload);
+  const { requestId, controller } = startMapRequest();
   clearIframeHtml(mapFrame);
-  const mapResponse = await postJson("/api/map/combined", combinedMapPayload());
-  setIframeHtml(mapFrame, await mapResponse.text());
+  try {
+    const mapResponse = await postJson("/api/map/combined", mapPayload, {
+      signal: controller.signal,
+    });
+    const html = await mapResponse.text();
+    if (
+      requestId !== mapRequestId
+      || mapFingerprint !== legacyMapFingerprint()
+      || !legacyAnalysisIsCurrent()
+    ) return;
+    setIframeHtml(mapFrame, html);
+  } catch (error) {
+    if (error.name === "AbortError" || requestId !== mapRequestId) return;
+    summary.textContent = `Map refresh failed: ${error.message}`;
+  } finally {
+    if (requestId === mapRequestId) activeMapController = null;
+  }
 });
 
 terrainReportButton?.addEventListener("click", async () => {
-  if (!currentTerrainCategoryEvidence) {
+  if (!legacyAnalysisIsCurrent()) {
     summary.textContent = "Run an analysis before opening a reviewed Mz,cat report.";
+    updateLegacyActionAvailability();
     return;
   }
+  const reportPayload = terrainCategoryReportPayload();
+  const reportFingerprint = JSON.stringify(reportPayload);
+  const { requestId, controller } = startTerrainReportRequest();
   try {
     const reportResponse = await postJson(
       "/api/terrain-category/report/html",
-      terrainCategoryReportPayload(),
+      reportPayload,
+      { signal: controller.signal },
     );
     const html = await reportResponse.text();
+    if (
+      requestId !== terrainReportRequestId
+      || reportFingerprint !== legacyReportFingerprint()
+      || !legacyAnalysisIsCurrent()
+    ) return;
     const reportUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
     const reportWindow = window.open(reportUrl, "_blank", "noopener,noreferrer");
     setTimeout(() => URL.revokeObjectURL(reportUrl), 30000);
@@ -1085,6 +1483,9 @@ terrainReportButton?.addEventListener("click", async () => {
       return;
     }
   } catch (error) {
+    if (error.name === "AbortError" || requestId !== terrainReportRequestId) return;
     summary.textContent = `Reviewed Mz,cat report failed: ${error.message}`;
+  } finally {
+    if (requestId === terrainReportRequestId) activeTerrainReportController = null;
   }
 });

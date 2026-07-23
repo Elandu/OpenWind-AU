@@ -22,7 +22,11 @@ from openwind_au.shielding import (
     footprint_breadth_normal_to_wind,
     run_shielding_sector_analysis,
 )
-from openwind_au.standard_calculations import ms_from_shielding_parameter, site_wind_speed
+from openwind_au.standard_calculations import (
+    climate_change_multiplier,
+    ms_from_shielding_parameter,
+    site_wind_speed,
+)
 from openwind_au.topographic_multiplier import calculate_topographic_multiplier
 from openwind_au.topography import analyse_profile_topography
 from openwind_au.wind_inputs import regional_wind_speed_assessment
@@ -75,7 +79,7 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
     """Run deterministic shielding and topographic calculation checks."""
 
     results = [
-        _wind_region_a2_serviceability_reference_case(),
+        _wind_region_a2_serviceability_case(),
         _terrain_height_multiplier_reference_case(),
         _shielding_ms_interpolation_case(),
         _topographic_multiplier_reference_case(),
@@ -105,12 +109,12 @@ def calculation_validation_report_to_json(report: CalculationValidationReport) -
     return json.loads(report.model_dump_json())
 
 
-def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCaseResult:
+def _wind_region_a2_serviceability_case() -> CalculationValidationCaseResult:
     wind_region = WindRegionAssessment(
-        latitude=-33.309,
-        longitude=151.524,
+        latitude=-34.123456,
+        longitude=150.654321,
         wind_region="A2",
-        source="Prior Modos job 04625 reference input: Magenta NSW, Region A2",
+        source="Synthetic Region A2 serviceability validation input",
         confidence="high",
     )
     assessment = regional_wind_speed_assessment(
@@ -126,17 +130,16 @@ def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCase
         _check_close("serviceability VR", assessment.vr_serv, 37.0),
     ]
     return _case_result(
-        case_id="modos-04625-a2-serviceability-reference",
+        case_id="wind-region-a2-serviceability",
         calculation_area="wind_inputs",
         description=(
-            "Validates the prior Modos 04625 check: Magenta NSW Region A2 reports "
-            "approximately 37 m/s serviceability regional wind speed. The packaged "
-            "AS/NZS calculation reports 37 m/s for both the Region A/A2 20-year "
-            "regional equation and the 25-year serviceability value."
+            "Validates a synthetic Region A2 serviceability case. The packaged AS/NZS "
+            "calculation reports 37 m/s for both the Region A/A2 20-year regional equation "
+            "and the 25-year serviceability value."
         ),
         checks=checks,
         notes=[
-            "Prior report wording used 20-year ARI serviceability; OpenWind-AU reports the "
+            "The case exercises a 20-year ARI request while OpenWind-AU separately reports the "
             "packaged 25-year serviceability value used by the current lookup workflow."
         ],
     )
@@ -218,11 +221,24 @@ def _site_wind_speed_precision_case() -> CalculationValidationCaseResult:
         wind_region="A2",
         site_elevation_m=0.0,
     ).mt
-    result = site_wind_speed(45.0, 0.85, 0.83, 0.85, mt)
+    region_a_mc = climate_change_multiplier("A2")
+    region_b2_mc = climate_change_multiplier("B2")
+    result = site_wind_speed(vr=45.0, mc=region_a_mc, md=0.85, mzcat=0.83, ms=0.85, mt=mt)
+    region_b2_result = site_wind_speed(
+        vr=45.0,
+        mc=region_b2_mc,
+        md=0.85,
+        mzcat=0.83,
+        ms=0.85,
+        mt=mt,
+    )
     checks = [
+        _check_close("Region A2 climate-change multiplier Mc", region_a_mc, 1.0),
+        _check_close("Region B2 climate-change multiplier Mc", region_b2_mc, 1.05),
         _check_close("full-precision Mt input", mt, 1.1887601887601889),
         _check_close("full-precision Vsit,b product", result, 32.07913947876448),
         _check_close("reported Vsit,b at 3 decimals", round(result, 3), 32.079),
+        _check_close("B2 climate-change uplifted Vsit,b", region_b2_result, 33.683096452702704),
     ]
     return _case_result(
         case_id="site-wind-speed-full-precision-product",

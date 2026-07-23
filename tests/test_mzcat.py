@@ -9,12 +9,14 @@ from fastapi.testclient import TestClient
 
 import openwind_au.mzcat as mzcat_module
 from openwind_au.api import create_app
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     ObstructionInventoryRequest,
     SiteAnalysisRequest,
     SiteLocation,
     TerrainCategoryDirectionEvidence,
     TerrainCategoryScoreComponents,
+    WindRegionAssessment,
 )
 from openwind_au.mzcat import (
     category_bounds,
@@ -187,9 +189,69 @@ def test_region_a0_uses_tc2_to_100_m_and_1_24_above() -> None:
     assert indicative_mzcat("TC1", 150, wind_region="A0") == pytest.approx(1.24)
 
 
+def test_direction_evidence_applies_region_a0_rule_consistently() -> None:
+    assessment = direction_mzcat_assessment(
+        evidence(suggested_range="TC3-TC4", confidence="high"),
+        10,
+        wind_region="A0",
+    )
+
+    assert assessment.lower_indicative_mzcat == pytest.approx(1.0)
+    assert assessment.upper_indicative_mzcat == pytest.approx(1.0)
+    assert assessment.recommended_mzcat == pytest.approx(1.0)
+    assert any("Region A0" in warning for warning in assessment.warnings)
+    assert any(
+        "Region A0 overrides terrain category" in item
+        for item in assessment.recommendation_reasoning
+    )
+
+
+def test_mzcat_assessment_resolves_wind_region_before_building_evidence(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        mzcat_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=SITE_LAT,
+            longitude=SITE_LON,
+            wind_region="A0",
+            source="A0 regression fixture",
+            confidence="high",
+        ),
+    )
+    request = SiteAnalysisRequest(
+        latitude=SITE_LAT,
+        longitude=SITE_LON,
+        building_height_m=10,
+        radius_m=500,
+    )
+
+    result = run_mzcat_assessment(
+        request=request,
+        site=SiteLocation(
+            latitude=SITE_LAT,
+            longitude=SITE_LON,
+            ground_elevation_m=10,
+            source="test",
+        ),
+        directions=[evidence(suggested_range="TC3-TC4")],
+    )
+
+    assert result.directions[0].recommended_mzcat == pytest.approx(1.0)
+    assert result.directions[0].lower_indicative_mzcat == pytest.approx(1.0)
+    assert result.directions[0].upper_indicative_mzcat == pytest.approx(1.0)
+    assert any("Region A0" in warning for warning in result.warnings)
+
+
 def test_mzcat_rejects_unknown_wind_region() -> None:
     with pytest.raises(ValueError, match="Unsupported Australian wind region"):
         indicative_mzcat("TC3", 10, wind_region="ZZ")
+
+
+def test_mzcat_rejects_ambiguous_generic_region_a() -> None:
+    with pytest.raises(ValueError, match="confirm A0, A1, A2, A3, A4, or A5"):
+        indicative_mzcat("TC3", 10, wind_region="A")
 
 
 def test_mzcat_rejects_invalid_category_even_when_a0_rule_is_category_independent() -> None:
@@ -216,7 +278,7 @@ def test_mzcat_rejects_lookup_with_stale_digest(monkeypatch, tmp_path) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
     monkeypatch.setenv(MZCAT_TABLE_ENV, str(path))
 
-    with pytest.raises(ValueError, match="values_sha256"):
+    with pytest.raises(ServiceNotReadyError, match="values_sha256"):
         indicative_mzcat("TC3", 10)
 
 

@@ -1,8 +1,7 @@
 cff-version: 1.2.0
 message: "If you use OpenWind-AU, please cite it using this metadata."
 title: "OpenWind-AU"
-version: "0.6.0"
-date-released: "2026-06-17"
+version: "0.8.0"
 authors:
   - name: "Elandu"
 repository-code: "https://github.com/Elandu/OpenWind-AU"

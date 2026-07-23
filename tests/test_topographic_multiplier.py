@@ -153,6 +153,20 @@ def test_topographic_multiplier_rejects_nonfinite_geometry() -> None:
         )
 
 
+def test_topographic_multiplier_rejects_ambiguous_generic_region_a() -> None:
+    with pytest.raises(ValueError, match="confirm A0, A1, A2, A3, A4, or A5"):
+        calculate_topographic_multiplier(
+            feature_type="no significant feature",
+            h_m=0.0,
+            lu_m=0.0,
+            x_m=0.0,
+            z_m=10.0,
+            average_roof_height_m=10.0,
+            wind_region="A",
+            site_elevation_m=100.0,
+        )
+
+
 def test_dynamic_feature_height_threshold_and_gentle_slope_rules() -> None:
     below_dynamic_threshold = calculate_topographic_multiplier(
         feature_type="ridge",
@@ -274,6 +288,7 @@ def test_workflow_mt_uses_dem_feature_geometry_and_exposes_calculation() -> None
         )
         for variable, direction, value in (
             ("VR", None, 45.0),
+            ("Mc", None, 1.0),
             ("Md", "N", 0.85),
             ("Mzcat", "N", 0.83),
             ("Ms", "N", 0.85),
@@ -283,7 +298,7 @@ def test_workflow_mt_uses_dem_feature_geometry_and_exposes_calculation() -> None
         row for row in vsitb_directional_rows([*variables, assessment]) if row.direction == "N"
     )
     assert north.final_vsitb == pytest.approx(
-        45.0 * 0.85 * 0.83 * 0.85 * assessment.calculated_value
+        45.0 * 1.0 * 0.85 * 0.83 * 0.85 * assessment.calculated_value
     )
 
 

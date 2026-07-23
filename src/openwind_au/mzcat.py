@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     MzCatAssessmentResult,
     MzCatDirectionAssessment,
@@ -27,6 +29,7 @@ from openwind_au.standard_lookup_tables import (
     source_reference,
     trusted_values_sha256,
 )
+from openwind_au.wind_region import assess_wind_region
 
 SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = ("TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4")
 TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
@@ -54,12 +57,18 @@ EXPECTED_A0_RULE = {
     "constant_above_height_m": 100.0,
     "constant_above_value": 1.24,
 }
+LOGGER = logging.getLogger(__name__)
 
 
 def load_mzcat_table() -> dict[str, Any]:
     """Load editable terrain/height-multiplier lookup data."""
 
-    return load_lookup_data(MZCAT_TABLE_ENV, MZCAT_DATA_FILE)
+    data = load_lookup_data(MZCAT_TABLE_ENV, MZCAT_DATA_FILE)
+    issues = mzcat_lookup_issues(data, require_reviewed=False)
+    if issues:
+        LOGGER.error("Configured Table 4.1 lookup is invalid: %s", "; ".join(issues))
+        raise ServiceNotReadyError(f"Invalid Table 4.1 lookup data: {'; '.join(issues)}")
+    return data
 
 
 def mzcat_lookup_issues(
@@ -166,6 +175,7 @@ def run_mzcat_assessment(
     site: SiteLocation,
     directions: list[TerrainCategoryDirectionEvidence],
     recommendation_mode: str = "conservative",
+    wind_region: str | None = None,
     lookup_data: dict[str, Any] | None = None,
 ) -> MzCatAssessmentResult:
     """Return indicative Mz,cat evidence for all directional evidence sectors."""
@@ -174,11 +184,22 @@ def run_mzcat_assessment(
     issues = mzcat_lookup_issues(lookup, require_reviewed=False)
     if issues:
         raise ValueError(f"Invalid Table 4.1 lookup data: {'; '.join(issues)}")
+    resolved_wind_region = wind_region
+    region_warning: str | None = None
+    if resolved_wind_region is None:
+        try:
+            resolved_wind_region = assess_wind_region(site).wind_region
+        except (ServiceNotReadyError, ValueError):
+            region_warning = (
+                "Wind region was unavailable for Mz,cat evidence. The displayed numeric range "
+                "uses the non-A0 Table 4.1 values and must not be used for a Region A0 site."
+            )
     assessments = [
         direction_mzcat_assessment(
             direction,
             request.reference_height_m,
             recommendation_mode=recommendation_mode,
+            wind_region=resolved_wind_region,
             lookup_data=lookup,
         )
         for direction in directions
@@ -188,6 +209,10 @@ def run_mzcat_assessment(
         "Mz,cat values are indicative only.",
         "Engineer review required.",
     ]
+    if resolved_wind_region == "A0":
+        warnings.append("Region A0 Table 4.1 terrain-independent Mz,cat rule applied.")
+    if region_warning:
+        warnings.append(region_warning)
     warnings.extend(mzcat_lookup_warnings(lookup))
     if any(assessment.confidence == "low" for assessment in assessments):
         warnings.append("Significant uncertainty in obstruction coverage or category evidence.")
@@ -206,6 +231,7 @@ def direction_mzcat_assessment(
     assessment_height_m: float,
     *,
     recommendation_mode: str = "conservative",
+    wind_region: str | None = None,
     lookup_data: dict[str, Any] | None = None,
 ) -> MzCatDirectionAssessment:
     """Convert one terrain-category evidence sector into an indicative Mz,cat range."""
@@ -214,15 +240,24 @@ def direction_mzcat_assessment(
     lower_value = indicative_mzcat(
         lower_category,
         assessment_height_m,
+        wind_region=wind_region,
         lookup_data=lookup_data,
     )
     upper_value = indicative_mzcat(
         upper_category,
         assessment_height_m,
+        wind_region=wind_region,
         lookup_data=lookup_data,
     )
     confidence = mzcat_confidence(evidence, lower_category, upper_category)
     warnings = mzcat_warnings(evidence, confidence)
+    if wind_region == "A0":
+        warnings.append("Region A0 Table 4.1 terrain-independent Mz,cat rule applied.")
+    elif wind_region is None:
+        warnings.append(
+            "Wind region was not supplied; numeric Mz,cat evidence uses the non-A0 table and "
+            "must not be used for Region A0."
+        )
     recommendation = mzcat_recommendation(
         evidence=evidence,
         lower_category=lower_category,
@@ -232,6 +267,12 @@ def direction_mzcat_assessment(
         confidence=confidence,
         mode=recommendation_mode,
     )
+    if wind_region == "A0":
+        recommendation_reasoning = recommendation.get("reasoning", [])
+        recommendation["reasoning"] = [
+            "Region A0 overrides terrain category with the Table 4.1 A0 rule.",
+            *(recommendation_reasoning if isinstance(recommendation_reasoning, list) else []),
+        ]
     return MzCatDirectionAssessment(
         direction=evidence.direction,
         azimuth_deg=evidence.azimuth_deg,
@@ -350,6 +391,11 @@ def indicative_mzcat(
         )
     if wind_region is not None and wind_region not in SUPPORTED_AU_WIND_REGIONS:
         raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if wind_region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Table 4.1 Mz,cat because Region A0 has "
+            "special terrain-height rules; confirm A0, A1, A2, A3, A4, or A5."
+        )
     data = lookup_data if lookup_data is not None else load_mzcat_table()
     reference = terrain_height_multiplier_reference(data)
     _terrain_category_number(category)

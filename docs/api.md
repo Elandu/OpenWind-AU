@@ -24,6 +24,26 @@ provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_read
 consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
 assessment traffic.
 
+Assessment endpoints distinguish request failures from deployment and provider failures: malformed
+or unsupported request data returns HTTP 4xx, an unavailable required local dataset or invalid
+server configuration returns HTTP 503, and a required upstream provider failure returns HTTP 502.
+HTTP 502 responses use a generic consumer-safe detail; full provider, cache, URL, and low-level
+exception diagnostics are retained only in server logs.
+The NDJSON workflow stream always starts with HTTP 200, so clients must also inspect a terminal
+`error` event's `data.status_code` for the equivalent 400, 502, 503, or 500 classification.
+
+All JSON request models are strict. Unknown fields, booleans used as numbers, and numeric strings
+such as `"10"` are rejected with HTTP 422 instead of being ignored or coerced. Request bodies are
+capped at 1 MiB before route parsing, except the completed-result HTML/PDF routes, which use a
+separate 4 MiB cap so a valid signed workflow result can be rendered. JSON duplicate members,
+`NaN`, and infinite/overflowing numbers are rejected. Validation responses omit submitted values
+and cap the number of errors.
+
+Set `OPENWIND_ENVIRONMENT=production` and an explicit comma-separated
+`OPENWIND_TRUSTED_HOSTS` allowlist for production. In that mode, OpenAPI documentation is disabled
+and assessment/completed-report routes return HTTP 503 until `/health` is ready. Dynamic responses
+use `Cache-Control: no-store` and baseline browser security headers.
+
 Raw obstruction-provider and wind-region diagnostics are intentionally absent from OpenAPI and
 disabled by default. For a trusted local troubleshooting session only, set
 `OPENWIND_ENABLE_DEBUG_ENDPOINTS=1` before starting the API to enable `/api/debug/*` and
@@ -33,6 +53,23 @@ details. Normal assessment responses omit the local wind-region dataset path and
 use the dedicated map endpoint for rendered geometry.
 
 ## Analyse A Site
+
+Every assessment request must use exactly one location mode:
+
+- `address` alone asks the server to geocode that address; or
+- `latitude` and `longitude` supply the calculation coordinates directly. An optional `site_label`
+  may describe those coordinates without being geocoded.
+
+Do not send `address` together with coordinates. For example, a map-selected or dragged site uses:
+
+```json
+{
+  "site_label": "1 Macquarie Street, Sydney NSW",
+  "latitude": -33.8568,
+  "longitude": 151.2153,
+  "building_height_m": 12
+}
+```
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/analyse \
@@ -52,6 +89,10 @@ The response includes:
 - 8 terrain profiles for N, NE, E, SE, S, SW, W, and NW;
 - preliminary topographic screening results for each direction;
 - assumptions, limitations, and disclaimer text.
+
+`POST /api/full-analysis` runs the combined site, obstruction, terrain-category, wind-input, and
+map workflow used by the legacy dashboard. New integrations should prefer the explicit
+`/api/wind-workflow` contract when they need the signed directional site-wind result.
 
 ## Export JSON
 
@@ -80,6 +121,12 @@ POST /api/obstructions/report/html
 POST /api/obstructions/import/csv
 POST /api/obstructions/import/json
 ```
+
+CSV and JSON imports are limited to 1 MB and must use `text/csv`, `application/csv`, or
+`application/json` as documented in OpenAPI. CSV accepts only `obstruction_id`, `height_m`,
+`building_levels`, `height_source`, and `notes`; duplicate/unknown headers and surplus values are
+rejected. Each JSON/CSV item requires a nonblank `obstruction_id` and at least one of `height_m` or
+`building_levels`. Unknown or duplicate JSON member names and numeric strings are rejected.
 
 The obstruction inventory uses Microsoft Australia Building Footprints as the preferred building
 geometry source when a local cache is configured. OSM/Overpass is used as fallback and to merge
@@ -163,10 +210,12 @@ POST /api/wind-workflow/stream
 POST /api/wind-workflow/map
 POST /api/wind-workflow/report/html
 POST /api/wind-workflow/report/pdf
+POST /api/wind-workflow/result/report/html
+POST /api/wind-workflow/result/report/pdf
 ```
 
-Wind-workflow requests use a strict schema: unknown fields are rejected with HTTP 422 rather than
-silently ignored. In particular, legacy request fields such as `wind_region`,
+Wind-workflow requests use the same strict location and type contract. In particular, legacy
+request fields such as `wind_region`,
 `regional_wind_speed_mps`, `wind_direction_multipliers`, and `workflow_reviews` are not accepted.
 Use the two explicit override collections instead:
 
@@ -177,12 +226,33 @@ Use the two explicit override collections instead:
 - A terrain category selects `Mz,cat` from Table 4.1. Project-specific shielding (`FS/PS/NS`) and
   topographic (`T0-T5`) class labels are provenance only; they do not imply a standard multiplier.
   Supply an explicit reviewed `ms` or `mt` to replace the calculated Clause 4.3 or 4.4 value.
-- `workflow_overrides` accepts at most one entry for each variable/direction pair. A `VR` override
-  is non-directional and must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` overrides
+- `workflow_overrides` accepts at most one entry for each variable/direction pair. `VR`
+  overrides are non-directional and must omit `direction`; `Md`, `Mzcat`, `Ms`, `Mt`, and `Vsitb` overrides
   require one of `N`, `NE`, `E`, `SE`, `S`, `SW`, `W`, or `NW`. Every entry requires a positive
   `override_value` and a non-empty `reason`.
 
-These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
+`wind_direction_multiplier_case` records whether `Md` is being applied to the main structure,
+cladding/immediate supports, or a circular/polygonal chimney, tank or pole. The workflow enforces
+the mandatory Clause 3.3 value `Md = 1.0` for the latter case in every region and for the cladding
+case in B2, C and D. `Mc` is selected once from Clause 3.4/Table 3.3 and included in the Clause 2.2
+product `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`. Generic Region `B` is rejected until B1/B2 is
+confirmed.
+
+Generic Region A is also rejected by the combined workflow until A0, A1, A2, A3, A4, or A5 is
+confirmed. This is required because A0 has special terrain-height and topographic rules, A4 has a
+high-elevation topographic rule, and the direction multiplier requires a specific regional row.
+
+Mandatory standard values cannot be replaced through either override collection. In Region A0,
+the terrain-independent Table 4.1 Mz,cat value is retained. When average roof height h exceeds
+25 m, Clause 4.3.1 requires Ms = 1.0. Numeric overrides for either case are rejected.
+
+Use `average_roof_height_m` for the common AS/NZS reference height `h` used by
+`Mz,cat`, the Clause 4.3 shielding-height checks, and Clause 4.4 topographic calculations.
+When it is omitted, the workflow conservatively uses `building_height_m`. The request-only
+`average_height_m` alias remains accepted for migration, but responses and OpenAPI use the
+unambiguous `average_roof_height_m` name.
+
+`Mc` is a deterministic Table 3.3 mapping and is not overrideable. These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
 and do not certify the automated GIS evidence or final design outcome.
 
 `assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
@@ -195,6 +265,10 @@ mean the selected calculated or explicitly overridden value used in the current 
 workflow; they are not a certification state. Review metadata and override collections have one
 source of truth under `input` and are not repeated at the result top level.
 
+`/api/wind-workflow/stream` is documented and returned as `application/x-ndjson`. PDF routes return
+binary `application/pdf` with `Content-Disposition`; completed-result routes require an authentic
+server integrity token and reject unknown, excluded, or coercible nested representations.
+
 ## Validation
 
 ```text
@@ -202,11 +276,14 @@ GET /api/validation/cases
 GET /api/validation
 GET /api/validation/report/html
 GET /api/calculation-validation
-GET /api/reference-validation/7989
+GET /api/reference-validation/anonymized
+GET /api/wind-region/validation
 ```
 
 Validation responses are qualitative audit outputs. They are not proof of engineering accuracy or
-code compliance. The reference calculation 7989 endpoint compares the current OpenWind workflow against the
-stored Byambee Street reference classes: `TC3` terrain, `FS` shielding, and `T0`/`T1` topography.
-Use `GET /api/reference-validation/7989?apply_reference_overrides=true` to rerun the comparison
-with the encoded reference calculation classes applied through `class_multiplier_overrides`.
+code compliance. The anonymized-reference endpoint compares the current OpenWind workflow against
+stored class-level expectations: `TC3` terrain, `FS` shielding, and `T0`/`T1` topography. Its
+published coordinates and OSM-derived footprint geometry are deliberately translated, with source
+feature IDs and tags removed. Use
+`GET /api/reference-validation/anonymized?apply_reference_overrides=true` to rerun the comparison
+with the encoded reference classes applied through `class_multiplier_overrides`.

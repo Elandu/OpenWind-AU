@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.standard_lookup_tables import (
     MD_DATA_FILE,
     MD_TABLE_ENV,
@@ -47,7 +49,23 @@ REGIONAL_WIND_SPEED_V1: dict[str, float] = {
     "C": 23.0,
     "D": 23.0,
 }
+CLIMATE_CHANGE_MULTIPLIERS: dict[str, float] = {
+    "A": 1.0,
+    "A0": 1.0,
+    "A1": 1.0,
+    "A2": 1.0,
+    "A3": 1.0,
+    "A4": 1.0,
+    "A5": 1.0,
+    "B1": 1.0,
+    "B2": 1.05,
+    "C": 1.05,
+    "D": 1.05,
+}
+MC_SOURCE_CLAUSE = "Clause 3.4"
+MC_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 3.4, Table 3.3"
 MS_METADATA_WARNING = "Ms lookup table does not have complete independent reviewer/date metadata."
+LOGGER = logging.getLogger(__name__)
 MS_SOURCE_CLAUSE = "Clause 4.3"
 MS_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2"
 EXPECTED_SHIELDING_PARAMETER_NODES: tuple[float, ...] = (1.5, 3.0, 6.0, 12.0)
@@ -92,11 +110,39 @@ def regional_wind_speed(region: str, ari_years: int) -> float:
     return float(math.floor(unrounded + 0.5))
 
 
+def climate_change_multiplier(region: str) -> float:
+    """Return the Australian climate-change multiplier Mc for a wind region.
+
+    AS/NZS 1170.2:2021 Table 3.3 distinguishes B1 and B2, so a legacy generic
+    ``B`` classification is rejected rather than silently selecting either value.
+    """
+
+    if region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.3 climate-change multiplier Mc; "
+            "confirm whether the site is in B1 or B2."
+        )
+    try:
+        return CLIMATE_CHANGE_MULTIPLIERS[region]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported Australian wind region: {region}") from exc
+
+
 def direction_multiplier_values(region: str) -> dict[str, float]:
     """Load the configured Table 3.2(A) direction multipliers for a region."""
 
     if region not in SUPPORTED_AU_WIND_REGIONS:
         raise ValueError(f"Unsupported Australian wind region: {region}")
+    if region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in A0, A1, A2, A3, A4, or A5."
+        )
+    if region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in B1 or B2."
+        )
     data = load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
     table_key = table_region_key(region, data.get("tables", {}))
     row = data.get("tables", {}).get(table_key)
@@ -134,7 +180,12 @@ def ms_from_shielding_parameter(
 def load_ms_table() -> dict[str, Any]:
     """Load editable shielding-multiplier lookup data."""
 
-    return load_lookup_data(MS_TABLE_ENV, MS_DATA_FILE)
+    data = load_lookup_data(MS_TABLE_ENV, MS_DATA_FILE)
+    issues = shielding_lookup_issues(data, require_reviewed=False)
+    if issues:
+        LOGGER.error("Configured Table 4.2 lookup is invalid: %s", "; ".join(issues))
+        raise ServiceNotReadyError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
+    return data
 
 
 def shielding_reduction_height_limit_m(data: dict[str, Any] | None = None) -> float:
@@ -235,11 +286,19 @@ def shielding_lookup_issues(
     return issues
 
 
-def site_wind_speed(vr: float, md: float, mzcat: float, ms: float, mt: float) -> float:
-    """Calculate Vsit,b from five selected site-wind inputs."""
+def site_wind_speed(
+    *,
+    vr: float,
+    mc: float,
+    md: float,
+    mzcat: float,
+    ms: float,
+    mt: float,
+) -> float:
+    """Calculate Vsit,b from the six Clause 2.2 site-wind inputs."""
 
-    inputs = {"VR": vr, "Md": md, "Mz,cat": mzcat, "Ms": ms, "Mt": mt}
+    inputs = {"VR": vr, "Mc": mc, "Md": md, "Mz,cat": mzcat, "Ms": ms, "Mt": mt}
     invalid = [name for name, value in inputs.items() if not finite_lookup_number(value, minimum=0)]
     if invalid:
         raise ValueError(f"Site-wind inputs must be positive and finite: {', '.join(invalid)}")
-    return float(vr) * float(md) * float(mzcat) * float(ms) * float(mt)
+    return float(vr) * float(mc) * float(md) * float(mzcat) * float(ms) * float(mt)

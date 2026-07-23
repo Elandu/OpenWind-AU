@@ -89,7 +89,7 @@ status, engineer-note, or override fields into the new result.
 
 The HTML and PDF outputs use the same compact report structure:
 
-- project, site, building, region, AEP/ARI, `VR,ult`, and governing result;
+- project, site, building, region, AEP/ARI, `VR,ult`, `Mc`, and governing result;
 - one eight-direction table for `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b`;
 - deduplicated decision-relevant warnings, overrides, and engineer notes when present; and
 - a short calculation-basis and limitations statement.
@@ -97,6 +97,10 @@ The HTML and PDF outputs use the same compact report structure:
 Raw calculation inputs, repeated per-variable summaries, map/profile placeholders, verbose source
 metadata, and duplicated disclaimers are intentionally omitted. Those diagnostics remain available
 in the application raw-data and diagnostics views.
+
+The report states the complete Clause 2.2 product
+`Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`. Non-directional `VR` and `Mc` are each shown once
+rather than repeated across all eight directional rows.
 
 The site wind assessment report does not include pressure calculations, `Cpe`, `Cpi`, or final
 design pressures.

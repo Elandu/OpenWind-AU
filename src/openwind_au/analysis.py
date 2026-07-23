@@ -65,7 +65,7 @@ def resolve_site_location(request: SiteAnalysisRequest, dem_provider: DEMProvide
     if request.latitude is not None and request.longitude is not None:
         latitude = request.latitude
         longitude = request.longitude
-        display_name = request.address
+        display_name = request.site_label
         source = "User supplied coordinates"
     else:
         assert request.address is not None

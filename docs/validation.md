@@ -70,7 +70,7 @@ Validation examples can be proposed with the GitHub issue template:
 
 The qualitative site validation above depends on public terrain data and broad expected behaviour.
 OpenWind-AU also includes deterministic calculation validation for wind inputs, shielding, and
-topographic screening formulas using synthetic inputs and prior project-reference checks with
+topographic screening formulas using synthetic inputs and anonymized class-level checks with
 known expected outputs.
 
 Use:
@@ -84,9 +84,10 @@ Overpass data. They validate covered implementation details such as:
 
 - indicative `Ms` interpolation thresholds;
 - Table 4.1 nodes, combined height/category interpolation, and Region A0 rules;
-- the prior Modos 04625 Region A2 serviceability regional wind speed reference of 37 m/s;
+- a synthetic Region A2 serviceability regional wind speed check of 37 m/s;
 - Clause 4.4 `Mt` calculations including Region A0 and high-elevation Region A4 adjustments;
-- a full-precision `VR x Md x Mz,cat x Ms x Mt` product that rounds only the reported `Vsit,b`;
+- the Table 3.3 `Mc` mapping and a full-precision
+  `VR x Mc x Md x Mz,cat x Ms x Mt` product that rounds only the reported `Vsit,b`;
 - shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
 - topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
 - threshold behaviour where sub-5 m relief is screened out.
@@ -118,8 +119,8 @@ prompts for review. They do not assign final terrain categories or final `Mz,cat
 
 ## Reference Calculation Comparisons
 
-OpenWind-AU includes a fixed comparison against reference calculation job 7989 for 6 Byambee Street, Kenmore,
-QLD. The source PDF reports:
+OpenWind-AU includes a fixed, anonymized class-level comparison at deliberately translated
+synthetic coordinates in Region `B1`. The encoded reference reports:
 
 - Region `B1`;
 - `Vh,ult = 40 m/s`, `Vh,serv = 26 m/s`;
@@ -130,20 +131,28 @@ QLD. The source PDF reports:
 Use:
 
 ```text
-GET /api/reference-validation/7989
+GET /api/reference-validation/anonymized
 ```
 
-This endpoint runs the current workflow for the fixed site and compares directional terrain,
-shielding, and topographic classes. It is intentionally a class-level gap check: mismatches usually
+This endpoint runs the current terrain, obstruction, and terrain-category evidence pipelines for
+the anonymized fixture and compares directional terrain, shielding, and topographic class labels.
+It does not execute the numeric site-wind multiplier workflow. The bundled footprint geometry is translated by one
+fixed offset so relative geometry is preserved while the original location, OSM feature IDs, and
+all source tags are omitted. It remains intentionally a class-level gap check: mismatches usually
 mean the public obstruction/topographic evidence or class mapping needs review before final
 multipliers are trusted.
+
+The fixture contains information derived from OpenStreetMap data. Attribution is
+`© OpenStreetMap contributors`, available under the Open Data Commons Open Database License
+([ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/)); see the
+[OpenStreetMap copyright page](https://www.openstreetmap.org/copyright).
 
 Use:
 
 ```text
-GET /api/reference-validation/7989?apply_reference_overrides=true
+GET /api/reference-validation/anonymized?apply_reference_overrides=true
 ```
 
-to apply the encoded reference calculation classes as reviewed `class_multiplier_overrides`. This proves the
-workflow can carry source classes through to `Mz,cat`, `Ms`, and `Mt` while preserving the raw
-evidence mismatch in the default endpoint.
+to apply the encoded reference classes during the comparison. A 24/24 match verifies override
+transport and class-label mapping while preserving the raw evidence mismatch in the default
+endpoint; it is not a numeric multiplier validation.

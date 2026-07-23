@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 import folium
 from shapely.geometry import mapping, shape
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
@@ -19,6 +19,7 @@ from openwind_au.models import (
 )
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    SUPPORTED_AU_WIND_REGIONS,
     regional_wind_speed,
     table_region_key,
 )
@@ -28,6 +29,7 @@ from openwind_au.standard_lookup_tables import (
     VR_DATA_FILE,
     VR_TABLE_ENV,
     load_lookup_data,
+    load_packaged_lookup_data,
     lookup_metadata_warnings,
     source_reference,
 )
@@ -35,6 +37,9 @@ from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
 VR_METADATA_WARNING = "VR lookup table does not have complete independent reviewer/date metadata."
 MD_METADATA_WARNING = "Md lookup table does not have complete independent reviewer/date metadata."
+VR_EQUATION_REFERENCE = (
+    "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
+)
 
 
 def regional_wind_speed_assessment(
@@ -48,23 +53,42 @@ def regional_wind_speed_assessment(
     data = load_vr_tables()
     ari_years = parse_ari_years(annual_exceedance_probability)
     table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
-    table = data.get("tables", {}).get(table_key, {})
     source = source_reference(data)
     warnings = [
         "VR values are table lookups for engineering review; confirm against the current "
         "project standard."
     ]
+    if wind_region.wind_region in {"C", "D"}:
+        if os.environ.get(VR_TABLE_ENV):
+            warnings.append(
+                f"Region {wind_region.wind_region} requires distance-based coastal VR "
+                "interpolation. Automatic coastal interpolation is not implemented; treat an "
+                "exact configured row as site-specific only when its interpolation has been "
+                "independently reviewed."
+            )
+        else:
+            warnings.append(
+                f"VR uses the Region {wind_region.wind_region} maximum from Table 3.1(A). "
+                "The required distance-based interpolation from the smoothed coastline is not "
+                "implemented."
+            )
     warnings.extend(lookup_metadata_warnings(data, VR_METADATA_WARNING))
-    if os.environ.get(VR_TABLE_ENV):
-        vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
-        vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
-    else:
-        vr_ult = regional_wind_speed(wind_region.wind_region, ari_years)
-        vr_serv = regional_wind_speed(wind_region.wind_region, 25)
-        interpolation = (
-            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
-            "rounded to the nearest 1 m/s."
-        )
+    vr_ult, interpolation = configured_regional_wind_speed(
+        wind_region.wind_region,
+        ari_years,
+        lookup_data=data,
+    )
+    if not os.environ.get(VR_TABLE_ENV) or (
+        interpolation is not None and "regional equation" in interpolation
+    ):
+        source = VR_EQUATION_REFERENCE
+    vr_serv, service_note = configured_regional_wind_speed(
+        wind_region.wind_region,
+        25,
+        lookup_data=data,
+        serviceability=True,
+    )
+    if not os.environ.get(VR_TABLE_ENV):
         service_note = None
     if vr_ult is None:
         warnings.append(
@@ -83,6 +107,11 @@ def regional_wind_speed_assessment(
         f"Ultimate ARI: {ari_years} years",
         "Serviceability ARI: 25 years",
     ]
+    if wind_region.wind_region in {"C", "D"} and not os.environ.get(VR_TABLE_ENV):
+        lookup_values.append(
+            f"Regional speed basis: Region {wind_region.wind_region} maximum; coastal "
+            "interpolation not applied"
+        )
     lookup_values.append(
         f"VR,ult: {vr_ult:.1f} m/s" if vr_ult is not None else "VR,ult: manual input required"
     )
@@ -108,6 +137,16 @@ def direction_multiplier_assessment(
 ) -> DirectionMultiplierAssessment:
     """Return Md values for all eight directions."""
 
+    if wind_region.wind_region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in A0, A1, A2, A3, A4, or A5."
+        )
+    if wind_region.wind_region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in B1 or B2."
+        )
     data = load_md_tables()
     table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
     values = data.get("tables", {}).get(table_key, {})
@@ -169,7 +208,7 @@ def wind_region_map_html(site: SiteLocation, assessment: WindRegionAssessment) -
     ).add_to(fmap)
     try:
         diagnostics = wind_region_debug(site, include_geometry=True)
-    except ValueError:
+    except (ServiceNotReadyError, ValueError):
         diagnostics = None
     if diagnostics:
         for neighbour in diagnostics.get("neighbouring_polygons", []):
@@ -271,7 +310,7 @@ def run_wind_region_validation_cases() -> list[dict[str, Any]]:
             confidence = assessment.confidence
             distance = assessment.distance_to_boundary_m
             diagnosis = validation_diagnosis(case, assessment, status)
-        except ValueError as exc:
+        except (ServiceNotReadyError, ValueError) as exc:
             actual = None
             status = "warning"
             confidence = "low"
@@ -337,21 +376,107 @@ def lookup_vr(
     table: dict[str, Any] | dict[int, Any],
     ari_years: int,
 ) -> tuple[float | None, str | None]:
-    """Return VR from a table, interpolating only between available ARI rows."""
+    """Return an exact configured VR row without inventing intermediate values."""
+
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    if 1 < ari_years < 5:
+        raise ValueError(
+            "AS/NZS 1170.2:2021 Table 3.1(A) defines V1 and the regional equation for R >= 5; "
+            "R must be 1 or at least 5 years."
+        )
 
     numeric_table = {int(year): float(value) for year, value in table.items() if value is not None}
     if not numeric_table:
         return None, None
     if ari_years in numeric_table:
         return numeric_table[ari_years], None
-    years = sorted(numeric_table)
-    if ari_years <= years[0] or ari_years >= years[-1]:
-        return None, f"ARI {ari_years} years is outside the VR table range; manual input required."
-    lower = max(year for year in years if year < ari_years)
-    upper = min(year for year in years if year > ari_years)
-    ratio = (math.log(ari_years) - math.log(lower)) / (math.log(upper) - math.log(lower))
-    value = numeric_table[lower] + (numeric_table[upper] - numeric_table[lower]) * ratio
-    return round(value, 1), f"Interpolated between {lower} and {upper} year ARI rows."
+    return None, f"ARI {ari_years} years is not an exact configured VR row; manual input required."
+
+
+def _vr_row_matches_packaged_table(
+    *,
+    wind_region: str,
+    value_kind: str,
+    configured_row: dict[str, Any] | dict[int, Any],
+) -> bool:
+    """Return whether a configured row is the unchanged packaged standard row."""
+
+    packaged = load_packaged_lookup_data(VR_DATA_FILE)
+    packaged_tables = packaged.get("tables", {})
+    packaged_key = table_region_key(wind_region, packaged_tables)
+    packaged_region = packaged_tables.get(packaged_key, {})
+    packaged_row = packaged_region.get(value_kind, {}) if isinstance(packaged_region, dict) else {}
+    if not isinstance(packaged_row, dict):
+        return False
+    configured_values = {
+        int(year): float(value) for year, value in configured_row.items() if value is not None
+    }
+    packaged_values = {
+        int(year): float(value) for year, value in packaged_row.items() if value is not None
+    }
+    return configured_values == packaged_values
+
+
+def configured_regional_wind_speed(
+    wind_region: str,
+    ari_years: int,
+    *,
+    lookup_data: dict[str, Any] | None = None,
+    serviceability: bool = False,
+) -> tuple[float | None, str | None]:
+    """Return VR through the same equation-or-configured-table path used by the API."""
+
+    if wind_region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    if 1 < ari_years < 5:
+        raise ValueError(
+            "AS/NZS 1170.2:2021 Table 3.1(A) defines V1 and the regional equation for R >= 5; "
+            "R must be 1 or at least 5 years."
+        )
+    if not os.environ.get(VR_TABLE_ENV):
+        note = (
+            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
+            "rounded to the nearest 1 m/s."
+        )
+        if wind_region in {"C", "D"}:
+            note += (
+                f" This is the Region {wind_region} maximum; distance-based interpolation "
+                "from the smoothed coastline is not implemented."
+            )
+        return (
+            regional_wind_speed(wind_region, ari_years),
+            note,
+        )
+
+    data = lookup_data if lookup_data is not None else load_vr_tables()
+    table_key = table_region_key(wind_region, data.get("tables", {}))
+    table = data.get("tables", {}).get(table_key, {})
+    value_kind = "serviceability" if serviceability else "ultimate"
+    configured_row = table.get(value_kind, {}) if isinstance(table, dict) else {}
+    if not isinstance(configured_row, dict):
+        return None, f"Configured VR {value_kind} data is invalid; manual input required."
+    exact_value, note = lookup_vr(configured_row, ari_years)
+    if exact_value is not None:
+        return exact_value, None
+    if _vr_row_matches_packaged_table(
+        wind_region=wind_region,
+        value_kind=value_kind,
+        configured_row=configured_row,
+    ):
+        note = (
+            "Configured VR rows match the packaged Table 3.1(A) values; calculated from the "
+            "regional equation and rounded to the nearest 1 m/s."
+        )
+        if wind_region in {"C", "D"}:
+            note += (
+                f" This is the Region {wind_region} maximum; distance-based interpolation "
+                "from the smoothed coastline is not implemented."
+            )
+        return regional_wind_speed(wind_region, ari_years), note
+    return None, note
 
 
 def load_vr_tables() -> dict[str, Any]:

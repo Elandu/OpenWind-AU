@@ -26,8 +26,9 @@ For the consumer-readiness gap list, see
 - Preliminary shielding-sector evidence from reviewed obstruction geometry and heights.
 - Directional terrain category evidence, including built-up, vegetation, open-terrain,
   obstruction density, height, confidence, and suggested range evidence.
-- Packaged AS/NZS 1170.2:2021 regional wind speed `VR` and direction multiplier `Md` lookup
-  tables for review workflow support.
+- Packaged AS/NZS 1170.2:2021 regional wind speed `VR`, climate-change multiplier `Mc`, direction
+  multiplier `Md`, terrain/height multiplier `Mz,cat`, and shielding multiplier `Ms` lookup data
+  for review workflow support.
 - JSON export.
 - HTML report.
 - PDF report.
@@ -46,8 +47,8 @@ For the consumer-readiness gap list, see
 - Vegetation and non-building obstruction provenance placeholders.
 - Combined workflow map overlays for wind regions, terrain evidence, shielding sectors, and
   obstruction footprints.
-- MCP tools for traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` calculations over stdio
-  or Streamable HTTP.
+- MCP tools for traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` calculations over
+  stdio or Streamable HTTP.
 
 ## Not Implemented Or Certified
 
@@ -63,11 +64,12 @@ These items should not be described as certified OpenWind-AU outputs:
 
 ## Near-Term Improvements
 
-- Build standard-derived lookup assets for `Mz,cat`, `Ms`, `Mt`, AS 4055 classes, and other
-  release-critical wind model coefficients from reviewed source tables.
+- Complete independent reviewer/date metadata for packaged `Mz,cat` and `Ms` lookup assets, add
+  broader `Mt`regression cases, and build any future AS 4055 or other release-critical
+  coefficients from reviewed sources.
 - Add a reviewer sign-off and regression workflow for derived lookup assets without committing
   licensed standard text.
-- Expand reference calculation comparisons beyond job 7989 across regions, heights, terrain
+- Expand anonymized reference comparisons across additional regions, heights, terrain
   categories, shielding states, and topographic classes.
 - Better DEM cache management.
 - Clearer confidence scoring for preliminary topographic screening.

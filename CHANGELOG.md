@@ -2,8 +2,16 @@
 
 All notable project milestones are documented here.
 
-## v0.8.0 - Standards Provenance And Preliminary-Issue Guardrails
+## v0.8.0 (unreleased) - Standards Provenance And Preliminary-Issue Guardrails
 
+- Corrected the mandatory Clause 2.2 site-wind product to include the Clause 3.4/Table 3.3
+  climate-change multiplier `Mc`. B2, C and D now receive the required 1.05 multiplier, generic
+  Region B fails closed pending B1/B2 confirmation, and signed workflow, report, API and MCP
+  contracts carry the factor explicitly. The deterministic mapping is not overrideable.
+- Added an explicit Clause 3.3 direction-multiplier design case and enforce `Md = 1.0` for
+  circular/polygonal chimneys, tanks and poles and for cladding/immediate supports in B2, C and D.
+  Signed variables and top-level source data now expose the same effective Clause 3.3 values. The
+  combined MCP tool now distinguishes average roof height from overall building height.
 - Moved Table 4.1 `Mz,cat` and Table 4.2 `Ms` values into structured, digest-protected packaged
   lookup assets with deployment overrides, explicit pending-review status, and readiness checks.
 - Centralised `Vsit,b` multiplication across the web workflow and MCP tools, preserving full
@@ -29,7 +37,56 @@ All notable project milestones are documented here.
   full region polygons from normal JSON responses, and sanitised PDF failures while retaining
   detailed server-side incident logs.
 - Added CI construction, required-file inspection, isolated installation smoke tests, and retained
-  distribution artifacts for the consumer wheel and source package.
+  distribution artifacts for the consumer wheel and source package, using current Node 24-based
+  GitHub Actions and least-privilege repository permissions.
+- Classified invalid deployment settings and required local datasets as HTTP 503 readiness
+  failures, retained 4xx responses for consumer input errors and 502 for required upstream
+  failures, sanitised low-level 502 details, and applied the same status contract to terminal
+  workflow-stream events.
+- Added an operator preflight command (`openwind-au check` and `--json`) backed by the same readiness
+  report as `/health`, plus validated host/port options for the server command while retaining the
+  safe loopback default.
+- Synchronised package, citation, and locked-environment versions; added CI lock, locked-graph, and
+  vulnerability checks; corrected the effective Pydantic floor; and migrated FastAPI test clients
+  to Starlette's maintained `httpx2` backend.
+- Removed source-only `openwind` compatibility shims that were never included in consumer wheels
+  but leaked into source distributions.
+- Added browser-state regression tests and corrected saved-location invalidation so editing an
+  address immediately clears the previous map, autocomplete can adopt the replacement site, and
+  fallback workflow reports bind to the resolved coordinates.
+- Removed repeated calculated values from Raw Data override cells while retaining one calculated
+  column and the complete optional override controls.
+- Verified Python 3.13 and 3.14 support and normalised Windows extended-path aliases so concurrent
+  Microsoft footprint requests share one download lock on current Python releases.
+- Made every public request location unambiguous: clients now send either an address to geocode or
+  a complete coordinate pair, with optional `site_label` for coordinate display. Updated both
+  browser workflows so autocomplete, restored sites, and dragged buildings use that contract.
+- Made public request and completed-result validation strict, rejecting unknown nested fields,
+  booleans/numeric strings in engineering-number fields, unsigned internal GIS geometry, and other
+  representation changes that could previously be discarded before integrity verification.
+- Corrected OpenAPI media types and schemas for NDJSON streams, all PDF routes, raw obstruction
+  imports, health/error responses, geocoding, combined analysis, and validation outputs. PDF and
+  completed-result errors now document the JSON bodies actually returned at runtime.
+- Made CSV/JSON obstruction imports fail closed on unknown or duplicate fields, missing reviewed
+  heights, surplus CSV values, invalid identifiers, unsupported media, and bodies over 1 MB while
+  streaming the size check instead of buffering an unbounded request.
+- Unified configured `VR` selection between FastAPI and MCP, added MCP source provenance and
+  application-version handshakes, published bounded enum/result schemas, and validated all MCP
+  engineering types without coercion. Streamable HTTP now retains DNS-rebinding protection and
+  requires explicit Host allowlists for wildcard binds.
+- Added bounded and ambiguity-safe HTTP request parsing, finite/bounded public models, trusted Host
+  enforcement, production readiness gating, sanitized validation errors, browser security headers,
+  conservative dynamic caching, and a shared versioned outbound User-Agent.
+- Corrected bounded-body replay for streaming responses so workflow progress no longer stalls or
+  spins a server core after the request body is consumed. Compact PDF output now keeps the
+  calculation-lineage reference with the issued one-page summary. A broader concise warning set
+  remains in HTML, while complete diagnostics remain in the workflow result.
+- Unified the REST, browser, and MCP reference-height contract as `average_roof_height_m`,
+  with documented fallback to `building_height_m` and a request-only legacy alias for
+  `average_height_m`.
+- Anonymized the bundled class-level reference fixture and endpoint by translating its coordinates,
+  removing original project and OSM feature identifiers/tags, and adding explicit OpenStreetMap
+  attribution and ODbL 1.0 licensing metadata.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 

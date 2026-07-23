@@ -12,6 +12,11 @@ from openwind_au.dem import (
     configured_dem_provider,
     srtm_tile_name,
 )
+from openwind_au.errors import ServiceNotReadyError
+from openwind_au.http_client import APPLICATION_USER_AGENT
+
+TEST_LATITUDE = -30.25
+TEST_LONGITUDE = 135.75
 
 
 def test_srtm_tile_name_for_australia() -> None:
@@ -40,18 +45,19 @@ def test_open_meteo_elevation_provider_reads_first_elevation(monkeypatch) -> Non
         def json(self) -> dict:
             return {"elevation": [42.5]}
 
-    def fake_get(url, params, timeout):
-        calls.append({"url": url, "params": params, "timeout": timeout})
+    def fake_get(url, params, headers, timeout):
+        calls.append({"url": url, "params": params, "headers": headers, "timeout": timeout})
         return Response()
 
     monkeypatch.setattr("openwind_au.dem.requests.get", fake_get)
     provider = OpenMeteoElevationProvider(base_url="https://example.test/elevation")
 
-    assert provider.elevation(-27.520503, 152.936814) == pytest.approx(42.5)
-    assert provider.elevation(-27.520503, 152.936814) == pytest.approx(42.5)
+    assert provider.elevation(TEST_LATITUDE, TEST_LONGITUDE) == pytest.approx(42.5)
+    assert provider.elevation(TEST_LATITUDE, TEST_LONGITUDE) == pytest.approx(42.5)
     assert len(calls) == 1
     assert calls[0]["url"] == "https://example.test/elevation"
-    assert calls[0]["params"] == {"latitude": -27.520503, "longitude": 152.936814}
+    assert calls[0]["params"] == {"latitude": TEST_LATITUDE, "longitude": TEST_LONGITUDE}
+    assert calls[0]["headers"] == {"User-Agent": APPLICATION_USER_AGENT}
 
 
 def test_open_meteo_elevation_provider_rejects_missing_elevation(monkeypatch) -> None:
@@ -62,14 +68,15 @@ def test_open_meteo_elevation_provider_rejects_missing_elevation(monkeypatch) ->
         def json(self) -> dict:
             return {"generationtime_ms": 1.2}
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, headers, timeout):
+        del url, params, headers, timeout
         return Response()
 
     monkeypatch.setattr("openwind_au.dem.requests.get", fake_get)
     provider = OpenMeteoElevationProvider()
 
     with pytest.raises(RuntimeError, match="Open-Meteo elevation"):
-        provider.elevation(-27.520503, 152.936814)
+        provider.elevation(TEST_LATITUDE, TEST_LONGITUDE)
 
 
 def test_open_meteo_elevation_provider_batches_and_caches_coordinates(monkeypatch) -> None:
@@ -85,7 +92,8 @@ def test_open_meteo_elevation_provider_batches_and_caches_coordinates(monkeypatc
         def json(self) -> dict:
             return {"elevation": self._elevations}
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, headers, timeout):
+        assert headers == {"User-Agent": APPLICATION_USER_AGENT}
         del url, timeout
         latitude = params["latitude"]
         count = len(str(latitude).split(",")) if isinstance(latitude, str) else 1
@@ -108,7 +116,8 @@ def test_open_meteo_elevation_provider_batches_and_caches_coordinates(monkeypatc
 def test_open_meteo_elevation_provider_falls_back_to_curl(monkeypatch) -> None:
     commands = []
 
-    def fake_get(url, params, timeout):
+    def fake_get(url, params, headers, timeout):
+        del url, params, headers, timeout
         raise RuntimeError("tls failure")
 
     class Completed:
@@ -125,8 +134,9 @@ def test_open_meteo_elevation_provider_falls_back_to_curl(monkeypatch) -> None:
     monkeypatch.setattr("openwind_au.dem.subprocess.run", fake_run)
     provider = OpenMeteoElevationProvider(base_url="https://example.test/elevation")
 
-    assert provider.elevation(-27.520503, 152.936814) == pytest.approx(37)
+    assert provider.elevation(TEST_LATITUDE, TEST_LONGITUDE) == pytest.approx(37)
     assert commands
+    assert commands[0][commands[0].index("--user-agent") + 1] == APPLICATION_USER_AGENT
     assert commands[0][-1].startswith("https://example.test/elevation?")
 
 
@@ -145,5 +155,5 @@ def test_configured_dem_provider_accepts_open_meteo(monkeypatch) -> None:
 def test_configured_dem_provider_rejects_unknown_provider(monkeypatch) -> None:
     monkeypatch.setenv("OPENWIND_DEM_PROVIDER", "unknown")
 
-    with pytest.raises(ValueError, match="Unsupported OPENWIND_DEM_PROVIDER"):
+    with pytest.raises(ServiceNotReadyError, match="Unsupported OPENWIND_DEM_PROVIDER"):
         configured_dem_provider()
