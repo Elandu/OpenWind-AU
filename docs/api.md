@@ -243,8 +243,9 @@ confirmed. This is required because A0 has special terrain-height and topographi
 high-elevation topographic rule, and the direction multiplier requires a specific regional row.
 
 Mandatory standard values cannot be replaced through either override collection. In Region A0,
-the terrain-independent Table 4.1 Mz,cat value is retained. When average roof height h exceeds
-25 m, Clause 4.3.1 requires Ms = 1.0. Numeric overrides for either case are rejected.
+the mandatory Table 4.1 A0 rule is retained independently of terrain-category class, while still
+using the common reference height. When average roof height h exceeds 25 m, Clause 4.3.1 requires
+Ms = 1.0. Numeric overrides for either case are rejected.
 
 Use `average_roof_height_m` for the common AS/NZS reference height `h` used by
 `Mz,cat`, the Clause 4.3 shielding-height checks, and Clause 4.4 topographic calculations.
@@ -252,13 +253,24 @@ When it is omitted, the workflow conservatively uses `building_height_m`. The re
 `average_height_m` alias remains accepted for migration, but responses and OpenAPI use the
 unambiguous `average_roof_height_m` name.
 
-`Mc` is a deterministic Table 3.3 mapping and is not overrideable. These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
-and do not certify the automated GIS evidence or final design outcome.
+`Mc` is a deterministic Table 3.3 mapping and is not overrideable. Other overrides are reviewed
+engineering inputs. They preserve their reasons in result provenance and do not certify the
+automated GIS evidence or final design outcome.
 
 `assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
 both `reviewed_by` and non-empty `engineer_notes`. `final` is rejected because this service does
 not issue certified assessments. HTML and PDF reports remain marked `PRELIMINARY - NOT FOR
 CERTIFICATION` in either state.
+
+`structure_orientation_deg` is the engineering azimuth of the building's front, measured clockwise
+from North. It accepts `0 <= beta < 360`; `0`, `90`, `180`, and `270` therefore correspond to
+the front pointing North, East, South, and West respectively. The right, back, and left building
+axes are offset from that front azimuth by 90, 180, and 270 degrees. The browser map uses the same
+convention. `building_width_m` is the left-to-right breadth across the front and
+`building_length_m` is the front-to-back depth; supply both together when defining the editable
+footprint. These fields preserve the building-axis context but do not transform the eight
+cardinal-direction `Vsit,b` rows into Clause 2.3 `Vdes,theta`; design wind speeds and pressures
+remain outside this workflow.
 
 The response fields named `final_value` and `final_vsitb` are retained for API compatibility. They
 mean the selected calculated or explicitly overridden value used in the current preliminary

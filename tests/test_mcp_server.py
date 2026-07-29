@@ -133,6 +133,13 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         "cladding_or_immediate_support",
         "circular_or_polygonal_chimney_tank_or_pole",
     ]
+    assert combined_schema["properties"]["structure_class"]["anyOf"][0]["enum"] == [
+        "building",
+        "house",
+        "monopole",
+        "tower",
+        "other",
+    ]
     assert "average_roof_height_m" in combined_schema["required"]
     assert "height_m" not in combined_schema["properties"]
     assert "mc" in site_speed_schema["required"]
@@ -203,6 +210,8 @@ def test_mcp_individual_tools_return_structured_traceability() -> None:
     assert "regional equation" in vr["outputs"]["source_reference"]
     assert mc["outputs"]["mc"] == 1.0
     assert md["outputs"]["md"]["N"] == 0.85
+    assert "Table 3.2(A)" in md["outputs"]["source_reference"]
+    assert any("reviewer/date metadata" in warning for warning in md["warnings"])
     assert mzcat["outputs"]["mzcat"] == 0.83
     assert ms["outputs"]["ms"] == 0.85
     assert vsitb["outputs"]["vsitb_mps"] == pytest.approx(26.985375)
@@ -264,7 +273,7 @@ def test_mcp_identical_configured_table_attributes_equation_fallback(monkeypatch
 
     assert result["outputs"]["vr_mps"] == 38.0
     assert result["outputs"]["source_reference"] == (
-        "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
+        "AS/NZS 1170.2:2021 Table 3.1(A) regional equation"
     )
     assert any("regional equation" in warning for warning in result["warnings"])
 
@@ -297,19 +306,20 @@ def test_mcp_all_variables_matches_component_product() -> None:
         site_elevation_m=100.0,
     )
 
-    assert result["outputs"] == {
+    outputs = dict(result["outputs"])
+    md_lookup_source = outputs.pop("md_lookup_source_reference")
+    assert outputs == {
         "vr_mps": 45.0,
-        "vr_source_reference": (
-            "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
-        ),
+        "vr_source_reference": ("AS/NZS 1170.2:2021 Table 3.1(A) regional equation"),
         "mc": 1.0,
         "md": 0.85,
-        "md_source_reference": ("AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.2(A)"),
+        "md_source_reference": ("AS/NZS 1170.2:2021 Table 3.2(A)"),
         "mzcat": 0.83,
         "ms": 0.85,
         "mt": 1.0,
         "vsitb_mps": pytest.approx(26.985375),
     }
+    assert "Table 3.2(A)" in md_lookup_source
 
 
 def test_mcp_all_variables_uses_full_precision_mt_before_rounding_vsitb() -> None:
@@ -405,6 +415,30 @@ def test_mcp_clause_3_3_circular_case_forces_md_one_in_every_region(wind_region:
     )
 
     assert result["outputs"]["md"] == 1.0
+    assert "Clause 3.3" in result["outputs"]["md_source_reference"]
+
+
+def test_mcp_monopole_structure_class_forces_effective_clause_3_3_md() -> None:
+    result = calculate_all_wind_variables(
+        wind_region="A2",
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="main_structure",
+        structure_class="monopole",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert result["inputs"]["structure_class"] == "monopole"
+    assert result["outputs"]["md"] == 1.0
+    assert result["outputs"]["md_lookup_source_reference"] is None
     assert "Clause 3.3" in result["outputs"]["md_source_reference"]
 
 

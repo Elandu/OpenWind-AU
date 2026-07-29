@@ -85,11 +85,13 @@ directly in that case:
   `VR x Mc x Md x Mz,cat x Ms x Mt` product.
 - `calculate_all_wind_variables`: a traceable combined result for one direction.
 
-The combined tool requires a `wind_direction_multiplier_case`. It enforces `Md = 1.0` for the
-Clause 3.3 chimney/tank/pole case and for cladding or its immediate supporting structure in B2, C
-and D. It accepts `average_roof_height_m` separately from overall `building_height_m` and uses the
-average roof height for `Mz,cat`, the 25 m shielding rule, and Clause 4.4. Generic Region `B` is
-rejected for `Mc`; callers must identify B1 or B2.
+The combined tool requires a `wind_direction_multiplier_case`. It also accepts the optional
+`structure_class` value `building`, `house`, `monopole`, `tower`, or `other`. It enforces
+`Md = 1.0` for the Clause 3.3 chimney/tank/pole case, whenever `structure_class` is `monopole`,
+and for cladding or its immediate supporting structure in B2, C and D. It accepts
+`average_roof_height_m` separately from overall `building_height_m` and uses the average roof
+height for `Mz,cat`, the 25 m shielding rule, and Clause 4.4. Generic Region `B` is rejected for
+`Mc`; callers must identify B1 or B2.
 
 The published tool schemas narrow the region choices to the calculation being performed. Generic A
 is available only to standalone regional-speed and climate-change calculations; direction,
@@ -100,7 +102,8 @@ climate-change, direction, and combined calculations require B1 or B2.
 Each tool returns the standard edition, clause/table reference, inputs, outputs, warnings, and an
 engineering-review flag. The server calculates from supplied, reviewed inputs; it does not certify
 terrain category, obstruction suitability, topographic survey geometry, jurisdictional variations,
-or compliance.
+or compliance. Runtime provenance currently identifies the base AS/NZS 1170.2:2021 edition; it
+does not claim that Amendments 1 and 2 have been independently verified.
 
 The initialization handshake reports the OpenWind-AU application version. Tool schemas enumerate
 supported wind regions, directions, terrain categories, and topographic feature types, publish
@@ -116,6 +119,16 @@ non-tabulated `R >= 5` values. The MCP calculation fails closed if no value can 
 it cannot continue `Vsit,b` with a missing VR. Region C/D default values are labelled as regional
 maxima because distance-based coastal interpolation is not implemented. Unsupported Australian
 wind-region labels are rejected rather than falling through to an ordinary-region calculation.
+
+An `Md` lookup is loaded and validated once per tool invocation, so the selected values,
+provenance, and metadata warnings come from one snapshot even if the configured file changes
+during a request. `get_direction_multipliers` returns the lookup citation in
+`outputs.source_reference`. The combined tool separates the effective normative citation in
+`outputs.md_source_reference` from the configured lookup citation in
+`outputs.md_lookup_source_reference`. The latter is `null` when Clause 3.3 supplies the mandatory
+`Md = 1.0` and no Table 3.2(A) row is used. Missing or extra directions, non-numeric or non-finite
+values, and values outside the accepted positive bound fail closed instead of producing a partial
+calculation. Lookup review-metadata warnings are returned in the normal `warnings` array.
 
 ## Verify
 

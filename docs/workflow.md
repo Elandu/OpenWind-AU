@@ -16,9 +16,30 @@ street segment, suburb, or other public-map reference.
 OpenWind-AU also accepts structured building inputs for review workflows:
 
 - structure class: `building`, `house`, `monopole`, `tower`, or `other`;
-- orientation from `-90` to `90` degrees;
+- front-face orientation as an engineering azimuth in the range `0 <= beta < 360` degrees,
+  measured clockwise from North (`0`, `90`, `180`, and `270` point the front North, East, South,
+  and West respectively);
 - roof shape: `gable`, `hip`, or `monoslope`;
-- width, length, roof pitch, average roof height, and base RL.
+- breadth/width measured left-to-right across the front, depth/length measured front-to-back,
+  roof pitch, average roof height, and base RL.
+
+The Design building on the map uses the same coordinate, orientation, and dimension values as the
+assessment request. Drag the footprint to move it, drag the orientation handle to set any
+whole-degree azimuth, or drag a corner handle to resize it. Map edits update the visible form
+controls, invalidate any earlier signed result, and are saved with the selected project number.
+Projects without a project number remain session-only. Entering a new address clears the saved
+coordinate override so autocomplete can resolve the replacement site.
+
+Orientation identifies the front/right/back/left building axes for review. The current workflow
+ends at the eight cardinal-direction `Vsit,b` values; it does not yet perform the Clause 2.3
+conversion to building-orthogonal `Vdes,theta` or calculate design pressures.
+For a front azimuth `beta`, the right, back, and left axes are `beta + 90`, `beta + 180`, and
+`beta + 270` degrees, normalized back into the same full-circle range.
+
+Both building dimensions are optional, but when one is entered the other is required. Average roof
+height must not exceed overall building height. The browser validates these relationships and the
+published numeric bounds before sending the request; server validation remains authoritative and
+returns the affected field when a request is rejected.
 
 ## 2. Terrain Profiles
 
@@ -136,11 +157,12 @@ shielding-height checks, and `Mt`. It defaults to `building_height_m` when omitt
 The legacy request alias `average_height_m` is accepted only for migration; normalized
 workflow inputs use `average_roof_height_m`.
 
-Mandatory standard values remain fail-closed. Region A0 uses its terrain-independent Table 4.1
-Mz,cat value even when a terrain class is recorded for provenance, and numeric Mz,cat overrides are
-rejected. When average roof height h exceeds 25 m, Clause 4.3.1 requires Ms = 1.0 and numeric Ms
-overrides are rejected. Calculated values remain separate from reviewed override values in the
-result audit trail.
+Mandatory standard values remain fail-closed. Region A0 uses the mandatory Table 4.1 A0 rule,
+independent of the selected terrain-category class but still dependent on reference height, even
+when a terrain class is recorded for provenance; numeric Mz,cat overrides are rejected. When
+average roof height h exceeds 25 m, Clause 4.3.1 requires Ms = 1.0 and numeric Ms overrides are
+rejected. Calculated values remain separate from reviewed override values in the result audit
+trail.
 
 The wind workflow request rejects unknown fields. Legacy fields that previously appeared to
 override a result but were ignored—`wind_region`, `regional_wind_speed_mps`,

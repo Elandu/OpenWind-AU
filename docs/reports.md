@@ -30,6 +30,8 @@ POST /api/report/pdf
 ```
 
 The PDF report is a compact summary for engineering review. It is not a certified design report.
+In the browser workflow, a generated PDF is downloaded when the viewer window cannot be opened;
+the API response remains the authoritative report payload.
 
 ## Validation Report
 
@@ -89,8 +91,10 @@ status, engineer-note, or override fields into the new result.
 
 The HTML and PDF outputs use the same compact report structure:
 
-- project, site, building, region, AEP/ARI, `VR,ult`, `Mc`, and governing result;
-- one eight-direction table for `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b`;
+- project, site, building, common reference height, reviewed base RL, region, AEP/ARI, effective
+  `VR,ult`, `Mc`, and every tied governing direction;
+- one eight-direction table for `Md`, `Mz,cat`, `Ms`, `Mt`, calculated `Vsit,b`, and final
+  `Vsit,b` when a reviewed direct override applies;
 - deduplicated decision-relevant warnings, overrides, and engineer notes when present; and
 - a short calculation-basis and limitations statement.
 
@@ -100,7 +104,9 @@ in the application raw-data and diagnostics views.
 
 The report states the complete Clause 2.2 product
 `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`. Non-directional `VR` and `Mc` are each shown once
-rather than repeated across all eight directional rows.
+rather than repeated across all eight directional rows. Numeric class-multiplier overrides are
+disclosed alongside their calculated values, while a direct `Vsit,b` override is labelled as the
+final reviewed value instead of being presented as the multiplier product.
 
 The site wind assessment report does not include pressure calculations, `Cpe`, `Cpi`, or final
 design pressures.

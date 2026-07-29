@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "title": "Editable shielding multiplier lookup table",
-    "standard": "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2",
+    "standard": "AS/NZS 1170.2:2021",
     "clause": "Clause 4.3",
     "table": "Table 4.2",
     "standard_reference": "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2",

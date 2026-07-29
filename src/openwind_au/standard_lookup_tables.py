@@ -33,7 +33,7 @@ MS_DATA_FILE = "shielding_multipliers.json"
 
 VERIFIED_LOOKUP_REVIEW_STATUS = "verified_against_standard"
 PENDING_LOOKUP_REVIEW_STATUS = "pending_independent_review"
-AS_NZS_1170_2_EDITION = "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2"
+AS_NZS_1170_2_EDITION = "AS/NZS 1170.2:2021"
 MAX_LOOKUP_FILE_BYTES = 256_000
 TRUSTED_PACKAGED_VALUES_SHA256: dict[str, str] = {
     MZCAT_DATA_FILE: "0a89849ef40a1ad376c1dabb11614095afbdb27c7278a331aec31ab5182275b5",

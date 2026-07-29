@@ -4,13 +4,14 @@ OpenWind-AU is an early-stage, preliminary terrain analysis tool.
 
 It does not:
 
+- automate the Clause 2.3 conversion from the eight cardinal-direction `Vsit,b` values to
+  building-orthogonal `Vdes,theta`; orientation is retained as reviewable building-axis metadata;
 - automate the Clause 4.2.3 weighted average across mixed-terrain fetches; the workflow evaluates
   one reviewed or recommended terrain category at the common reference height;
 - interpolate Region C or D regional wind speed between a smooth coastline and the inland boundary;
   it uses the applicable tabulated-region maximum and emits a review warning;
 - automate selection of the most adverse Clause 4.4.2 topographic cross-section within +/-22.5
   degrees or confirm the downwind-slope eligibility criterion for an escarpment;
-
 - certify its preliminary Clause 4.4 `Mt` calculations without engineer review of the
   DEM-derived `H`, `Lu`, `x`, feature type, and reference height;
 - assign a final terrain category;

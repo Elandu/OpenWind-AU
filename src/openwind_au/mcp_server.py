@@ -25,29 +25,37 @@ from openwind_au.models import (
     WindDirectionMultiplierCase,
     WindRegionLabel,
 )
-from openwind_au.mzcat import indicative_mzcat, mzcat_lookup_warnings
+from openwind_au.mzcat import indicative_mzcat, load_mzcat_table, mzcat_lookup_warnings
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    MAX_DIRECTION_MULTIPLIER,
     climate_change_multiplier,
     direction_multiplier_values,
+    load_ms_table,
     ms_from_shielding_parameter,
     shielding_lookup_warnings,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
-from openwind_au.standard_lookup_tables import lookup_metadata_warnings, source_reference
+from openwind_au.standard_lookup_tables import (
+    AS_NZS_1170_2_EDITION,
+    lookup_metadata_warnings,
+    source_reference,
+)
 from openwind_au.topographic_multiplier import (
     calculate_topographic_multiplier as calculate_mt,
 )
 from openwind_au.wind_inputs import (
+    MD_METADATA_WARNING,
     VR_EQUATION_REFERENCE,
     VR_METADATA_WARNING,
     VR_TABLE_ENV,
     configured_regional_wind_speed,
+    load_md_tables,
     load_vr_tables,
 )
 
-STANDARD = "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2"
+STANDARD = AS_NZS_1170_2_EDITION
 MCP_TRANSPORTS = ("stdio", "streamable-http")
 LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
 LOOPBACK_ALLOWED_ORIGINS = [
@@ -57,6 +65,7 @@ LOOPBACK_ALLOWED_ORIGINS = [
 ]
 
 FeatureType = Literal["hill", "ridge", "escarpment", "valley", "no significant feature"]
+StructureClass = Literal["building", "house", "monopole", "tower", "other"]
 AriYears = Annotated[
     int,
     Field(
@@ -79,7 +88,7 @@ ClimateChangeMultiplierValue = Annotated[
 ]
 DirectionMultiplierValue = Annotated[
     float,
-    Field(strict=True, gt=0, le=2, allow_inf_nan=False),
+    Field(strict=True, gt=0, le=MAX_DIRECTION_MULTIPLIER, allow_inf_nan=False),
 ]
 ShieldingMultiplierValue = Annotated[
     float,
@@ -181,6 +190,17 @@ def _regional_wind_speed(wind_region: str, ari_years: int) -> tuple[float, list[
     return vr, warnings, selected_source
 
 
+def _direction_multipliers(
+    wind_region: SpecificWindRegionLabel,
+) -> tuple[dict[str, float], list[str], str]:
+    """Resolve Md values and provenance from one validated lookup snapshot."""
+
+    data = load_md_tables()
+    multipliers = direction_multiplier_values(wind_region, data=data)
+    warnings = lookup_metadata_warnings(data, MD_METADATA_WARNING)
+    return multipliers, warnings, source_reference(data)
+
+
 @mcp.tool()
 def calculate_regional_wind_speed(
     wind_region: WindRegionLabel,
@@ -218,11 +238,16 @@ def calculate_climate_change_multiplier(
 def get_direction_multipliers(wind_region: SpecificWindRegionLabel) -> CalculationResult:
     """Return the eight Australian wind direction multipliers Md for a reviewed region."""
 
-    multipliers = direction_multiplier_values(wind_region)
+    multipliers, warnings, selected_source = _direction_multipliers(wind_region)
     return _result(
         clause="Table 3.2(A)",
         inputs={"wind_region": wind_region},
-        outputs={"md": multipliers, "any_direction_md": 1.0},
+        outputs={
+            "md": multipliers,
+            "any_direction_md": 1.0,
+            "source_reference": selected_source,
+        },
+        warnings=warnings,
     )
 
 
@@ -235,7 +260,13 @@ def calculate_terrain_height_multiplier(
     """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
 
     height_m = _finite_value("Height", height_m, minimum=0, maximum=200, minimum_inclusive=False)
-    mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
+    lookup = load_mzcat_table()
+    mzcat = indicative_mzcat(
+        terrain_category,
+        height_m,
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
     return _result(
         clause="Clauses 4.2.2 and 4.2.3; Table 4.1",
         inputs={
@@ -247,7 +278,7 @@ def calculate_terrain_height_multiplier(
         warnings=[
             "The terrain category and any mixed-fetch weighted averaging must be "
             "reviewed separately.",
-            *mzcat_lookup_warnings(),
+            *mzcat_lookup_warnings(lookup),
         ],
     )
 
@@ -272,13 +303,14 @@ def calculate_shielding_multiplier(
         maximum=200,
         minimum_inclusive=False,
     )
-    warnings = shielding_lookup_warnings()
-    height_limit_m = shielding_reduction_height_limit_m()
+    lookup = load_ms_table()
+    warnings = shielding_lookup_warnings(lookup)
+    height_limit_m = shielding_reduction_height_limit_m(lookup)
     if average_roof_height_m > height_limit_m:
         ms = 1.0
         warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     else:
-        ms = ms_from_shielding_parameter(shielding_parameter)
+        ms = ms_from_shielding_parameter(shielding_parameter, data=lookup)
     return _result(
         clause="Clause 4.3; Table 4.2",
         inputs={
@@ -369,7 +401,13 @@ def calculate_site_wind_speed(
             minimum_inclusive=False,
         ),
         "mc": _finite_value("Mc", mc, minimum=0, maximum=2, minimum_inclusive=False),
-        "md": _finite_value("Md", md, minimum=0, maximum=2, minimum_inclusive=False),
+        "md": _finite_value(
+            "Md",
+            md,
+            minimum=0,
+            maximum=MAX_DIRECTION_MULTIPLIER,
+            minimum_inclusive=False,
+        ),
         "mzcat": _finite_value(
             "Mz,cat",
             mzcat,
@@ -411,6 +449,7 @@ def calculate_all_wind_variables(
     x_m: TopographicDistance,
     site_elevation_m: SiteElevation,
     site_is_downwind: StrictBoolean = True,
+    structure_class: StructureClass | None = None,
 ) -> CalculationResult:
     """Calculate VR, Mc, Md, Mz,cat, Ms, Mt, and Vsit,b from reviewed inputs."""
 
@@ -453,22 +492,34 @@ def calculate_all_wind_variables(
     mc = climate_change_multiplier(wind_region)
     mandatory_md = (
         wind_direction_multiplier_case == "circular_or_polygonal_chimney_tank_or_pole"
+        or structure_class == "monopole"
         or (
             wind_direction_multiplier_case == "cladding_or_immediate_support"
             and wind_region in {"B2", "C", "D"}
         )
     )
-    md = 1.0 if mandatory_md else direction_multiplier_values(wind_region)[direction]
+    md_warnings: list[str] = []
+    if mandatory_md:
+        md = 1.0
+        md_source = f"{STANDARD} Clause 3.3"
+        md_lookup_source = None
+    else:
+        multipliers, md_warnings, md_lookup_source = _direction_multipliers(wind_region)
+        md = multipliers[direction]
+        md_source = f"{STANDARD} Table 3.2(A)"
+    mzcat_lookup = load_mzcat_table()
     mzcat = indicative_mzcat(
         terrain_category,
         average_roof_height_m,
         wind_region=wind_region,
+        lookup_data=mzcat_lookup,
     )
-    height_limit_m = shielding_reduction_height_limit_m()
+    ms_lookup = load_ms_table()
+    height_limit_m = shielding_reduction_height_limit_m(ms_lookup)
     ms = (
         1.0
         if average_roof_height_m > height_limit_m
-        else ms_from_shielding_parameter(shielding_parameter)
+        else ms_from_shielding_parameter(shielding_parameter, data=ms_lookup)
     )
     mt_calculation = calculate_mt(
         feature_type=feature_type,
@@ -496,15 +547,17 @@ def calculate_all_wind_variables(
     )
     warnings = [
         *vr_warnings,
-        *mzcat_lookup_warnings(),
-        *shielding_lookup_warnings(),
+        *md_warnings,
+        *mzcat_lookup_warnings(mzcat_lookup),
+        *shielding_lookup_warnings(ms_lookup),
         *mt_calculation.warnings,
     ]
     if average_roof_height_m > height_limit_m:
         warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     if mandatory_md:
         warnings.append(
-            "Clause 3.3 requires Md = 1.0 for the selected design case and wind region."
+            "Clause 3.3 requires Md = 1.0 for the effective design case, structure class, "
+            "and wind region."
         )
     warnings.append(
         "Terrain, shielding, topographic geometry, wind region, and jurisdictional variations "
@@ -517,6 +570,7 @@ def calculate_all_wind_variables(
             "ari_years": ari_years,
             "direction": direction,
             "wind_direction_multiplier_case": wind_direction_multiplier_case,
+            "structure_class": structure_class,
             "terrain_category": terrain_category,
             "average_roof_height_m": average_roof_height_m,
             "shielding_parameter": shielding_parameter,
@@ -533,9 +587,8 @@ def calculate_all_wind_variables(
             "vr_source_reference": vr_source,
             "mc": mc,
             "md": md,
-            "md_source_reference": (
-                f"{STANDARD} Clause 3.3" if mandatory_md else f"{STANDARD} Table 3.2(A)"
-            ),
+            "md_source_reference": md_source,
+            "md_lookup_source_reference": md_lookup_source,
             "mzcat": round(mzcat, 6),
             "ms": round(ms, 6),
             "mt": round(mt_calculation.mt, 6),

@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openwind_au.standard_calculations import MAX_DIRECTION_MULTIPLIER
+
 DISCLAIMER = (
     "OpenWind-AU provides preliminary terrain and topographic analysis only. "
     "Outputs must be reviewed by a competent engineer and are not a certified "
@@ -1080,7 +1082,7 @@ class WindVariableOverride(StrictRequestModel):
             raise ValueError(f"direction is required for a {self.variable} override.")
         maximum_by_variable = {
             "VR": 200.0,
-            "Md": 2.0,
+            "Md": MAX_DIRECTION_MULTIPLIER,
             "Mzcat": 10.0,
             "Ms": 1.0,
             "Mt": 10.0,
@@ -1142,7 +1144,16 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     structure_type: str | None = Field(default=None, max_length=300)
     wind_direction_multiplier_case: WindDirectionMultiplierCase = "main_structure"
     building_dimensions: str | None = Field(default=None, max_length=300)
-    structure_orientation_deg: float | None = Field(default=None, ge=-90, le=90)
+    structure_orientation_deg: float | None = Field(
+        default=None,
+        ge=0,
+        lt=360,
+        description=(
+            "Engineering azimuth beta for the building theta=0/front axis, in degrees "
+            "clockwise from true North in the range [0, 360). Right, back, and left "
+            "are beta + 90, + 180, and + 270 degrees respectively."
+        ),
+    )
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
     building_width_m: float | None = Field(default=None, gt=0, le=5000)
     building_length_m: float | None = Field(default=None, gt=0, le=5000)
@@ -1188,7 +1199,7 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         return value.strip() or None
 
     @model_validator(mode="after")
-    def validate_unique_overrides(self) -> WindWorkflowRequest:
+    def validate_workflow_contract(self) -> WindWorkflowRequest:
         workflow_keys = [(item.variable, item.direction) for item in self.workflow_overrides]
         if len(workflow_keys) != len(set(workflow_keys)):
             raise ValueError("workflow_overrides contains duplicate variable/direction entries.")
@@ -1199,6 +1210,10 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
             raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if (self.building_width_m is None) != (self.building_length_m is None):
+            raise ValueError(
+                "building_width_m and building_length_m must be provided together, or both omitted."
+            )
         if (
             self.average_roof_height_m is not None
             and self.average_roof_height_m > self.building_height_m
@@ -1266,6 +1281,7 @@ class WindWorkflowResult(BaseModel):
     direction_multiplier_assessment: DirectionMultiplierAssessment
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    governing_directions: list[WindDirection] = Field(default_factory=list)
     governing_direction: WindDirection | None = None
     governing_vsitb: float | None = None
     integrity_token: str | None = Field(

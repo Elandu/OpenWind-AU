@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import get_args
 
@@ -189,27 +190,16 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Return period / importance level" in body
     assert "Engineer notes" in body
     assert "Advanced inputs" in body
-    assert body.count("<option value=") >= 17
-    for orientation in [
-        "-90",
-        "-78.75",
-        "-67.5",
-        "-56.25",
-        "-45",
-        "-33.75",
-        "-22.5",
-        "-11.25",
-        "0",
-        "11.25",
-        "22.5",
-        "33.75",
-        "45",
-        "56.25",
-        "67.5",
-        "78.75",
-        "90",
-    ]:
-        assert f'<option value="{orientation}"' in body
+    assert 'id="structure_orientation_deg"' in body
+    orientation_control = body.split('id="structure_orientation_deg"', 1)[1].split("/>", 1)[0]
+    assert 'type="number"' in orientation_control
+    assert 'min="0"' in orientation_control
+    assert 'max="359.9"' in orientation_control
+    assert 'step="0.1"' in orientation_control
+    assert "required" in orientation_control
+    assert '<select id="structure_orientation_deg"' not in body
+    assert "Right, Back, and Left are" in body
+    assert "does not calculate V<sub>des,&theta;</sub>" in body
     assert "Street address" not in body
     assert "Review and issue status" in body
     assert "Assessment status" in body
@@ -279,7 +269,11 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "offset_east_m" in script.text
     assert "startOrientationDrag" in script.text
     assert "applyOrientationFromLatLng" in script.text
-    assert "nearestOrientationOption" in script.text
+    assert "normalizeOrientation" in script.text
+    assert "nearestOrientationOption" not in script.text
+    assert "startResizeDrag" in script.text
+    assert "dimensions_modified" in script.text
+    assert "renderFaceLabels" in script.text
     assert "openwind-design-building-change" in script.text
     assert "adjustedLocationFromDesignState" in script.text
     assert script.text.index("const requestPayload = workflowPayload()") < script.text.index(
@@ -288,6 +282,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     for step in range(1, 10):
         assert f'data-step="{step}"' in body
     assert "/api/plots/profile" in script.text
+    assert "terrainProfileRequestPayload" in script.text
     assert "ctrlKey" not in script.text
     assert "enableBuildingDrag" in script.text
     assert "position_modified" in script.text
@@ -393,7 +388,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260715-location-contract-2" in page.text
+    assert "20260729-ui-building-editor-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -438,6 +433,42 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "30 m x 20 m x 10 m" not in response.text
     assert "Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt" in response.text
     assert response.text.count("No final design pressures") == 1
+
+
+def test_workflow_report_shows_effective_overrides_and_reference_heights(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "average_roof_height_m": 8.0,
+        "base_rl_m": 125.5,
+        "structure_class": "monopole",
+        "workflow_overrides": [
+            {
+                "variable": "VR",
+                "override_value": 50.0,
+                "reason": "Reviewed regional wind speed.",
+            },
+            {
+                "variable": "Vsitb",
+                "direction": "N",
+                "override_value": 99.0,
+                "reason": "Reviewed directional site wind speed.",
+            },
+        ],
+    }
+
+    response = test_client.post("/api/wind-workflow/report/html", json=payload)
+
+    assert response.status_code == 200
+    assert "VR,ult (effective)" in response.text
+    assert "50.0 m/s" in response.text
+    assert "(reviewed override)" in response.text
+    assert "Calculated Vsit,b" in response.text
+    assert "Final Vsit,b" in response.text
+    assert "99.000 m/s" in response.text
+    assert "(override)" in response.text
+    assert "average roof/reference height h,z 8.00 m" in response.text
+    assert "reviewed base RL 125.50 m" in response.text
+    assert "effective for monopole" in response.text
 
 
 def test_cyclonic_coastal_vr_limit_is_prioritized_in_compact_reports(monkeypatch) -> None:
@@ -783,6 +814,35 @@ def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> Non
     assert len(response.content) > 2_000
 
 
+def test_wind_workflow_pdf_keeps_effective_override_summary_on_one_page(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "project_number": "OW-2026-PDF-QA",
+        "average_roof_height_m": 8.0,
+        "base_rl_m": 125.5,
+        "structure_class": "monopole",
+        "workflow_overrides": [
+            {
+                "variable": "VR",
+                "override_value": 50.0,
+                "reason": "Reviewed regional wind speed.",
+            },
+            {
+                "variable": "Vsitb",
+                "direction": "N",
+                "override_value": 99.0,
+                "reason": "Reviewed directional site wind speed.",
+            },
+        ],
+    }
+
+    response = test_client.post("/api/wind-workflow/report/pdf", json=payload)
+
+    assert response.status_code == 200
+    page_objects = re.findall(rb"/Type\s*/Page(?!s)\b", response.content)
+    assert len(page_objects) == 1
+
+
 def test_wind_workflow_pdf_escapes_untrusted_project_text(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {
@@ -861,10 +921,21 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "nudgeDesignBuilding" in body
     assert "offset_east_m" in body
     assert "orientation_options" in body
+    assert '"orientation_options": [0, 45, 90, 135, 180, 225, 270, 315]' in body
     assert "setOrientation" in body
     assert "setDimensions" in body
     assert "startOrientationDrag" in body
     assert "applyOrientationFromLatLng" in body
+    assert "normalizeOrientation" in body
+    assert "nearestOrientationOption" not in body
+    assert '{ label: "Front", theta: 0 }' in body
+    assert '{ label: "Right", theta: 90 }' in body
+    assert '{ label: "Back", theta: 180 }' in body
+    assert '{ label: "Left", theta: 270 }' in body
+    assert "startResizeDrag" in body
+    assert "applyResizeFromLatLng" in body
+    assert "renderResizeHandles" in body
+    assert "dimensions_modified" in body
     assert "enableBuildingDrag" in body
     assert "position_modified" in body
     assert "ctrlKey" not in body
@@ -1229,6 +1300,65 @@ def test_region_a0_allows_terrain_class_provenance_without_numeric_override(monk
         item["final_value"] for item in response.json()["variables"] if item["variable"] == "Mzcat"
     }
     assert mzcat_values == {1.0}
+    north = next(
+        item
+        for item in response.json()["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert north["final_label"] == "Mandatory Region A0 Mz,cat"
+    assert "test reviewed region" not in north["source_reference"]
+    assert any("evidence only" in item for item in north["detail_items"])
+    assert any("remains the mandatory" in warning for warning in north["warnings"])
+
+
+def test_region_a0_default_label_discloses_mandatory_terrain_independent_value(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-33.86,
+            longitude=151.21,
+            wind_region="A0",
+            source="test reviewed region",
+            confidence="high",
+        ),
+    )
+
+    response = test_client.post("/api/wind-workflow", json=workflow_payload())
+
+    assert response.status_code == 200
+    mzcat = [item for item in response.json()["variables"] if item["variable"] == "Mzcat"]
+    assert {item["final_value"] for item in mzcat} == {1.0}
+    assert all(
+        item["recommended_label"]
+        == "Mandatory Region A0 Mz,cat 1.000; terrain category does not change this value"
+        for item in mzcat
+    )
+
+
+def test_monopole_md_provenance_records_requested_and_effective_cases(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "structure_class": "monopole",
+            "wind_direction_multiplier_case": "main_structure",
+        },
+    )
+
+    assert response.status_code == 200
+    assessment = response.json()["direction_multiplier_assessment"]
+    assert "Requested design case: main_structure" in assessment["lookup_values"]
+    assert "Selected structure class: monopole" in assessment["lookup_values"]
+    assert any(
+        item.startswith("Effective Md rule: Clause 3.3 requires Md = 1.0")
+        for item in assessment["lookup_values"]
+    )
 
 
 def test_numeric_class_override_preserves_standard_calculated_value(monkeypatch) -> None:
@@ -1305,6 +1435,30 @@ def test_class_multiplier_overrides_drive_directional_variables(monkeypatch) -> 
     assert north["final_vsitb"] is not None
 
 
+def test_html_report_discloses_numeric_class_multiplier_overrides(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {
+        "class_multiplier_overrides": [
+            {
+                "direction": "N",
+                "terrain_category": "TC3",
+                "shielding_class": "FS",
+                "topographic_class": "T1",
+                "mzcat": 0.9,
+                "ms": 0.85,
+                "mt": 1.08,
+                "reason": "Reviewed numeric multipliers supplied by the project engineer.",
+            }
+        ]
+    }
+
+    response = test_client.post("/api/wind-workflow/report/html", json=payload)
+
+    assert response.status_code == 200
+    assert "TC3; FS; T1; Mz,cat 0.900; Ms 0.850; Mt 1.080" in response.text
+    assert "Reviewed numeric multipliers supplied by the project engineer." in response.text
+
+
 def test_project_classes_without_numeric_values_do_not_invent_multipliers(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {
@@ -1364,12 +1518,13 @@ def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     assert body["input"]["base_rl_m"] == 0
     assert report.status_code == 200
     assert "OW-2026-018" in report.text
-    assert "Height 10.00 m" in report.text
+    assert "overall height 10.00 m" in report.text
+    assert "average roof/reference height h,z 3.00 m" in report.text
+    assert "reviewed base RL 0.00 m" in report.text
     assert "4.00 m x" in report.text
     assert "5.00 m" in report.text
     assert "; building" in report.text
     assert "Roof shape" not in report.text
-    assert "Base RL" not in report.text
 
 
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
@@ -1553,6 +1708,65 @@ def test_full_precision_product_controls_governing_direction_before_display_roun
     assert round(north.final_vsitb or 0.0, 3) == round(north_east.final_vsitb or 0.0, 3)
     assert north.is_governing is False
     assert north_east.is_governing is True
+
+
+def test_equal_site_wind_speeds_mark_all_co_governing_directions() -> None:
+    def variable(name: str, direction: str | None, value: float) -> WindVariableAssessment:
+        return WindVariableAssessment(
+            variable=name,  # type: ignore[arg-type]
+            label=name,
+            direction=direction,  # type: ignore[arg-type]
+            calculated_value=value,
+            final_value=value,
+            evidence_link="#test",
+            formula_basis="test input",
+            calculation_result="test input",
+        )
+
+    variables = [variable("VR", None, 45.0), variable("Mc", None, 1.0)]
+    for direction in ("N", "NE"):
+        variables.extend(
+            [
+                variable("Md", direction, 0.9),
+                variable("Mzcat", direction, 1.0),
+                variable("Ms", direction, 1.0),
+                variable("Mt", direction, 1.0),
+            ]
+        )
+
+    rows = mark_governing_vsitb(vsitb_directional_rows(variables))
+
+    assert [row.direction for row in rows if row.is_governing] == ["N", "NE"]
+
+
+def test_near_tie_summary_uses_the_exact_maximum_row(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "workflow_overrides": [
+                {
+                    "variable": "Vsitb",
+                    "direction": "N",
+                    "override_value": 99.0,
+                    "reason": "Reviewed near-tie value.",
+                },
+                {
+                    "variable": "Vsitb",
+                    "direction": "NE",
+                    "override_value": 99.0000000005,
+                    "reason": "Reviewed exact maximum.",
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["governing_directions"] == ["N", "NE"]
+    assert result["governing_direction"] == "NE"
+    assert result["governing_vsitb"] == pytest.approx(99.0000000005)
 
 
 def test_average_height_cannot_exceed_overall_building_height() -> None:

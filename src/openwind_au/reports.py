@@ -748,25 +748,8 @@ def _add_design_building_overlay(
         "user_modified": False,
         "position_modified": False,
         "orientation_modified": False,
-        "orientation_options": [
-            -90,
-            -78.75,
-            -67.5,
-            -56.25,
-            -45,
-            -33.75,
-            -22.5,
-            -11.25,
-            0,
-            11.25,
-            22.5,
-            33.75,
-            45,
-            56.25,
-            67.5,
-            78.75,
-            90,
-        ],
+        "dimensions_modified": False,
+        "orientation_options": [0, 45, 90, 135, 180, 225, 270, 315],
     }
     script = f"""
     (function() {{
@@ -776,27 +759,46 @@ def _add_design_building_overlay(
       let footprint = null;
       let bearingLine = null;
       let pointsLayer = null;
+      let resizeHandlesLayer = null;
       let orientationDrag = null;
+      let resizeDrag = null;
       let buildingDragStart = null;
       let suppressOrientationClick = false;
       let map = null;
       let designLayer = null;
+      const minDimensionM = 0.1;
+      const maxDimensionM = 5000;
 
       function clampDimension(value, fallback) {{
         const number = Number(value);
-        return Number.isFinite(number) && number > 0 ? number : fallback;
+        return Number.isFinite(number) && number > 0
+          ? Math.min(maxDimensionM, Math.max(minDimensionM, number))
+          : fallback;
       }}
 
       function formatDegrees(value) {{
         return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
       }}
 
-      function nearestOrientationOption(value) {{
+      function normalizeOrientation(value) {{
         const number = Number(value);
         if (!Number.isFinite(number)) return 0;
-        return state.orientation_options.reduce((best, option) => (
-          Math.abs(option - number) < Math.abs(best - number) ? option : best
-        ), state.orientation_options[0]);
+        const normalized = ((number % 360) + 360) % 360;
+        const rounded = Math.round(normalized * 10) / 10;
+        return rounded >= 360 ? 0 : rounded;
+      }}
+
+      function compassLabel(value) {{
+        return {{
+          0: "N",
+          45: "NE",
+          90: "E",
+          135: "SE",
+          180: "S",
+          225: "SW",
+          270: "W",
+          315: "NW",
+        }}[Number(value)] || "";
       }}
 
       function latLngFromMeters(eastM, northM) {{
@@ -859,10 +861,10 @@ def _add_design_building_overlay(
         const center = centerLatLng();
         const delta = metersDelta({{ lat: center[0], lng: center[1] }}, latlng);
         const rawDegrees = Math.atan2(delta.eastM, delta.northM) * 180 / Math.PI;
-        const snapped = nearestOrientationOption(rawDegrees);
-        if (Number(state.orientation_deg) === Number(snapped)) return;
+        const orientation = normalizeOrientation(rawDegrees);
+        if (Number(state.orientation_deg) === Number(orientation)) return;
         if (orientationDrag) orientationDrag.moved = true;
-        state.orientation_deg = snapped;
+        state.orientation_deg = orientation;
         state.user_modified = true;
         state.orientation_modified = true;
         redraw();
@@ -892,12 +894,64 @@ def _add_design_building_overlay(
         map.getContainer().style.cursor = "";
       }}
 
-      function stopDesignInteraction() {{
-        stopOrientationDrag();
-        if (!buildingDragStart) return;
-        buildingDragStart = null;
+      function applyResizeFromLatLng(latlng) {{
+        if (!resizeDrag) return;
+        const center = centerLatLng();
+        const delta = metersDelta({{ lat: center[0], lng: center[1] }}, latlng);
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        const lengthAxis = [Math.sin(theta), Math.cos(theta)];
+        const widthAxis = [Math.cos(theta), -Math.sin(theta)];
+        const projectedHalfLength = resizeDrag.lengthSign * (
+          delta.eastM * lengthAxis[0] + delta.northM * lengthAxis[1]
+        );
+        const projectedHalfWidth = resizeDrag.widthSign * (
+          delta.eastM * widthAxis[0] + delta.northM * widthAxis[1]
+        );
+        const lengthM = Math.round(clampDimension(
+          2 * Math.max(minDimensionM / 2, projectedHalfLength),
+          state.length_m,
+        ) * 10) / 10;
+        const widthM = Math.round(clampDimension(
+          2 * Math.max(minDimensionM / 2, projectedHalfWidth),
+          state.width_m,
+        ) * 10) / 10;
+        if (
+          Number(state.length_m) === Number(lengthM)
+          && Number(state.width_m) === Number(widthM)
+        ) return;
+        resizeDrag.moved = true;
+        state.length_m = lengthM;
+        state.width_m = widthM;
+        state.user_modified = true;
+        state.dimensions_modified = true;
+        redraw();
+        notifyParent();
+        state.dimensions_modified = false;
+      }}
+
+      function startResizeDrag(event, lengthSign, widthSign) {{
+        L.DomEvent.preventDefault(event.originalEvent);
+        L.DomEvent.stopPropagation(event.originalEvent);
+        resizeDrag = {{ lengthSign, widthSign, moved: false }};
+        map.dragging.disable();
+        map.getContainer().style.cursor = "nwse-resize";
+      }}
+
+      function stopResizeDrag() {{
+        if (!resizeDrag) return;
+        resizeDrag = null;
         map.dragging.enable();
         map.getContainer().style.cursor = "";
+      }}
+
+      function stopDesignInteraction() {{
+        stopOrientationDrag();
+        stopResizeDrag();
+        if (buildingDragStart) {{
+          buildingDragStart = null;
+          map.dragging.enable();
+          map.getContainer().style.cursor = "";
+        }}
       }}
 
       function renderOrientationPoints() {{
@@ -908,15 +962,17 @@ def _add_design_building_overlay(
         state.orientation_options.forEach((option) => {{
           const theta = Number(option) * Math.PI / 180;
           const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
-          const active = Number(option) === Number(state.orientation_deg);
-          const marker = L.circleMarker(point, {{
-            radius: active ? 5 : 3,
-            color: active ? "#0f766e" : "#475569",
-            weight: active ? 2 : 1,
-            fillColor: active ? "#14b8a6" : "#ffffff",
-            fillOpacity: active ? 0.95 : 0.8,
+          L.circleMarker(point, {{
+            radius: 3,
+            color: "#475569",
+            weight: 1,
+            fillColor: "#ffffff",
+            fillOpacity: 0.8,
           }})
-            .bindTooltip(formatDegrees(option) + " deg", {{ sticky: true }})
+            .bindTooltip(
+              compassLabel(option) + " " + formatDegrees(option) + " deg",
+              {{ sticky: true }},
+            )
             .on("click", () => {{
               if (orientationDrag || suppressOrientationClick) return;
               state.orientation_deg = Number(option);
@@ -927,11 +983,60 @@ def _add_design_building_overlay(
               state.orientation_modified = false;
             }})
             .addTo(pointsLayer);
-          if (active) {{
-            marker.on("mousedown", startOrientationDrag);
-          }}
+        }});
+        [
+          {{ label: "Front", theta: 0 }},
+          {{ label: "Right", theta: 90 }},
+          {{ label: "Back", theta: 180 }},
+          {{ label: "Left", theta: 270 }},
+        ].forEach((face) => {{
+          const beta = normalizeOrientation(Number(state.orientation_deg) + face.theta);
+          const theta = beta * Math.PI / 180;
+          const point = latLngFromMeters(
+            Math.sin(theta) * radius,
+            Math.cos(theta) * radius,
+          );
+          const isFront = face.theta === 0;
+          const marker = L.circleMarker(point, {{
+            radius: isFront ? 6 : 4,
+            color: isFront ? "#0f766e" : "#9a3412",
+            weight: 2,
+            fillColor: isFront ? "#14b8a6" : "#fdba74",
+            fillOpacity: 0.95,
+          }})
+            .bindTooltip(
+              (isFront ? "Drag " : "") + face.label
+                + " (theta=" + face.theta + " deg), beta="
+                + formatDegrees(beta) + " deg clockwise from North",
+              {{ sticky: true }},
+            )
+            .addTo(pointsLayer);
+          if (isFront) marker.on("mousedown", startOrientationDrag);
         }});
         pointsLayer.addTo(designLayer);
+      }}
+
+      function renderResizeHandles(corners) {{
+        if (!designLayer) return;
+        if (resizeHandlesLayer) designLayer.removeLayer(resizeHandlesLayer);
+        resizeHandlesLayer = L.layerGroup();
+        const signs = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+        corners.forEach((corner, index) => {{
+          const [lengthSign, widthSign] = signs[index];
+          L.circleMarker(corner, {{
+            radius: 5,
+            color: "#9a3412",
+            weight: 2,
+            fillColor: "#fff7ed",
+            fillOpacity: 1,
+          }})
+            .bindTooltip("Drag corner to resize", {{ sticky: true }})
+            .on("mousedown", (event) => {{
+              startResizeDrag(event, lengthSign, widthSign);
+            }})
+            .addTo(resizeHandlesLayer);
+        }});
+        resizeHandlesLayer.addTo(designLayer);
       }}
 
       function redraw() {{
@@ -949,9 +1054,11 @@ def _add_design_building_overlay(
         }} else {{
           footprint.setLatLngs(corners);
         }}
-        footprint.bindTooltip("Design building " + formatDegrees(state.orientation_deg) + " deg", {{
-          sticky: true,
-        }});
+        footprint.bindTooltip(
+          "Design building " + formatDegrees(state.orientation_deg)
+            + " deg - drag footprint to move; drag a corner to resize",
+          {{ sticky: true }},
+        );
 
         const bearingDistance = Math.max(state.length_m, 18) * 0.75;
         const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
@@ -965,6 +1072,7 @@ def _add_design_building_overlay(
           bearingLine.setLatLngs(line);
         }}
         renderOrientationPoints();
+        renderResizeHandles(corners);
       }}
 
       function nudgeDesignBuilding(eastM, northM) {{
@@ -997,6 +1105,10 @@ def _add_design_building_overlay(
             applyOrientationFromLatLng(event.latlng);
             return;
           }}
+          if (resizeDrag) {{
+            applyResizeFromLatLng(event.latlng);
+            return;
+          }}
           if (!buildingDragStart) return;
           const delta = metersDelta(buildingDragStart.latlng, event.latlng);
           state.offset_east_m = buildingDragStart.east + delta.eastM;
@@ -1025,15 +1137,16 @@ def _add_design_building_overlay(
           setOrientation(value) {{
             const number = Number(value);
             if (Number.isFinite(number)) {{
-            state.orientation_deg = number;
-            state.orientation_modified = false;
-            redraw();
+              state.orientation_deg = normalizeOrientation(number);
+              state.orientation_modified = false;
+              redraw();
               notifyParent();
             }}
           }},
           setDimensions(widthM, lengthM) {{
             state.width_m = clampDimension(widthM, 12);
             state.length_m = clampDimension(lengthM, 18);
+            state.dimensions_modified = false;
             redraw();
             notifyParent();
           }},
@@ -1060,6 +1173,7 @@ def _add_design_building_overlay(
             state.user_modified = false;
             state.position_modified = false;
             state.orientation_modified = false;
+            state.dimensions_modified = false;
             map.setView([state.latitude, state.longitude], 18);
             redraw();
             notifyParent();
@@ -1496,9 +1610,19 @@ def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
 
     return CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE.render(
         result=result,
+        class_override_summaries=[
+            _wind_class_override_summary(override)
+            for override in result.input.class_multiplier_overrides
+        ],
         report_warnings=concise_workflow_warnings(result),
         basis_summary=_wind_report_basis(result),
+        building_summary=_wind_report_building_summary(result),
+        md_case_summary=_wind_report_md_case(result),
+        vr_value=_wind_report_variable_value(result, "VR"),
+        vr_is_overridden=_wind_report_variable_is_overridden(result, "VR"),
         mc_value=_wind_report_variable_value(result, "Mc"),
+        has_vsitb_overrides=_wind_report_has_vsitb_overrides(result),
+        vsitb_override_directions=_wind_report_vsitb_override_directions(result),
         calculation_basis_reference=calculation_basis_report_reference(),
     )
 
@@ -1583,8 +1707,9 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         fontSize=10.5,
         leading=13,
         textColor=colors.HexColor("#17324d"),
-        spaceBefore=4 * mm,
-        spaceAfter=2 * mm,
+        spaceBefore=3 * mm,
+        spaceAfter=1.5 * mm,
+        keepWithNext=True,
     )
     body_style = ParagraphStyle(
         "WindReportBody",
@@ -1592,7 +1717,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         fontSize=8.5,
         leading=11,
         textColor=colors.HexColor("#344054"),
-        spaceAfter=1.5 * mm,
+        spaceAfter=1 * mm,
     )
     muted_style = ParagraphStyle(
         "WindReportMuted",
@@ -1624,8 +1749,11 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         Paragraph("Project and outcome", section_style),
     ]
     region = result.wind_region_assessment
-    speed = result.regional_wind_speed_assessment
+    vr_value = _wind_report_variable_value(result, "VR")
+    vr_is_overridden = _wind_report_variable_is_overridden(result, "VR")
     mc_value = _wind_report_variable_value(result, "Mc")
+    vsitb_override_directions = _wind_report_vsitb_override_directions(result)
+    has_vsitb_overrides = bool(vsitb_override_directions)
     site_label = (
         result.input.address
         or result.input.site_label
@@ -1642,12 +1770,16 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             f"(RL {result.site.ground_elevation_m:.2f} m)",
         ],
         ["Building", _wind_report_building_summary(result)],
-        ["Md design case", _wind_report_md_case(result.input.wind_direction_multiplier_case)],
+        ["Md design case", _wind_report_md_case(result)],
         ["Wind region", region.wind_region if region else "Not available"],
         ["AEP / ARI", result.input.annual_exceedance_probability],
         [
-            "VR,ult",
-            f"{speed.vr_ult:.1f} m/s" if speed and speed.vr_ult is not None else "Not available",
+            "VR,ult (effective)" if vr_is_overridden else "VR,ult",
+            (
+                f"{vr_value:.1f} m/s{' (reviewed override)' if vr_is_overridden else ''}"
+                if vr_value is not None
+                else "Not available"
+            ),
         ],
         ["Mc", _report_number(mc_value)],
         ["Governing result", _wind_report_governing_summary(result)],
@@ -1659,22 +1791,50 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             Paragraph("Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt", muted_style),
         ]
     )
-    direction_rows = [["Dir.", "Md", "Mz,cat", "Ms", "Mt", "Vsit,b"]]
-    for row in result.directional_vsitb:
-        direction_rows.append(
-            [
-                f"{row.direction}{' *' if row.is_governing else ''}",
-                _report_number(row.md),
-                _report_number(row.mzcat),
-                _report_number(row.ms),
-                _report_number(row.mt),
-                f"{row.final_vsitb:.3f} m/s" if row.final_vsitb is not None else "N/A",
-            ]
+    direction_rows = [
+        (
+            ["Dir.", "Md", "Mz,cat", "Ms", "Mt", "Calc. Vsit,b", "Final Vsit,b"]
+            if has_vsitb_overrides
+            else ["Dir.", "Md", "Mz,cat", "Ms", "Mt", "Vsit,b"]
         )
+    ]
+    for row in result.directional_vsitb:
+        rendered_row = [
+            f"{row.direction}{' *' if row.is_governing else ''}",
+            _report_number(row.md),
+            _report_number(row.mzcat),
+            _report_number(row.ms),
+            _report_number(row.mt),
+        ]
+        if has_vsitb_overrides:
+            rendered_row.extend(
+                [
+                    (
+                        f"{row.recommended_vsitb:.3f} m/s"
+                        if row.recommended_vsitb is not None
+                        else "N/A"
+                    ),
+                    (
+                        f"{row.final_vsitb:.3f} m/s"
+                        f"{' (override)' if row.direction in vsitb_override_directions else ''}"
+                        if row.final_vsitb is not None
+                        else "N/A"
+                    ),
+                ]
+            )
+        else:
+            rendered_row.append(
+                f"{row.final_vsitb:.3f} m/s" if row.final_vsitb is not None else "N/A"
+            )
+        direction_rows.append(rendered_row)
     story.append(
         _wind_pdf_table(
             direction_rows,
-            [18 * mm, 25 * mm, 33 * mm, 25 * mm, 25 * mm, 52 * mm],
+            (
+                [14 * mm, 20 * mm, 25 * mm, 19 * mm, 19 * mm, 39 * mm, 42 * mm]
+                if has_vsitb_overrides
+                else [18 * mm, 25 * mm, 33 * mm, 25 * mm, 25 * mm, 52 * mm]
+            ),
             header=True,
             governing_rows={
                 index + 1 for index, row in enumerate(result.directional_vsitb) if row.is_governing
@@ -1683,7 +1843,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     )
     # Keep the issued PDF to a compact engineering-review summary. The HTML
     # report and workflow diagnostics retain the broader warning set.
-    warnings = concise_workflow_warnings(result, limit=4)
+    warnings = concise_workflow_warnings(result, limit=3)
     if (
         warnings
         or result.input.workflow_overrides
@@ -1746,7 +1906,15 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
 
 
 def _wind_report_building_summary(result: WindWorkflowResult) -> str:
-    parts = [f"height {result.input.building_height_m:.2f} m"]
+    if result.input.average_roof_height_m is None:
+        parts = [f"overall/reference height h,z {result.input.reference_height_m:.2f} m"]
+    else:
+        parts = [
+            f"overall height {result.input.building_height_m:.2f} m",
+            f"average roof/reference height h,z {result.input.reference_height_m:.2f} m",
+        ]
+    if result.input.base_rl_m is not None:
+        parts.append(f"reviewed base RL {result.input.base_rl_m:.2f} m")
     if result.input.building_width_m is not None and result.input.building_length_m is not None:
         parts.append(
             f"{result.input.building_width_m:.2f} m x {result.input.building_length_m:.2f} m"
@@ -1771,7 +1939,10 @@ def _wind_class_override_summary(override) -> str:
 def _wind_report_governing_summary(result: WindWorkflowResult) -> str:
     if result.governing_vsitb is None:
         return "Not available"
-    return f"{result.governing_direction or 'N/A'} - {result.governing_vsitb:.3f} m/s"
+    directions = result.governing_directions or (
+        [result.governing_direction] if result.governing_direction else []
+    )
+    return f"{', '.join(directions) or 'N/A'} - {result.governing_vsitb:.3f} m/s"
 
 
 def _wind_report_status(result: WindWorkflowResult) -> str:
@@ -1780,7 +1951,10 @@ def _wind_report_status(result: WindWorkflowResult) -> str:
     return "Draft preliminary"
 
 
-def _wind_report_md_case(value: str) -> str:
+def _wind_report_md_case(result: WindWorkflowResult) -> str:
+    value = result.input.wind_direction_multiplier_case
+    if result.input.structure_class == "monopole":
+        return "Circular/polygonal chimney, tank or pole (effective for monopole)"
     return {
         "main_structure": "Main structure",
         "cladding_or_immediate_support": "Cladding / immediate support",
@@ -1821,6 +1995,25 @@ def _wind_report_variable_value(result: WindWorkflowResult, variable: str) -> fl
         ),
         None,
     )
+
+
+def _wind_report_variable_is_overridden(result: WindWorkflowResult, variable: str) -> bool:
+    return any(
+        item.variable == variable and item.direction is None and item.is_overridden
+        for item in result.variables
+    )
+
+
+def _wind_report_vsitb_override_directions(result: WindWorkflowResult) -> set[str]:
+    return {
+        item.direction
+        for item in result.variables
+        if item.variable == "Vsitb" and item.direction is not None and item.is_overridden
+    }
+
+
+def _wind_report_has_vsitb_overrides(result: WindWorkflowResult) -> bool:
+    return bool(_wind_report_vsitb_override_directions(result))
 
 
 def _report_number(value: float | None) -> str:
@@ -1873,8 +2066,8 @@ def _wind_pdf_table(
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
         ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d0d5dd")),
     ]
     if header:
@@ -3205,20 +3398,12 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         </tr>
         <tr>
           <th>Building</th>
-          <td>
-            Height {{ "%.2f"|format(result.input.building_height_m) }} m
-            {% if result.input.building_width_m is not none
-                  and result.input.building_length_m is not none %}
-            ; {{ "%.2f"|format(result.input.building_width_m) }} m x
-            {{ "%.2f"|format(result.input.building_length_m) }} m
-            {% endif %}
-            {% if result.input.structure_class %}; {{ result.input.structure_class|e }}{% endif %}
-          </td>
+          <td>{{ building_summary|e }}</td>
         </tr>
         <tr><th>AEP / ARI</th><td>{{ result.input.annual_exceedance_probability|e }}</td></tr>
         <tr>
           <th>Md design case</th>
-          <td>{{ result.input.wind_direction_multiplier_case|replace("_", " ")|e }}</td>
+          <td>{{ md_case_summary|e }}</td>
         </tr>
         <tr>
           <th>Wind region</th>
@@ -3228,11 +3413,11 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           </td>
         </tr>
         <tr>
-          <th>VR,ult</th>
+          <th>VR,ult{% if vr_is_overridden %} (effective){% endif %}</th>
           <td>
-            {% if result.regional_wind_speed_assessment
-                  and result.regional_wind_speed_assessment.vr_ult is not none %}
-            {{ "%.1f"|format(result.regional_wind_speed_assessment.vr_ult) }} m/s
+            {% if vr_value is not none %}
+            {{ "%.1f"|format(vr_value) }} m/s
+            {% if vr_is_overridden %}(reviewed override){% endif %}
             {% else %}Not available{% endif %}
           </td>
         </tr>
@@ -3244,7 +3429,10 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           <th>Governing result</th>
           <td>
             {% if result.governing_vsitb is not none %}
-            {{ result.governing_direction }} - {{ "%.3f"|format(result.governing_vsitb) }} m/s
+            {{ (result.governing_directions
+                if result.governing_directions
+                else [result.governing_direction])|join(", ") }}
+            - {{ "%.3f"|format(result.governing_vsitb) }} m/s
             {% else %}Not available{% endif %}
           </td>
         </tr>
@@ -3255,9 +3443,17 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
       <h2>Directional site wind speeds</h2>
       <p class="note">
         Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt. The governing row is highlighted.
+        {% if has_vsitb_overrides %}
+        Calculated and final values are both shown where a direct reviewed Vsit,b override exists.
+        {% endif %}
       </p>
       <table>
-        <tr><th>Direction</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th><th>Vsit,b</th></tr>
+        <tr>
+          <th>Direction</th><th>Md</th><th>Mz,cat</th><th>Ms</th><th>Mt</th>
+          {% if has_vsitb_overrides %}
+          <th>Calculated Vsit,b</th><th>Final Vsit,b</th>
+          {% else %}<th>Vsit,b</th>{% endif %}
+        </tr>
         {% for row in result.directional_vsitb %}
         <tr class="{% if row.is_governing %}governing{% endif %}">
           <td>{{ row.direction }}{% if row.is_governing %} *{% endif %}</td>
@@ -3265,10 +3461,22 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           <td>{{ "%.3f"|format(row.mzcat) if row.mzcat is not none else "N/A" }}</td>
           <td>{{ "%.3f"|format(row.ms) if row.ms is not none else "N/A" }}</td>
           <td>{{ "%.3f"|format(row.mt) if row.mt is not none else "N/A" }}</td>
+          {% if has_vsitb_overrides %}
+          <td>
+            {{ ("%.3f m/s"|format(row.recommended_vsitb))
+               if row.recommended_vsitb is not none else "N/A" }}
+          </td>
+          <td>
+            {{ ("%.3f m/s"|format(row.final_vsitb))
+               if row.final_vsitb is not none else "N/A" }}
+            {% if row.direction in vsitb_override_directions %}(override){% endif %}
+          </td>
+          {% else %}
           <td>
             {{ ("%.3f m/s"|format(row.final_vsitb))
                if row.final_vsitb is not none else "N/A" }}
           </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </table>
@@ -3297,11 +3505,7 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         {% for override in result.input.class_multiplier_overrides %}
         <tr>
           <td>Reviewed classes</td><td>{{ override.direction }}</td>
-          <td>
-            {% if override.terrain_category %}{{ override.terrain_category }}{% endif %}
-            {% if override.shielding_class %}; {{ override.shielding_class }}{% endif %}
-            {% if override.topographic_class %}; {{ override.topographic_class }}{% endif %}
-          </td>
+          <td>{{ class_override_summaries[loop.index0] }}</td>
           <td>{{ override.reason|e }}</td>
         </tr>
         {% endfor %}

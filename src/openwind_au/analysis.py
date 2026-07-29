@@ -46,7 +46,7 @@ def run_site_analysis(
             "local survey levels.",
             "Topographic screening is rule-based and conservative.",
             "Feature metrics are geometric indicators for preliminary engineering review only.",
-            "Building height is recorded for context and future wind workflow integration.",
+            "The supplied reference height is used in preliminary topographic screening.",
         ],
         limitations=[
             "This terrain endpoint does not calculate final terrain category, certified shielding "

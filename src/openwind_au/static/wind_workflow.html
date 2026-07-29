@@ -25,6 +25,7 @@
               type="text"
               placeholder="Project number"
               title="Enter a project number to restore dragged map coordinates after reload."
+              maxlength="200"
               autocomplete="off"
             />
           </label>
@@ -39,6 +40,7 @@
                 form="workflow-form"
                 type="text"
                 placeholder="1 Macquarie Street, Sydney NSW"
+                maxlength="300"
                 autocomplete="off"
                 role="combobox"
                 aria-autocomplete="list"
@@ -98,11 +100,27 @@
               <div class="primary-control-grid">
             <label>
               Building height (m)
-              <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
+              <input
+                id="building_height_m"
+                name="building_height_m"
+                type="number"
+                min="0.1"
+                max="200"
+                step="0.1"
+                value="10"
+                required
+              />
             </label>
             <label>
               AEP / ARI
-              <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
+              <input
+                id="annual_exceedance_probability"
+                name="annual_exceedance_probability"
+                value="1/500"
+                minlength="1"
+                maxlength="50"
+                required
+              />
             </label>
             <label>
               Wind direction multiplier use
@@ -113,34 +131,48 @@
               </select>
             </label>
             <label>
-              Orientation (deg)
-              <select id="structure_orientation_deg" name="structure_orientation_deg">
-                <option value="-90">-90</option>
-                <option value="-78.75">-78.75</option>
-                <option value="-67.5">-67.5</option>
-                <option value="-56.25">-56.25</option>
-                <option value="-45">-45</option>
-                <option value="-33.75">-33.75</option>
-                <option value="-22.5">-22.5</option>
-                <option value="-11.25">-11.25</option>
-                <option value="0" selected>0</option>
-                <option value="11.25">11.25</option>
-                <option value="22.5">22.5</option>
-                <option value="33.75">33.75</option>
-                <option value="45">45</option>
-                <option value="56.25">56.25</option>
-                <option value="67.5">67.5</option>
-                <option value="78.75">78.75</option>
-                <option value="90">90</option>
-              </select>
+              Orientation (deg clockwise from North)
+              <input
+                id="structure_orientation_deg"
+                name="structure_orientation_deg"
+                type="number"
+                min="0"
+                max="359.9"
+                step="0.1"
+                value="0"
+                required
+                aria-describedby="orientation-convention"
+              />
+              <span id="orientation-convention" class="note">
+                Enter &beta; for the Front, clockwise from true North: 0&deg; = N,
+                90&deg; = E, 180&deg; = S, 270&deg; = W. Right, Back, and Left are
+                &beta;+90&deg;, &beta;+180&deg;, and &beta;+270&deg;. For gable roofs,
+                front is a long side; for hip or monoslope roofs, front faces down the roof
+                slope, perpendicular to the ridge. Orientation only aligns these axes on the
+                map; this workflow does not calculate V<sub>des,&theta;</sub> or design pressures.
+              </span>
             </label>
             <label>
-              Width (m)
-              <input id="building_width_m" name="building_width_m" type="number" step="0.1" />
+              Breadth (left to right) (m)
+              <input
+                id="building_width_m"
+                name="building_width_m"
+                type="number"
+                min="0.1"
+                max="5000"
+                step="0.1"
+              />
             </label>
             <label>
-              Length (m)
-              <input id="building_length_m" name="building_length_m" type="number" step="0.1" />
+              Depth (front to back) (m)
+              <input
+                id="building_length_m"
+                name="building_length_m"
+                type="number"
+                min="0.1"
+                max="5000"
+                step="0.1"
+              />
             </label>
               </div>
           <details class="form-details">
@@ -157,7 +189,16 @@
             </label>
             <label>
               Sample interval (m)
-              <input id="sample_interval_m" name="sample_interval_m" type="number" value="50" />
+              <input
+                id="sample_interval_m"
+                name="sample_interval_m"
+                type="number"
+                value="50"
+                min="5"
+                max="500"
+                step="any"
+                required
+              />
             </label>
             <label>
               Obstruction radius (m)
@@ -170,7 +211,15 @@
             </label>
             <label>
               Storey height assumption (m)
-              <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
+              <input
+                id="default_storey_height_m"
+                name="default_storey_height_m"
+                type="number"
+                min="0.1"
+                max="6"
+                step="0.1"
+                value="3.0"
+              />
             </label>
             <label>
               Structure class
@@ -198,15 +247,34 @@
             </label>
             <label>
               Average roof height (m)
-              <input id="average_roof_height_m" name="average_roof_height_m" type="number" step="0.1" />
+              <input
+                id="average_roof_height_m"
+                name="average_roof_height_m"
+                type="number"
+                min="0.1"
+                max="200"
+                step="0.1"
+              />
             </label>
             <label>
               Base RL (m)
-              <input id="base_rl_m" name="base_rl_m" type="number" step="0.1" />
+              <input
+                id="base_rl_m"
+                name="base_rl_m"
+                type="number"
+                min="-500"
+                max="10000"
+                step="0.1"
+              />
             </label>
             <label>
               Return period / importance level
-              <input id="importance_level" name="importance_level" placeholder="e.g. IL2, 1:500 annual probability" />
+              <input
+                id="importance_level"
+                name="importance_level"
+                maxlength="100"
+                placeholder="e.g. IL2, 1:500 annual probability"
+              />
             </label>
             </div>
           </details>
@@ -421,6 +489,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260715-location-contract-2-consumer-readiness-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-ui-building-editor-1"></script>
   </body>
 </html>

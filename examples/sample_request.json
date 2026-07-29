@@ -2,6 +2,6 @@
   "latitude": -33.8568,
   "longitude": 151.2153,
   "building_height_m": 12,
-  "radius_m": 2000,
-  "sample_interval_m": 50
+  "radius_m": 1000,
+  "sample_interval_m": 500
 }

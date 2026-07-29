@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Any
@@ -20,6 +21,7 @@ from openwind_au.models import (
 from openwind_au.standard_calculations import (
     DIRECTIONS,
     SUPPORTED_AU_WIND_REGIONS,
+    direction_multiplier_row_issues,
     regional_wind_speed,
     table_region_key,
 )
@@ -37,9 +39,7 @@ from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
 VR_METADATA_WARNING = "VR lookup table does not have complete independent reviewer/date metadata."
 MD_METADATA_WARNING = "Md lookup table does not have complete independent reviewer/date metadata."
-VR_EQUATION_REFERENCE = (
-    "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
-)
+VR_EQUATION_REFERENCE = "AS/NZS 1170.2:2021 Table 3.1(A) regional equation"
 
 
 def regional_wind_speed_assessment(
@@ -148,8 +148,16 @@ def direction_multiplier_assessment(
             "confirm whether the site is in B1 or B2."
         )
     data = load_md_tables()
-    table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
-    values = data.get("tables", {}).get(table_key, {})
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.2(A) Md lookup: tables must be an object")
+    table_key = table_region_key(wind_region.wind_region, tables)
+    values = tables.get(table_key, {})
+    issues = direction_multiplier_row_issues(values)
+    if issues:
+        raise ServiceNotReadyError(
+            f"Invalid Table 3.2(A) Md row for {wind_region.wind_region}: {'; '.join(issues)}"
+        )
     source = source_reference(data)
     numeric_values = [
         float(values[direction]) for direction in DIRECTIONS if values.get(direction) is not None
@@ -386,12 +394,75 @@ def lookup_vr(
             "R must be 1 or at least 5 years."
         )
 
-    numeric_table = {int(year): float(value) for year, value in table.items() if value is not None}
+    numeric_table = _validated_vr_row(table)
     if not numeric_table:
         return None, None
     if ari_years in numeric_table:
         return numeric_table[ari_years], None
     return None, f"ARI {ari_years} years is not an exact configured VR row; manual input required."
+
+
+def vr_table_issues(value: Any) -> list[str]:
+    """Return structural and numeric failures for one configured regional VR table."""
+
+    if not isinstance(value, dict):
+        return ["region table must be an object"]
+    issues: list[str] = []
+    allowed_members = {"ultimate", "serviceability"}
+    unexpected = sorted(str(member) for member in value if member not in allowed_members)
+    if unexpected:
+        issues.append(f"unexpected members: {', '.join(unexpected)}")
+    for value_kind in ("ultimate", "serviceability"):
+        row = value.get(value_kind)
+        if not isinstance(row, dict) or not row:
+            issues.append(f"{value_kind} must be a non-empty object")
+            continue
+        try:
+            _validated_vr_row(row)
+        except ServiceNotReadyError as exc:
+            issues.append(f"{value_kind}: {exc}")
+    return issues
+
+
+def _validated_vr_row(table: Any) -> dict[int, float]:
+    """Normalize one configured VR row only after strict schema validation."""
+
+    if not isinstance(table, dict):
+        raise ServiceNotReadyError("VR row must be an object")
+    numeric_table: dict[int, float] = {}
+    for raw_year, raw_value in table.items():
+        if isinstance(raw_year, bool):
+            raise ServiceNotReadyError("VR ARI keys must be positive integer years")
+        if isinstance(raw_year, int):
+            year = raw_year
+        elif isinstance(raw_year, str) and re.fullmatch(r"[1-9]\d*", raw_year):
+            try:
+                year = int(raw_year)
+            except (OverflowError, ValueError) as exc:
+                raise ServiceNotReadyError(
+                    "VR ARI key must be a canonical positive integer year"
+                ) from exc
+        else:
+            raise ServiceNotReadyError("VR ARI key must be a canonical positive integer year")
+        if year != 1 and year < 5:
+            raise ServiceNotReadyError(
+                f"VR ARI {year} is outside Table 3.1(A); use 1 or at least 5 years"
+            )
+        if year in numeric_table:
+            raise ServiceNotReadyError(f"VR row contains duplicate normalized ARI {year}")
+        try:
+            numeric_value = float(raw_value)
+        except (OverflowError, TypeError, ValueError):
+            numeric_value = math.nan
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            numeric_value = math.nan
+        if not math.isfinite(numeric_value) or not 0 < numeric_value <= 200:
+            raise ServiceNotReadyError(
+                "VR value for the configured ARI must be a finite number greater than 0 "
+                "and not greater than 200 m/s"
+            )
+        numeric_table[year] = numeric_value
+    return numeric_table
 
 
 def _vr_row_matches_packaged_table(
@@ -409,12 +480,8 @@ def _vr_row_matches_packaged_table(
     packaged_row = packaged_region.get(value_kind, {}) if isinstance(packaged_region, dict) else {}
     if not isinstance(packaged_row, dict):
         return False
-    configured_values = {
-        int(year): float(value) for year, value in configured_row.items() if value is not None
-    }
-    packaged_values = {
-        int(year): float(value) for year, value in packaged_row.items() if value is not None
-    }
+    configured_values = _validated_vr_row(configured_row)
+    packaged_values = _validated_vr_row(packaged_row)
     return configured_values == packaged_values
 
 
@@ -452,12 +519,18 @@ def configured_regional_wind_speed(
         )
 
     data = lookup_data if lookup_data is not None else load_vr_tables()
-    table_key = table_region_key(wind_region, data.get("tables", {}))
-    table = data.get("tables", {}).get(table_key, {})
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.1(A) VR lookup: tables must be an object")
+    table_key = table_region_key(wind_region, tables)
+    table = tables.get(table_key, {})
+    issues = vr_table_issues(table)
+    if issues:
+        raise ServiceNotReadyError(
+            f"Invalid Table 3.1(A) VR table for {wind_region}: {'; '.join(issues)}"
+        )
     value_kind = "serviceability" if serviceability else "ultimate"
-    configured_row = table.get(value_kind, {}) if isinstance(table, dict) else {}
-    if not isinstance(configured_row, dict):
-        return None, f"Configured VR {value_kind} data is invalid; manual input required."
+    configured_row = table[value_kind]
     exact_value, note = lookup_vr(configured_row, ari_years)
     if exact_value is not None:
         return exact_value, None

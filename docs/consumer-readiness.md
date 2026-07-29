@@ -28,6 +28,9 @@ validation before non-expert users should rely on the output.
   an authentic completed result.
 - Public assessment JSON omits local wind-region dataset paths and raw region geometry; diagnostic
   routes are hidden unless explicitly enabled for a trusted local session.
+- The OSM outage cache now uses coordinate-obscuring hashed filenames, strict payload validation,
+  atomic writes, 25 MiB per-entry and 256 MiB/512-entry quotas, and 30-day expiry. Cache payloads
+  still contain location and footprint data and require operator-controlled storage permissions.
 - Production mode now requires a trusted Host allowlist, disables interactive API documentation,
   bounds request bodies and request collections, rejects ambiguous JSON, sanitises validation
   errors, adds browser security headers, and fails assessment traffic closed on readiness.
@@ -81,9 +84,10 @@ third-party binary format.
    C/D coastal interpolation, and the Clause 4.4.2 most-adverse cross-section/escarpment checks.
 9. Validate the production wind-region boundary dataset against an Amendment 2-reviewed edition
    and record a content digest in result provenance.
-10. Add provider redirect/SSRF controls, bounded response downloads and total deadlines,
-    concurrency/rate limits, cache quotas and atomic OSM cache writes before exposing live public
-    provider integrations at consumer scale.
+10. Complete consistent provider redirect/SSRF controls, bounded response downloads and total
+    deadlines, and concurrency/rate limits before exposing live public provider integrations at
+    consumer scale. OSM cache quotas, expiry, strict reads, and atomic writes are implemented, but
+    they do not replace those outstanding network controls.
 
 ## Release Gate
 

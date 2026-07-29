@@ -229,6 +229,19 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Design building" in html
     assert "openWindDesignBuilding" in html
     assert "orientation_options" in html
+    assert '"orientation_options": [0, 45, 90, 135, 180, 225, 270, 315]' in html
+    assert "normalizeOrientation" in html
+    assert "return rounded >= 360 ? 0 : rounded;" in html
+    assert "nearestOrientationOption" not in html
+    assert '{ label: "Front", theta: 0 }' in html
+    assert '{ label: "Right", theta: 90 }' in html
+    assert '{ label: "Back", theta: 180 }' in html
+    assert '{ label: "Left", theta: 270 }' in html
+    assert "clockwise from North" in html
+    assert "startResizeDrag" in html
+    assert "applyResizeFromLatLng" in html
+    assert "renderResizeHandles" in html
+    assert "dimensions_modified" in html
     assert "Building footprints (source context)" not in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html

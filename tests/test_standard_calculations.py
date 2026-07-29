@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.standard_calculations import (
     climate_change_multiplier,
+    direction_multiplier_row_issues,
+    direction_multiplier_values,
     site_wind_speed,
 )
 
@@ -33,6 +36,22 @@ def test_climate_change_multiplier_table_3_3(region: str, expected: float) -> No
 def test_generic_b_is_rejected_as_ambiguous_for_mc() -> None:
     with pytest.raises(ValueError, match="B1 or B2"):
         climate_change_multiplier("B")
+
+
+def test_md_row_validator_quarantines_oversized_integer_values() -> None:
+    row = {
+        direction: (10**10_000 if direction == "N" else 1.0)
+        for direction in ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    }
+
+    issues = direction_multiplier_row_issues(row)
+
+    assert any(issue.startswith("N must be a finite number") for issue in issues)
+
+
+def test_md_lookup_rejects_non_object_table_container() -> None:
+    with pytest.raises(ServiceNotReadyError, match="tables must be an object"):
+        direction_multiplier_values("A2", data={"tables": []})
 
 
 def test_site_wind_speed_includes_mc_in_clause_2_2_product() -> None:

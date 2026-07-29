@@ -64,8 +64,11 @@ These items should not be described as certified OpenWind-AU outputs:
 
 ## Near-Term Improvements
 
+- Implement and independently validate the Clause 2.3 conversion from cardinal-direction
+  `Vsit,b` to building-orthogonal `Vdes,theta`, using the existing full-circle orientation
+  metadata, before adding pressure calculations.
 - Complete independent reviewer/date metadata for packaged `Mz,cat` and `Ms` lookup assets, add
-  broader `Mt`regression cases, and build any future AS 4055 or other release-critical
+  broader `Mt` regression cases, and build any future AS 4055 or other release-critical
   coefficients from reviewed sources.
 - Add a reviewer sign-off and regression workflow for derived lookup assets without committing
   licensed standard text.

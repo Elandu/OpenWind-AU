@@ -26,6 +26,8 @@ certified design tool. Suitable for exploration, review, contribution, and regre
 
 - Accepts either an Australian street address or latitude/longitude, with an optional non-geocoded
   `site_label` for map-selected coordinates.
+- Keeps the Design building's position, breadth/depth, and full-circle front-face engineering
+  azimuth synchronized between the map, form, saved project state, and assessment request.
 - Generates 8-direction terrain profiles: N, NE, E, SE, S, SW, W, and NW.
 - Supports analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Performs conservative rule-based screening for candidate ridge, hill, escarpment, valley, or no
@@ -176,6 +178,10 @@ GeoJSONL URLs, allowing OpenWind-AU to fetch only the tile required for the curr
 index and tile URLs (including redirects) must use HTTPS. Remote indexes are limited to 2 MiB,
 tiles are limited to 50 MiB, and an optional per-tile `sha256` is verified before a supported
 GeoJSON file is installed atomically in the cache.
+
+Successful OSM fallback queries use a separate bounded outage cache. Its hashed filenames,
+atomic-write and retention limits, location-data privacy implications, and deletion procedure are
+documented in [Installation](docs/installation.md#optional-microsoft-building-footprint-cache).
 
 ## Wind Region GIS Dataset
 

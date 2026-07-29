@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from openwind_au.models import (
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
@@ -48,6 +50,7 @@ TOPOGRAPHIC_SECTION_REVIEW_WARNING = (
     "Clause 4.4.2 most-adverse topographic cross-section within +/-22.5 degrees and "
     "escarpment downwind-slope eligibility are not automated; Mt requires engineer review."
 )
+VSITB_GOVERNING_ABS_TOLERANCE = 1e-9
 
 
 def run_wind_workflow(
@@ -121,6 +124,11 @@ def run_wind_workflow(
     vsitb_variables = vsitb_assessments(vsitb_rows, overrides)
     vsitb_rows = apply_vsitb_assessments_to_rows(vsitb_rows, vsitb_variables)
     vsitb_rows = mark_governing_vsitb(vsitb_rows)
+    exact_governing_row = max(
+        (row for row in vsitb_rows if row.final_vsitb is not None),
+        key=lambda row: float(row.final_vsitb),
+        default=None,
+    )
     variables.extend(vsitb_variables)
     warnings = [
         (
@@ -148,14 +156,9 @@ def run_wind_workflow(
         direction_multiplier_assessment=direction_multipliers,
         variables=variables,
         directional_vsitb=vsitb_rows,
-        governing_direction=next(
-            (row.direction for row in vsitb_rows if row.is_governing),
-            None,
-        ),
-        governing_vsitb=next(
-            (row.final_vsitb for row in vsitb_rows if row.is_governing),
-            None,
-        ),
+        governing_directions=[row.direction for row in vsitb_rows if row.is_governing],
+        governing_direction=exact_governing_row.direction if exact_governing_row else None,
+        governing_vsitb=exact_governing_row.final_vsitb if exact_governing_row else None,
         evidence_references=[
             "Wind region map",
             "Terrain and shielding map",
@@ -401,7 +404,13 @@ def effective_direction_multiplier_assessment(
             "governing_directions": [row.direction for row in directions],
             "lookup_values": [
                 f"Selected wind region: {assessment.wind_region}",
-                f"Selected design case: {request.wind_direction_multiplier_case}",
+                f"Requested design case: {request.wind_direction_multiplier_case}",
+                *(
+                    [f"Selected structure class: {request.structure_class}"]
+                    if request.structure_class
+                    else []
+                ),
+                f"Effective Md rule: {reason}",
                 *[f"{row.direction}: Md 1.00" for row in directions],
             ],
             "warnings": [reason],
@@ -469,18 +478,20 @@ def mzcat_assessments(
         warnings = list(item.warnings)
         calculated_value = (
             indicative_mzcat(
-                item.recommended_terrain_category,
+                item.recommended_terrain_category or "TC1",
                 request.reference_height_m,
                 wind_region=wind_region.wind_region,
                 lookup_data=lookup,
             )
-            if item.recommended_terrain_category
+            if mandatory_a0 or item.recommended_terrain_category
             else None
         )
         value = calculated_value
         final_label = (
-            f"Calculated TC {item.recommended_terrain_category}"
-            if item.recommended_mzcat is not None
+            "Mandatory Region A0 Mz,cat"
+            if mandatory_a0
+            else f"Calculated TC {item.recommended_terrain_category}"
+            if calculated_value is not None
             else None
         )
         class_inputs: list[str] = []
@@ -488,26 +499,37 @@ def mzcat_assessments(
         source_reference = mzcat_source_reference(lookup)
         confidence = item.recommendation_confidence
         if class_override and class_override.terrain_category:
-            value = class_override.mzcat or indicative_mzcat(
-                class_override.terrain_category,
-                request.reference_height_m,
-                wind_region=wind_region.wind_region,
-                lookup_data=lookup,
-            )
-            final_label = f"Reviewed TC {class_override.terrain_category}"
-            confidence = "high" if class_override.mzcat else "medium"
-            source_reference = class_override.source_reference or source_reference
             class_inputs = [
                 f"Reviewed terrain category: {class_override.terrain_category}",
                 f"Review reason: {class_override.reason}",
             ]
-            if class_override.mzcat is not None:
-                class_inputs.append(f"Reviewed Mz,cat: {class_override.mzcat:.3f}")
-            class_details = [
-                "Reviewed terrain category class override applied.",
-                *class_inputs,
-            ]
-            warnings.append("Mz,cat uses reviewed class override.")
+            if mandatory_a0:
+                class_details = [
+                    "Reviewed terrain category was recorded as evidence only; it did not "
+                    "affect the terrain-independent Region A0 value.",
+                    *class_inputs,
+                ]
+                warnings.append(
+                    "Terrain category class was recorded as evidence only; Region A0 "
+                    "Mz,cat remains the mandatory terrain-independent value."
+                )
+            else:
+                value = class_override.mzcat or indicative_mzcat(
+                    class_override.terrain_category,
+                    request.reference_height_m,
+                    wind_region=wind_region.wind_region,
+                    lookup_data=lookup,
+                )
+                final_label = f"Reviewed TC {class_override.terrain_category}"
+                confidence = "high" if class_override.mzcat else "medium"
+                source_reference = class_override.source_reference or source_reference
+                if class_override.mzcat is not None:
+                    class_inputs.append(f"Reviewed Mz,cat: {class_override.mzcat:.3f}")
+                class_details = [
+                    "Reviewed terrain category class override applied.",
+                    *class_inputs,
+                ]
+                warnings.append("Mz,cat uses reviewed class override.")
         if value is None:
             warnings.append("Mz,cat could not be calculated for this direction.")
         assessment = WindVariableAssessment(
@@ -516,7 +538,18 @@ def mzcat_assessments(
             direction=item.direction,
             recommended_value=value,
             recommended_label=(
-                f"Reviewed TC {class_override.terrain_category}; Mz,cat {value:.3f}"
+                (
+                    f"Mandatory Region A0 Mz,cat {value:.3f}; reviewed "
+                    f"TC {class_override.terrain_category} retained as evidence only"
+                )
+                if mandatory_a0
+                and value is not None
+                and class_override
+                and class_override.terrain_category
+                else f"Mandatory Region A0 Mz,cat {value:.3f}; terrain category does not "
+                "change this value"
+                if mandatory_a0 and value is not None
+                else f"Reviewed TC {class_override.terrain_category}; Mz,cat {value:.3f}"
                 if class_override and class_override.terrain_category and value is not None
                 else (
                     f"Recommended TC {item.recommended_terrain_category}; "
@@ -954,9 +987,21 @@ def mark_governing_vsitb(rows: list[SiteWindSpeedRow]) -> list[SiteWindSpeedRow]
     calculated = [row for row in rows if row.final_vsitb is not None]
     if not calculated:
         return rows
-    governing = max(calculated, key=lambda row: row.final_vsitb or 0)
+    governing_value = max(float(row.final_vsitb) for row in calculated)
     return [
-        row.model_copy(update={"is_governing": row.direction == governing.direction})
+        row.model_copy(
+            update={
+                "is_governing": (
+                    row.final_vsitb is not None
+                    and math.isclose(
+                        float(row.final_vsitb),
+                        governing_value,
+                        rel_tol=1e-12,
+                        abs_tol=VSITB_GOVERNING_ABS_TOLERANCE,
+                    )
+                )
+            }
+        )
         for row in rows
     ]
 

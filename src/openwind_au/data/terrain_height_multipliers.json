@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "title": "Editable terrain/height multiplier lookup table",
-    "standard": "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2",
+    "standard": "AS/NZS 1170.2:2021",
     "clause": "Clauses 4.2.2 and 4.2.3",
     "table": "Table 4.1",
     "standard_reference": "AS/NZS 1170.2:2021 Clauses 4.2.2 and 4.2.3, Table 4.1",

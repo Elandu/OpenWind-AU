@@ -82,6 +82,26 @@ def test_microsoft_provider_reports_cache_miss(tmp_path) -> None:
     assert "cache not found" in result.warnings[0]
 
 
+def test_microsoft_cache_read_warning_does_not_expose_local_path(tmp_path) -> None:
+    cache = tmp_path / "private-consumer-cache"
+    cache.mkdir()
+    tile = cache / "-34_151.geojson"
+    tile.write_text("{not valid JSON", encoding="utf-8")
+
+    result = query_microsoft_building_footprints(
+        latitude=-33.86,
+        longitude=151.21,
+        radius_m=500,
+        cache_dir=cache,
+        allow_download=False,
+    )
+
+    assert result.cache_status == "hit_empty"
+    assert any("could not be read" in warning for warning in result.warnings)
+    assert str(tmp_path) not in " ".join(result.warnings)
+    assert "private-consumer-cache" not in " ".join(result.warnings)
+
+
 def test_microsoft_provider_reads_geojsonl_cache(tmp_path) -> None:
     cache = tmp_path / "microsoft"
     tiles = cache / "tiles"

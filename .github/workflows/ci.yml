@@ -128,6 +128,7 @@ jobs:
           with ZipFile(wheels[0]) as archive:
               names = set(archive.namelist())
           required = {
+              "openwind_au/cache_io.py",
               "openwind_au/data/shielding_multipliers.json",
               "openwind_au/data/terrain_height_multipliers.json",
               "openwind_au/errors.py",

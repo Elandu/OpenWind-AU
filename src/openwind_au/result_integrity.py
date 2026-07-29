@@ -281,9 +281,26 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
     calculated = [row for row in result.directional_vsitb if row.final_vsitb is not None]
     governing_rows = [row for row in calculated if row.is_governing]
     if calculated:
-        expected_governing = max(calculated, key=lambda row: float(row.final_vsitb or 0.0))
-        if len(governing_rows) != 1 or governing_rows[0].direction != expected_governing.direction:
+        governing_value = max(float(row.final_vsitb or 0.0) for row in calculated)
+        expected_governing_rows = [
+            row
+            for row in calculated
+            if math.isclose(
+                float(row.final_vsitb or 0.0),
+                governing_value,
+                rel_tol=1e-12,
+                abs_tol=1e-9,
+            )
+        ]
+        expected_directions = [row.direction for row in expected_governing_rows]
+        if [row.direction for row in governing_rows] != expected_directions:
             raise ValueError("Workflow result governing direction is inconsistent.")
+        if result.governing_directions != expected_directions:
+            raise ValueError("Workflow result governing directions are inconsistent.")
+        expected_governing = max(
+            calculated,
+            key=lambda row: float(row.final_vsitb or 0.0),
+        )
         if result.governing_direction != expected_governing.direction or not _optional_float_equal(
             result.governing_vsitb,
             expected_governing.final_vsitb,
@@ -291,6 +308,7 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
             raise ValueError("Workflow result governing summary is inconsistent.")
     elif (
         governing_rows
+        or result.governing_directions
         or result.governing_direction is not None
         or result.governing_vsitb is not None
     ):

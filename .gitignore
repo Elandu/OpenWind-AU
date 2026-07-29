@@ -22,4 +22,5 @@ reports/
 .server.pid
 .codex/
 tmp/
+.local/
 .slim/deepwork/

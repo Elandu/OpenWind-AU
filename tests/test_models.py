@@ -152,11 +152,49 @@ def test_wind_workflow_normalizes_legacy_average_height_alias() -> None:
     assert request.model_dump()["average_roof_height_m"] == 3
 
 
-def test_wind_workflow_rejects_orientation_outside_reference_range() -> None:
+@pytest.mark.parametrize("orientation", [95, 270, 359.9])
+def test_wind_workflow_accepts_full_circle_engineering_azimuth(
+    orientation: float,
+) -> None:
+    request = WindWorkflowRequest(
+        latitude=-34.550445,
+        longitude=150.848728,
+        building_height_m=3,
+        structure_orientation_deg=orientation,
+    )
+
+    assert request.structure_orientation_deg == orientation
+
+
+@pytest.mark.parametrize("orientation", [-0.1, 360, 361])
+def test_wind_workflow_rejects_orientation_outside_engineering_azimuth(
+    orientation: float,
+) -> None:
     with pytest.raises(ValidationError):
         WindWorkflowRequest(
             latitude=-34.550445,
             longitude=150.848728,
             building_height_m=3,
-            structure_orientation_deg=95,
+            structure_orientation_deg=orientation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("building_width_m", "building_length_m"),
+    [(4.0, None), (None, 5.0)],
+)
+def test_wind_workflow_requires_building_dimensions_as_a_pair(
+    building_width_m: float | None,
+    building_length_m: float | None,
+) -> None:
+    with pytest.raises(
+        ValidationError,
+        match="building_width_m and building_length_m must be provided together",
+    ):
+        WindWorkflowRequest(
+            latitude=-34.550445,
+            longitude=150.848728,
+            building_height_m=3,
+            building_width_m=building_width_m,
+            building_length_m=building_length_m,
         )

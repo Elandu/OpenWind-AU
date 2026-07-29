@@ -3,6 +3,20 @@
 OpenWind-AU is an engineering review aid. Outputs are evidence and workflow support tools.
 Final design decisions remain the responsibility of the engineer.
 
+## Standards Verification Status
+
+The implemented Clause 2.2 product, the Clause 2.3/Figure 2.2 clockwise-from-true-North cardinal
+direction convention, base Table 3.1(A) regional-speed equations and rows, Table 3.2(A) direction
+multipliers, Clause 3.4/Table 3.3 climate-change factors, Table 4.1 terrain/height values, Table 4.2
+shielding values, and the implemented Clause 4.4 equations have been cross-checked against an
+access-controlled copy of the base AS/NZS 1170.2:2021 publication. That source does not establish
+incorporation of Amendments 1 and 2. It therefore does not satisfy the production release
+requirement for independent named reviewer/date sign-off against the applicable amended edition.
+
+No licensed PDF, workstation path, copied clause, or bulk standards table is committed to the
+repository. Derived data, source references, tests, and review status are recorded without
+publishing the licensed source material.
+
 ## Wind Region
 
 ### Input Data
@@ -19,14 +33,15 @@ configured selection logic and reports neighbouring polygons for review. Boundar
 checks the site distance to the selected region boundary and downgrades confidence near a
 configured warning distance.
 
-Dataset metadata is reported with the assessment, including dataset name, polygon count,
-available region labels, configured path, and whether the active dataset is a test fixture.
+Internal dataset diagnostics include the configured path. Public assessments report the dataset
+identity, polygon count, available region labels, and whether the active dataset is a test
+fixture, but omit local paths and full region geometry.
 
 ### Output Fields
 
 - Wind region label: `A0`, `A1`, `A2`, `A3`, `A4`, `A5`, `B1`, `B2`, `C`, or `D`.
 - Region subclassification where available.
-- Dataset name and path.
+- Dataset name and non-sensitive metadata; the local path remains internal/diagnostic.
 - Polygon count and available region names.
 - Distance to boundary.
 - Boundary warning flag.
@@ -38,6 +53,10 @@ available region labels, configured path, and whether the active dataset is a te
 The engineer must confirm the wind region against the project standard and source GIS dataset.
 Sites close to region boundaries need particular review because small changes in coordinates,
 dataset interpretation, or boundary geometry can change the selected region.
+
+`OPENWIND_WIND_REGION_BOUNDARY_WARNING_M` must be a finite number greater than zero. A non-numeric,
+non-finite, zero, or negative value is a deployment-readiness failure rather than a silently
+accepted threshold.
 
 ## Regional Wind Speed (VR)
 
@@ -59,6 +78,12 @@ Project-supplied override tables may provide an independently reviewed exact ARI
 rows are not interpolated. If an override row is unchanged from the packaged standard snapshot,
 non-tabulated `R >= 5` values retain the regional-equation calculation rather than interpolating
 between already rounded rows.
+
+Each configured regional table must contain exactly non-empty `ultimate` and `serviceability`
+objects. ARI keys must be canonical positive integer years, limited to `1` or `R >= 5`, without
+duplicate normalized years. Speeds must be finite numbers greater than zero and no greater than
+200 m/s. Unexpected members or invalid rows fail readiness and the calculation rather than being
+coerced or partially used.
 
 For Regions C and D, the default equation result is explicitly labelled as the regional maximum.
 Distance-based interpolation from the smoothed coastline is not implemented; an exact configured
@@ -102,6 +127,10 @@ pole case. It identifies the highest value in the row and marks all matching dir
 governing directions. Lookup metadata is checked so packaged or override JSON must include
 `source.review_status == "verified_against_standard"`, a named `source.reviewed_by`, and a valid
 ISO `source.reviewed_on` date to avoid a warning.
+
+Each selected lookup row must contain exactly the eight named directions with no extras. Every
+value must be a finite numeric value greater than zero and no greater than 2.0. An invalid row
+fails readiness and calculation instead of returning a partial direction set.
 
 ### Output Fields
 
@@ -161,6 +190,10 @@ intermediate heights and terrain categories use linear interpolation. Intermedia
 are derived between TC1 and TC2 rather than stored as a separate standard table column. The Region
 A0 rule uses TC2 for `z <= 100 m` and `Mz,cat = 1.24` above 100 m to 200 m.
 
+The Clause 4.2.3 mixed-terrain weighted-average workflow is not automated. A mixed directional
+fetch still requires an engineer-reviewed category/value rather than an inferred final design
+multiplier.
+
 ### Output Fields
 
 - Directional terrain profiles.
@@ -207,6 +240,12 @@ Height source selection follows the current hierarchy:
 Manual overrides can replace selected heights and mark records as manually reviewed. Confidence is
 assigned from the selected height source, available warnings, and whether engineering review is
 required.
+
+Untrusted provider/import fields are bounded before they enter height selection. Explicit heights
+greater than 500 m, building-level counts greater than 200, negative or non-finite values, and
+level/storey-height products greater than 500 m are ignored. The footprint remains available as
+geometry evidence, while the rejected height value is quarantined and an explicit review note is
+retained; no extreme provider value is silently promoted into shielding evidence.
 
 ### Current Height Methods
 
@@ -327,6 +366,10 @@ If the sampled profile does not extend far enough upwind to resolve the half-hei
 defines `Lu`, OpenWind-AU leaves directional `Mt` unavailable and blocks the corresponding
 `Vsit,b` calculation until the profile geometry or an engineer-reviewed override is supplied.
 
+Automatic selection of the most adverse cross-section within the Clause 4.4.2 directional range,
+including the corresponding escarpment interpretation, is not implemented. Those cases require
+reviewed geometry and independent calculation before the result can be treated as complete.
+
 ### Review Requirements
 
 The engineer must confirm topographic feature selection, terrain data adequacy, `H`, `Lu`, `x`,
@@ -340,7 +383,10 @@ Wind Region -> VR -> Mc -> Md -> Terrain Evidence -> Shielding Evidence -> Topog
 Engineer Review -> Final design calculations
 
 OpenWind-AU organises the workflow through `Vsit,b` as review support. It does not currently
-produce certified design wind pressures.
+perform the Clause 2.3 conversion to building-orthogonal `Vdes,theta` or produce certified design
+wind pressures. The stored building orientation uses the Figure 2.2 engineering-azimuth
+convention—clockwise from true North over `0 <= beta < 360`—so the axis metadata is unambiguous
+when that later calculation stage is implemented.
 
 The Clause 2.2 product used by the workflow is:
 

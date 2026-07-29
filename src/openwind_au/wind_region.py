@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from functools import lru_cache
@@ -436,9 +437,16 @@ def boundary_warning_distance_m() -> float:
     if value is None:
         return BOUNDARY_WARNING_DISTANCE_M
     try:
-        return float(value)
-    except ValueError:
-        return BOUNDARY_WARNING_DISTANCE_M
+        distance = float(value)
+    except ValueError as exc:
+        raise ServiceNotReadyError(
+            f"{BOUNDARY_WARNING_DISTANCE_ENV} must be a finite number greater than 0."
+        ) from exc
+    if not math.isfinite(distance) or distance <= 0:
+        raise ServiceNotReadyError(
+            f"{BOUNDARY_WARNING_DISTANCE_ENV} must be a finite number greater than 0."
+        )
+    return distance
 
 
 def distance_to_geometry_boundary_m(geometry: Any, latitude: float, longitude: float) -> float:

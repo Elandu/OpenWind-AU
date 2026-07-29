@@ -70,6 +70,7 @@ MS_SOURCE_CLAUSE = "Clause 4.3"
 MS_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2"
 EXPECTED_SHIELDING_PARAMETER_NODES: tuple[float, ...] = (1.5, 3.0, 6.0, 12.0)
 EXPECTED_SHIELDING_REDUCTION_HEIGHT_LIMIT_M = 25.0
+MAX_DIRECTION_MULTIPLIER = 2.0
 
 
 def table_region_key(region: str, tables: dict[str, Any]) -> str:
@@ -128,7 +129,10 @@ def climate_change_multiplier(region: str) -> float:
         raise ValueError(f"Unsupported Australian wind region: {region}") from exc
 
 
-def direction_multiplier_values(region: str) -> dict[str, float]:
+def direction_multiplier_values(
+    region: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, float]:
     """Load the configured Table 3.2(A) direction multipliers for a region."""
 
     if region not in SUPPORTED_AU_WIND_REGIONS:
@@ -143,12 +147,44 @@ def direction_multiplier_values(region: str) -> dict[str, float]:
             "Wind region B is ambiguous for Table 3.2(A) direction multiplier Md; "
             "confirm whether the site is in B1 or B2."
         )
-    data = load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
-    table_key = table_region_key(region, data.get("tables", {}))
-    row = data.get("tables", {}).get(table_key)
-    if not row:
-        raise ValueError(f"Unsupported Australian wind region: {region}")
+    lookup = data if data is not None else load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
+    tables = lookup.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.2(A) Md lookup: tables must be an object")
+    table_key = table_region_key(region, tables)
+    row = tables.get(table_key)
+    issues = direction_multiplier_row_issues(row)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.2(A) Md row for {region}: {'; '.join(issues)}")
     return {direction: float(row[direction]) for direction in DIRECTIONS}
+
+
+def direction_multiplier_row_issues(row: Any) -> list[str]:
+    """Return structural and numeric failures for one configured Md row."""
+
+    if not isinstance(row, dict):
+        return ["row must be an object"]
+    issues = []
+    missing = [direction for direction in DIRECTIONS if direction not in row]
+    unexpected = [str(direction) for direction in row if direction not in DIRECTIONS]
+    if missing:
+        issues.append(f"missing directions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"unexpected directions: {', '.join(sorted(unexpected))}")
+    for direction in DIRECTIONS:
+        value = row.get(direction)
+        try:
+            numeric_value = float(value)
+        except (OverflowError, TypeError, ValueError):
+            numeric_value = math.nan
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            numeric_value = math.nan
+        if not math.isfinite(numeric_value) or not 0 < numeric_value <= MAX_DIRECTION_MULTIPLIER:
+            issues.append(
+                f"{direction} must be a finite number greater than 0 and not greater than "
+                f"{MAX_DIRECTION_MULTIPLIER:g}"
+            )
+    return issues
 
 
 def ms_from_shielding_parameter(
