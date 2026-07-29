@@ -11,8 +11,11 @@ from typing import get_args
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
+from reportlab.graphics.shapes import Circle, Polygon, String
+from reportlab.lib.units import mm
 
 import openwind_au.api as api_module
+import openwind_au.reports as reports_module
 import openwind_au.wind_workflow as workflow_module
 from openwind_au.models import (
     WindRegionAssessment,
@@ -21,7 +24,11 @@ from openwind_au.models import (
     WindWorkflowResult,
 )
 from openwind_au.obstructions import run_obstruction_inventory
-from openwind_au.reports import concise_workflow_warnings
+from openwind_au.reports import (
+    _wind_pdf_map_scale_distance,
+    _wind_pdf_site_map,
+    concise_workflow_warnings,
+)
 from openwind_au.standard_calculations import design_wind_speed
 from openwind_au.wind_inputs import VR_EQUATION_REFERENCE
 from openwind_au.wind_workflow import mark_governing_vsitb, vsitb_directional_rows
@@ -122,15 +129,13 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         "Run Assessment",
         "Interactive Wind Map",
         "Map Layers",
+        "Editable assessment values",
         "Assessment Basis",
         "Regional Wind Speed, VR",
         "Climate Change Multiplier, Mc",
         "Directional Site Wind Speed, Vsit,b",
         "Building-Orthogonal Design Wind Speed",
-        "Wind Direction Multiplier, Md",
-        "Terrain Category / Mz,cat",
-        "Shielding Multiplier, Ms",
-        "Topographic Multiplier, Mt",
+        "Calculation provenance and warnings",
         "Reports",
     ]
     assert all(heading in body for heading in headings)
@@ -175,7 +180,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Design building footprint" in body
     assert 'class="evidence-sidebar"' not in body
     assert 'data-step="1"' in body
-    assert 'data-step="9"' in body
+    assert 'data-step="3"' in body
     assert 'data-step="10"' in body
     assert '<script src="/static/wind_workflow.js?v=' in body
     assert "detail-workspace-active" in script.text
@@ -210,7 +215,12 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Review and issue status" in body
     assert "Assessment status" in body
     assert "Directional values appear once below." in body
-    assert "Engineering overrides" in body
+    assert "Editable assessment values" in body
+    assert 'id="raw-data-save"' in body
+    assert "Save all changes" in body
+    assert "Discard changes" in body
+    assert "Use calculated values" in body
+    assert "Engineering overrides" not in body
     assert 'id="raw-provenance"' in body
     assert "required" not in body.split('id="dashboard-address"', 1)[1].split("/>", 1)[0]
     assert "User assumptions" not in body
@@ -226,7 +236,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Review status" not in body
     assert "Accept</button>" not in body
     assert "Override" not in body
-    assert "Calculated regional speed shown once, with an optional engineering override." in body
+    assert "Regional speed is editable in place and saved with the other Raw Data changes." in body
     assert "Interactive wind assessment map" in body
     assert 'id="workflow-map-frame"' in body
     assert "Terrain Profile Graph" in body
@@ -234,7 +244,11 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="map-iframe profile-iframe"' in body
     assert 'title="Terrain profile graph"' in body
     assert 'id="wind-region-frame"' not in body
-    assert body.count("Directional calculated values with optional engineering overrides.") == 3
+    assert "Directional calculated values with optional engineering overrides." not in body
+    assert 'id="wind-direction-md"' not in body
+    assert 'id="terrain-category-mzcat"' not in body
+    assert 'id="shielding-ms"' not in body
+    assert 'id="topographic-mt"' not in body
     assert "Evidence tools" not in body
     assert "Supporting Evidence and Maps" not in body
     assert "Terrain Evidence" not in body
@@ -282,10 +296,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "renderFaceLabels" in script.text
     assert "openwind-design-building-change" in script.text
     assert "adjustedLocationFromDesignState" in script.text
-    assert script.text.index("const requestPayload = workflowPayload()") < script.text.index(
-        "resetWorkflowSections();"
-    )
-    for step in range(1, 10):
+    assert script.text.index(
+        "const requestPayload = workflowPayload(options.workflowOverrides ?? workflowOverrides)"
+    ) < script.text.index("resetWorkflowSections();")
+    for step in (1, 2, 3, 4, 5, 10):
         assert f'data-step="{step}"' in body
     assert "/api/plots/profile" in script.text
     assert "terrainProfileRequestPayload" in script.text
@@ -326,10 +340,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "renderTerrainProgress" in script.text
     assert "Validation checks" not in script.text
     assert "Evidence</a>" not in script.text
-    assert "mdStandardCell" in script.text
-    assert "md-standard-table" in script.text
     assert "Governing Md" not in script.text
-    assert "inlineAssessmentValueCell" in script.text
+    assert "editableAssessmentValueCell" in script.text
+    assert "renderVsitbTable" in script.text
+    assert "data-raw-value" in script.text
     assert "Final editable values" not in script.text
     assert "renderRawProvenance" in script.text
     assert "<th>Source Reference</th>" not in script.text
@@ -397,7 +411,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260729-vdes-1" in page.text
+    assert "20260729-raw-edit-2" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -821,6 +835,63 @@ def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> Non
     )
     assert response.content.startswith(b"%PDF-")
     assert len(response.content) > 2_000
+
+
+def test_wind_workflow_pdf_site_map_records_signed_location_and_oriented_footprint(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload()
+    payload.pop("building_dimensions")
+    payload.update(
+        {
+            "project_number": "OW-2026-MAP",
+            "building_width_m": 20.0,
+            "building_length_m": 30.0,
+            "structure_orientation_deg": 315.0,
+        }
+    )
+    workflow_response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert workflow_response.status_code == 200
+    result = WindWorkflowResult.model_validate(workflow_response.json())
+    site_map = _wind_pdf_site_map(result)
+    labels = {item.text for item in site_map.contents if isinstance(item, String)}
+
+    assert site_map.width == pytest.approx(62 * mm)
+    assert site_map.height == pytest.approx(62 * mm)
+    assert "SITE / LOCATION MAP" in labels
+    assert "TRUE N" in labels
+    assert "FOOTPRINT | front beta 315.0 deg" in labels
+    assert "Location -33.860000, +151.210000" in labels
+    assert len([item for item in site_map.contents if isinstance(item, Polygon)]) >= 10
+    assert len([item for item in site_map.contents if isinstance(item, Circle)]) >= 1
+    assert _wind_pdf_map_scale_distance(60.0) == 10.0
+    assert _wind_pdf_map_scale_distance(120.0) == 20.0
+
+    rendered_map_contexts = []
+    original_site_map = reports_module._wind_pdf_site_map
+
+    def capture_site_map(render_result):
+        rendered_map_contexts.append(
+            (
+                render_result.site.latitude,
+                render_result.site.longitude,
+                render_result.input.building_width_m,
+                render_result.input.building_length_m,
+                render_result.input.structure_orientation_deg,
+            )
+        )
+        return original_site_map(render_result)
+
+    monkeypatch.setattr(reports_module, "_wind_pdf_site_map", capture_site_map)
+    pdf_response = test_client.post(
+        "/api/wind-workflow/result/report/pdf",
+        json=workflow_response.json(),
+    )
+    assert pdf_response.status_code == 200
+    assert pdf_response.content.startswith(b"%PDF-")
+    assert rendered_map_contexts == [(-33.86, 151.21, 20.0, 30.0, 315.0)]
 
 
 def test_wind_workflow_pdf_keeps_effective_override_summary_on_one_page(monkeypatch) -> None:

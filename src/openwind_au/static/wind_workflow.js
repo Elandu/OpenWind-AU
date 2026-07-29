@@ -6,7 +6,14 @@ const workflowMapFrame = document.getElementById("workflow-map-frame");
 const terrainProfileFrame = document.getElementById("terrain-profile-frame");
 const vsitbTable = document.getElementById("vsitb-table");
 const vdesTable = document.getElementById("vdes-table");
+const directionalEditRestrictions = document.getElementById("directional-edit-restrictions");
 const rawProvenance = document.getElementById("raw-provenance");
+const rawDataPanel = document.getElementById("workspace-panel-raw-data");
+const rawDataSave = document.getElementById("raw-data-save");
+const rawDataUseCalculated = document.getElementById("raw-data-use-calculated");
+const rawDataDiscard = document.getElementById("raw-data-discard");
+const rawDataEditReason = document.getElementById("raw-data-edit-reason");
+const rawDataEditStatus = document.getElementById("raw-data-edit-status");
 const workflowReport = document.getElementById("workflow-report");
 const workflowPdf = document.getElementById("workflow-pdf");
 const reportStatus = document.getElementById("report-status");
@@ -68,6 +75,8 @@ const workflowOverrideMaximums = Object.freeze({
   Vsitb: 500,
 });
 const workflowOverrideReasonMaximum = 2000;
+const rawDataDisplayDecimals = 6;
+const rawDataDisplayTolerance = 0.5 * (10 ** -rawDataDisplayDecimals);
 
 const hiddenWindInputWarningPatterns = [
   /GIS interpretation/i,
@@ -83,6 +92,8 @@ let workflowRunId = 0;
 let activeReportController = null;
 let reportRequestId = 0;
 let workflowOverrides = [];
+let rawDataEditorDirty = false;
+let rawDataEditorSaving = false;
 let addressSuggestionTimer = null;
 let addressSuggestionController = null;
 let addressSuggestions = [];
@@ -224,6 +235,15 @@ workflowForm.addEventListener("change", () => {
   cancelActiveWorkflow();
   updateReportAvailability();
 });
+
+rawDataPanel?.addEventListener("input", (event) => {
+  if (event.target?.dataset?.rawValue === undefined) return;
+  refreshRawDataEditorState();
+});
+
+rawDataSave?.addEventListener("click", saveRawDataEdits);
+rawDataUseCalculated?.addEventListener("click", stageCalculatedRawDataValues);
+rawDataDiscard?.addEventListener("click", discardRawDataEdits);
 
 assessmentStatusControl?.addEventListener("change", syncReviewControls);
 reviewedByControl?.addEventListener("input", syncReviewControls);
@@ -398,7 +418,7 @@ workflowPdf?.addEventListener("click", async () => {
   }
 });
 
-async function runWorkflow() {
+async function runWorkflow(options = {}) {
   syncReviewControls();
   const validationMessages = validateWorkflowInputs();
   const formIsValid = workflowForm.reportValidity();
@@ -410,13 +430,16 @@ async function runWorkflow() {
       : "Complete the highlighted required assessment inputs before running the assessment.";
     return false;
   }
+  if (options.workflowOverrides === undefined) {
+    removeNowRestrictedWorkflowOverrides();
+  }
   cancelAddressResolution();
   closeAddressSuggestions();
   cancelActiveWorkflow();
   const runId = workflowRunId;
   const controller = new AbortController();
   activeWorkflowController = controller;
-  const requestPayload = workflowPayload();
+  const requestPayload = workflowPayload(options.workflowOverrides ?? workflowOverrides);
   activeWorkflowPayload = requestPayload;
   setWorkflowProgress(4, "Resolving site location and elevation", "running");
   workflowSummary.textContent = "Resolving site location and elevation...";
@@ -716,7 +739,7 @@ async function runWorkflowFallback(originalError, requestPayload, runId, signal)
   }
 }
 
-function workflowPayload() {
+function workflowPayload(overrides = workflowOverrides) {
   const data = new FormData(workflowForm);
   const optionalNumber = (name) => {
     const value = data.get(name);
@@ -749,7 +772,7 @@ function workflowPayload() {
     base_rl_m: optionalNumber("base_rl_m"),
     assessment_status: data.get("assessment_status") || "draft",
     mzcat_recommendation_mode: "conservative",
-    workflow_overrides: workflowOverrides,
+    workflow_overrides: overrides,
   };
   if (payload.assessment_status === "reviewed") {
     payload.reviewed_by = String(data.get("reviewed_by") || "").trim();
@@ -898,7 +921,7 @@ function acceptedWorkflowFingerprint(requestPayload, workflow) {
   return JSON.stringify(acceptedPayload);
 }
 
-function assessmentIsCurrent() {
+function completedAssessmentMatchesInputs() {
   return Boolean(
     currentWorkflow
     && currentWorkflowFingerprint
@@ -906,12 +929,18 @@ function assessmentIsCurrent() {
   );
 }
 
+function assessmentIsCurrent() {
+  return completedAssessmentMatchesInputs() && !rawDataEditorDirty && !rawDataEditorSaving;
+}
+
 function updateReportAvailability() {
   const isCurrent = assessmentIsCurrent();
   if (workflowPdf) workflowPdf.disabled = !isCurrent;
   if (workflowReport) workflowReport.disabled = !isCurrent;
   if (!reportStatus) return;
-  if (currentWorkflow && !isCurrent) {
+  if (currentWorkflow && rawDataEditorDirty) {
+    reportStatus.textContent = "Raw Data has unsaved changes. Save or restore the values before generating reports.";
+  } else if (currentWorkflow && !isCurrent) {
     reportStatus.textContent = "Inputs changed. Run the assessment again before generating reports.";
   } else if (
     isCurrent
@@ -970,6 +999,9 @@ function renderWorkflowFailure(error) {
   }
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
+  rawDataEditorDirty = false;
+  rawDataEditorSaving = false;
+  setRawDataEditorAvailability(false, "Assessment failed; no Raw Data changes were saved.");
   updateReportAvailability();
 }
 
@@ -1027,9 +1059,15 @@ function renderWorkflow(workflow) {
     if (variable === "Vsitb") return;
     renderVariableSection(variable, grouped[variable] || []);
   });
-  renderVsitbTable(workflow.directional_vsitb || []);
+  renderVsitbTable(workflow.directional_vsitb || [], grouped);
   renderVdesTable(workflow.design_wind_speeds || []);
   renderRawProvenance(workflow.variables || [], workflow.warnings || []);
+  setRawDataEditorAvailability(
+    true,
+    workflowOverrides.length
+      ? `${workflowOverrides.length} saved edited value${workflowOverrides.length === 1 ? "" : "s"}.`
+      : "All editable values currently match their calculated values.",
+  );
 }
 
 function renderDashboardHeader(workflow) {
@@ -2588,6 +2626,13 @@ function effectiveWindDirectionMultiplierCaseLabel(workflow) {
 function resetWorkflowSections() {
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
+  rawDataEditorDirty = false;
+  setRawDataEditorAvailability(
+    false,
+    rawDataEditorSaving
+      ? "Saving Raw Data changes and recalculating the assessment..."
+      : "Assessment running; editable values will appear when it completes.",
+  );
   updateReportAvailability();
   if (terrainProfileFrame) {
     setIframeHtml(terrainProfileFrame, "<p>Run the assessment to display terrain profiles.</p>");
@@ -2611,6 +2656,10 @@ function resetWorkflowSections() {
   if (dashboardGoverningVsitb) dashboardGoverningVsitb.textContent = "Calculating";
   if (vsitbTable) {
     vsitbTable.innerHTML = "<tr><td colspan=\"6\">Waiting for directional variables.</td></tr>";
+  }
+  if (directionalEditRestrictions) {
+    directionalEditRestrictions.hidden = true;
+    directionalEditRestrictions.textContent = "";
   }
   if (vdesTable) {
     vdesTable.innerHTML = "<tr><td colspan=\"6\">Waiting for design directions.</td></tr>";
@@ -2649,7 +2698,6 @@ function renderVariableSection(variable, rows) {
       ${table}
     </article>
   `);
-  attachOverrideHandlers(section);
 }
 
 function workflowTable(rows) {
@@ -2660,9 +2708,8 @@ function workflowTable(rows) {
         <thead>
           <tr>
             <th>Direction</th>
-            <th>Calculated</th>
+            <th>Value</th>
             <th>Confidence</th>
-            <th>Override (optional)</th>
           </tr>
         </thead>
         <tbody>
@@ -2680,10 +2727,9 @@ function sourceWorkflowTable(rows, { allowOverride = true } = {}) {
       <table>
         <thead>
           <tr>
+            <th>Scope</th>
             <th>Value</th>
-            <th>Calculated</th>
             <th>Confidence</th>
-            ${allowOverride ? "<th>Override (optional)</th>" : ""}
           </tr>
         </thead>
         <tbody>
@@ -2699,7 +2745,7 @@ function mdWorkflowTable(rows) {
   const byDirection = Object.fromEntries(rows.map((row) => [row.direction, row]));
   const highest = Math.max(
     ...rows
-      .map((row) => row.recommended_value)
+      .map((row) => row.final_value ?? row.recommended_value)
       .filter((value) => value !== null && value !== undefined)
       .map(Number),
   );
@@ -2725,21 +2771,25 @@ function mdWorkflowTable(rows) {
 }
 
 function mdStandardCell(row, highest) {
-  if (!row || row.recommended_value === null || row.recommended_value === undefined) {
+  if (!row || (row.final_value ?? row.recommended_value) === null || (row.final_value ?? row.recommended_value) === undefined) {
     return "<td>manual input required</td>";
   }
-  const value = Number(row.recommended_value);
+  const value = Number(row.final_value ?? row.recommended_value);
   const isGoverning = Number.isFinite(highest) && value === highest;
-  return `<td class="${isGoverning ? "governing-md-cell" : ""}">${value.toFixed(2)}${isGoverning ? "<span class=\"muted\">governing</span>" : ""}</td>`;
+  return `
+    <td class="${isGoverning ? "governing-md-cell" : ""}">
+      ${editableAssessmentValueCell(row, { compact: true })}
+      ${isGoverning ? "<span class=\"muted\">governing</span>" : ""}
+    </td>
+  `;
 }
 
 function variableRow(row, { allowOverride = true } = {}) {
   return `
     <tr>
       <td>${escapeHtml(row.direction || "all")}</td>
-      <td>${recommendedCell(row)}</td>
+      <td>${allowOverride ? editableAssessmentValueCell(row) : recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
-      ${allowOverride ? `<td>${inlineAssessmentValueCell(row)}</td>` : ""}
     </tr>
   `;
 }
@@ -2756,19 +2806,50 @@ function warningListHtml(warnings) {
     : "";
 }
 
-function renderVsitbTable(rows) {
+function renderVsitbTable(rows, variableGroups = {}) {
   if (!rows.length) {
+    if (directionalEditRestrictions) {
+      directionalEditRestrictions.hidden = true;
+      directionalEditRestrictions.textContent = "";
+    }
     vsitbTable.innerHTML = "<tr><td colspan=\"6\">No Vsit,b rows generated.</td></tr>";
     return;
   }
+  const restrictions = [...new Set(
+    ["Md", "Mzcat", "Ms"]
+      .map((variable) => rawDataEditRestriction(variable))
+      .filter(Boolean),
+  )];
+  if (directionalEditRestrictions) {
+    directionalEditRestrictions.hidden = !restrictions.length;
+    directionalEditRestrictions.textContent = restrictions.join(" ");
+  }
+  const assessmentFor = (variable, row, fallbackValue, unit = "") => (
+    (variableGroups[variable] || []).find((item) => item.direction === row.direction)
+    || {
+      variable,
+      direction: row.direction,
+      unit,
+      calculated_value: fallbackValue,
+      final_value: fallbackValue,
+    }
+  );
   vsitbTable.innerHTML = rows.map((row) => `
     <tr class="${row.is_governing ? "governing-row" : ""}">
       <td>${row.direction}${row.is_governing ? "<span class=\"muted\">governing direction</span>" : ""}</td>
-      <td>${formatWorkflowValue(row.md, "")}</td>
-      <td>${formatWorkflowValue(row.mzcat, "")}</td>
-      <td>${formatWorkflowValue(row.ms, "")}</td>
-      <td>${formatWorkflowValue(row.mt, "")}</td>
-      <td>${row.final_vsitb === null || row.final_vsitb === undefined ? "blocked" : `${row.final_vsitb.toFixed(3)} m/s${row.is_governing ? "<span class=\"muted\">governing Vsit,b</span>" : ""}`}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Md", row, row.md), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Mzcat", row, row.mzcat), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Ms", row, row.ms), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Mt", row, row.mt), { compact: true })}</td>
+      <td>
+        ${row.final_vsitb === null || row.final_vsitb === undefined
+          ? "blocked"
+          : editableAssessmentValueCell(
+            assessmentFor("Vsitb", row, row.recommended_vsitb ?? row.final_vsitb, "m/s"),
+            { compact: true },
+          )}
+        ${row.is_governing ? "<span class=\"muted\">governing Vsit,b</span>" : ""}
+      </td>
     </tr>
   `).join("");
 }
@@ -2833,21 +2914,52 @@ function renderRawProvenance(variables, workflowWarnings = []) {
   `;
 }
 
-function inlineAssessmentValueCell(row) {
+function editableAssessmentValueCell(row, { compact = false } = {}) {
   const key = overrideKey(row.variable, row.direction);
   const existing = overrideForKey(key);
-  const finalValue = existing?.override_value ?? row.override_value ?? "";
-  const placeholder = "optional override";
-  const reason = existing?.reason || row.override_reason || "";
+  const calculatedValue = finiteNumberOrNull(row.calculated_value ?? row.recommended_value);
+  const finalValue = finiteNumberOrNull(
+    existing?.override_value
+      ?? row.final_value
+      ?? row.override_value
+      ?? calculatedValue,
+  );
+  const restriction = rawDataEditRestriction(row.variable);
   const maximum = workflowOverrideMaximums[row.variable];
   const maximumAttribute = maximum === undefined ? "" : ` max="${maximum}"`;
+  const calculatedAttribute = calculatedValue === null ? "" : String(calculatedValue);
+  const finalAttribute = finalValue === null ? "" : String(finalValue);
+  const calculatedDisplayValue = rawDataEditableDisplayValue(calculatedValue);
+  const finalDisplayValue = rawDataEditableDisplayValue(finalValue);
+  const directionLabel = row.direction || "all directions";
+  const unit = row.unit || "";
+  const title = restriction || (
+    calculatedValue === null
+      ? "No calculated value is available; enter a reviewed value."
+      : `Calculated value: ${calculatedAttribute}${unit ? ` ${unit}` : ""}`
+  );
   return `
-    <div class="inline-override" data-key="${key}">
-      <input data-override-field="override_value" data-key="${key}" type="number" min="0.001"${maximumAttribute} step="0.001" value="${finalValue}" placeholder="${escapeHtml(placeholder)}" aria-label="Optional ${escapeHtml(row.variable)} override for ${escapeHtml(row.direction || "all directions")}" />
-      <input data-override-field="reason" data-key="${key}" maxlength="${workflowOverrideReasonMaximum}" value="${escapeHtml(reason)}" placeholder="reason if edited" aria-label="Override reason" />
-      <button type="button" data-override-action="apply" data-key="${key}">Save</button>
-      ${row.is_overridden || existing ? `<button type="button" data-override-action="clear" data-key="${key}">Reset</button>` : ""}
-      ${row.is_overridden ? `<span class="badge badge-warn">override</span>` : ""}
+    <div class="inline-assessment-value${compact ? " is-compact" : ""}" data-key="${escapeHtml(key)}">
+      <input
+        data-raw-value
+        data-key="${escapeHtml(key)}"
+        data-variable="${escapeHtml(row.variable)}"
+        data-direction="${escapeHtml(row.direction || "")}"
+        data-calculated-value="${calculatedAttribute}"
+        data-initial-value="${finalAttribute}"
+        type="number"
+        min="0.001"
+        ${maximumAttribute}
+        step="any"
+        value="${finalDisplayValue}"
+        placeholder="${calculatedValue === null ? "enter value" : calculatedDisplayValue}"
+        aria-label="${escapeHtml(row.variable)} value for ${escapeHtml(directionLabel)}${unit ? ` (${escapeHtml(unit)})` : ""}"
+        title="${escapeHtml(title)}"
+        ${restriction ? "disabled" : ""}
+      />
+      ${unit ? `<span class="inline-value-unit">${escapeHtml(unit)}</span>` : ""}
+      ${row.is_overridden || existing ? `<span class="badge badge-warn" title="${escapeHtml(existing?.reason || row.override_reason || "Saved edited value")}">edited</span>` : ""}
+      ${restriction ? `<span class="inline-value-lock" title="${escapeHtml(restriction)}">locked</span>` : ""}
     </div>
   `;
 }
@@ -2870,88 +2982,257 @@ function recommendedCell(row) {
     : `${escapeHtml(label)}<span class="muted">${value}</span>`;
 }
 
-function attachOverrideHandlers(scope) {
-  scope.querySelectorAll("button[data-override-action]").forEach((button) => {
-    button.addEventListener("click", () => updateOverride(button));
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function rawDataEditableDisplayValue(value) {
+  const number = finiteNumberOrNull(value);
+  if (number === null) return "";
+  return number.toFixed(rawDataDisplayDecimals).replace(/\.?0+$/, "");
+}
+
+function rawDataEditRestriction(variable) {
+  if (variable === "Md") return mandatoryMdOverrideRestriction();
+  if (variable === "Ms") return mandatoryMsOverrideRestriction();
+  if (variable === "Mzcat") return mandatoryMzcatOverrideRestriction();
+  return null;
+}
+
+function removeNowRestrictedWorkflowOverrides() {
+  const retained = workflowOverrides.filter(
+    (item) => !rawDataEditRestriction(item.variable),
+  );
+  const removedCount = workflowOverrides.length - retained.length;
+  if (removedCount) workflowOverrides = retained;
+  return removedCount;
+}
+
+function rawDataValueInputs() {
+  return Array.from(rawDataPanel?.querySelectorAll("input[data-raw-value]") || []);
+}
+
+function rawDataValuesEqual(first, second) {
+  if (first === null && second === null) return true;
+  if (first === null || second === null) return false;
+  return (
+    Object.is(first, second)
+    || Math.abs(first - second)
+      <= rawDataDisplayTolerance
+        + Number.EPSILON * Math.max(1, Math.abs(first), Math.abs(second))
+  );
+}
+
+function rawDataInputChanged(input) {
+  return !rawDataValuesEqual(
+    finiteNumberOrNull(input.value),
+    finiteNumberOrNull(input.dataset.initialValue),
+  );
+}
+
+function rawDataCalculatedResetAvailable() {
+  return rawDataValueInputs().some((input) => {
+    if (input.disabled) return false;
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    return calculated !== null && !rawDataValuesEqual(finiteNumberOrNull(input.value), calculated);
   });
 }
 
-async function updateOverride(button) {
-  const key = button.dataset.key;
-  const [variable, directionValue] = key.split(":");
-  const direction = directionValue || null;
+function setRawDataEditorAvailability(available, status) {
+  rawDataEditorDirty = false;
+  if (rawDataSave) rawDataSave.disabled = true;
+  if (rawDataDiscard) rawDataDiscard.disabled = true;
+  if (rawDataUseCalculated) {
+    rawDataUseCalculated.disabled = (
+      !available
+      || rawDataEditorSaving
+      || !rawDataCalculatedResetAvailable()
+    );
+  }
+  if (rawDataEditReason) {
+    rawDataEditReason.disabled = !available || rawDataEditorSaving;
+    if (available && !rawDataEditorSaving) rawDataEditReason.value = "";
+  }
+  if (rawDataEditStatus) rawDataEditStatus.textContent = status;
+  updateReportAvailability();
+}
+
+function refreshRawDataEditorState(status = null) {
+  if (rawDataEditorSaving) return;
+  const inputs = rawDataValueInputs();
+  rawDataEditorDirty = inputs.some(rawDataInputChanged);
+  const canSave = rawDataEditorDirty && completedAssessmentMatchesInputs();
+  if (rawDataSave) rawDataSave.disabled = !canSave;
+  if (rawDataDiscard) rawDataDiscard.disabled = !rawDataEditorDirty;
+  if (rawDataUseCalculated) {
+    rawDataUseCalculated.disabled = !currentWorkflow || !rawDataCalculatedResetAvailable();
+  }
+  if (rawDataEditReason) rawDataEditReason.disabled = !currentWorkflow;
+  if (rawDataEditStatus) {
+    const changedCount = inputs.filter(rawDataInputChanged).length;
+    rawDataEditStatus.textContent = status || (
+      rawDataEditorDirty
+        ? `${changedCount} unsaved value${changedCount === 1 ? "" : "s"}. Reports are paused until the changes are saved or discarded.`
+        : workflowOverrides.length
+          ? `${workflowOverrides.length} saved edited value${workflowOverrides.length === 1 ? "" : "s"}.`
+          : "All editable values currently match their calculated values."
+    );
+  }
+  updateReportAvailability();
+}
+
+function stageCalculatedRawDataValues() {
+  if (rawDataEditorSaving || !currentWorkflow) return;
+  rawDataValueInputs().forEach((input) => {
+    if (input.disabled) return;
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    if (calculated !== null) input.value = rawDataEditableDisplayValue(calculated);
+  });
+  refreshRawDataEditorState(
+    "Calculated values are staged. Save changes to remove saved edits, or discard to undo.",
+  );
+}
+
+function discardRawDataEdits() {
+  if (rawDataEditorSaving) return;
+  rawDataValueInputs().forEach((input) => {
+    input.value = rawDataEditableDisplayValue(input.dataset.initialValue);
+  });
+  if (rawDataEditReason) rawDataEditReason.value = "";
+  refreshRawDataEditorState("Unsaved Raw Data changes were discarded.");
+}
+
+function captureRawDataDraft() {
+  return {
+    reason: rawDataEditReason?.value || "",
+    values: rawDataValueInputs().map((input) => ({
+      key: input.dataset.key,
+      value: input.value,
+    })),
+  };
+}
+
+function restoreRawDataDraft(draft, status) {
+  const valuesByKey = new Map((draft?.values || []).map((item) => [item.key, item.value]));
+  rawDataValueInputs().forEach((input) => {
+    if (valuesByKey.has(input.dataset.key)) input.value = valuesByKey.get(input.dataset.key);
+  });
+  if (rawDataEditReason) rawDataEditReason.value = draft?.reason || "";
+  refreshRawDataEditorState(status);
+}
+
+function validateAndBuildRawDataOverrides(inputs, reason) {
+  if (reason.length > workflowOverrideReasonMaximum) {
+    throw new Error(`Change reason must be ${workflowOverrideReasonMaximum} characters or fewer.`);
+  }
+  const candidateByKey = new Map(
+    workflowOverrides.map((item) => [overrideKey(item.variable, item.direction), { ...item }]),
+  );
+  for (const input of inputs) {
+    if (input.disabled || !rawDataInputChanged(input)) continue;
+    const variable = input.dataset.variable;
+    const direction = input.dataset.direction || null;
+    const key = overrideKey(variable, direction);
+    const value = finiteNumberOrNull(input.value);
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    if (value === null || value <= 0) {
+      throw new Error(`${variable} ${direction || "value"} must be a number greater than zero.`);
+    }
+    const maximum = workflowOverrideMaximums[variable];
+    if (maximum !== undefined && value > maximum) {
+      throw new Error(`${variable} override must be no greater than ${maximum}.`);
+    }
+    const restriction = rawDataEditRestriction(variable);
+    if (restriction) throw new Error(restriction);
+    if (calculated !== null && rawDataValuesEqual(value, calculated)) {
+      candidateByKey.delete(key);
+      continue;
+    }
+    candidateByKey.set(key, {
+      variable,
+      direction,
+      override_value: value,
+      reason: reason || (
+        "Raw Data value edited using global Save; no user change reason was provided."
+      ),
+    });
+  }
+  return [...candidateByKey.values()];
+}
+
+async function saveRawDataEdits() {
+  if (rawDataEditorSaving || !rawDataEditorDirty) return false;
+  if (!completedAssessmentMatchesInputs()) {
+    const message = "Assessment inputs changed. Run the assessment again before saving Raw Data edits.";
+    if (rawDataEditStatus) rawDataEditStatus.textContent = message;
+    workflowSummary.textContent = message;
+    return false;
+  }
+  const inputs = rawDataValueInputs();
+  const reason = rawDataEditReason?.value.trim() || "";
+  let candidateOverrides;
+  try {
+    candidateOverrides = validateAndBuildRawDataOverrides(inputs, reason);
+  } catch (error) {
+    const message = error.message || String(error);
+    if (rawDataEditStatus) rawDataEditStatus.textContent = message;
+    workflowSummary.textContent = message;
+    return false;
+  }
   const previousOverrides = workflowOverrides.map((item) => ({ ...item }));
   const previousState = captureCompletedWorkflowState();
-  if (button.dataset.overrideAction === "clear") {
-    workflowOverrides = workflowOverrides.filter((item) =>
-      !(item.variable === variable && (item.direction || null) === direction)
-    );
-    await rerunAfterOverrideChange(previousOverrides, previousState, "Override reset");
-    return;
-  }
-  const panel = button.closest(".inline-override") || button.closest(".override-panel");
-  const valueInput = panel.querySelector("[data-override-field='override_value']");
-  const reasonInput = panel.querySelector("[data-override-field='reason']");
-  const overrideValue = valueInput.value === "" ? null : Number(valueInput.value);
-  const reason = reasonInput.value.trim() || "Inline assessment value edited in Site Wind Assessment.";
-  if (overrideValue === null || !Number.isFinite(overrideValue) || overrideValue <= 0) {
-    workflowSummary.textContent = "Override value must be a number greater than zero.";
-    return;
-  }
-  const maximum = workflowOverrideMaximums[variable];
-  if (maximum !== undefined && overrideValue > maximum) {
-    workflowSummary.textContent = `${variable} override must be no greater than ${maximum}.`;
-    return;
-  }
-  if (reason.length > workflowOverrideReasonMaximum) {
-    workflowSummary.textContent = `Override reason must be ${workflowOverrideReasonMaximum} characters or fewer.`;
-    return;
-  }
-  if (variable === "Md") {
-    const restriction = mandatoryMdOverrideRestriction();
-    if (restriction) {
-      workflowSummary.textContent = restriction;
-      return;
-    }
-  }
-  if (variable === "Ms") {
-    const restriction = mandatoryMsOverrideRestriction();
-    if (restriction) {
-      workflowSummary.textContent = restriction;
-      return;
-    }
-  }
-  if (variable === "Mzcat") {
-    const restriction = mandatoryMzcatOverrideRestriction();
-    if (restriction) {
-      workflowSummary.textContent = restriction;
-      return;
-    }
-  }
-  workflowOverrides = workflowOverrides.filter((item) =>
-    !(item.variable === variable && (item.direction || null) === direction)
+  const draft = captureRawDataDraft();
+  rawDataEditorSaving = true;
+  setRawDataEditorAvailability(false, "Saving all Raw Data changes...");
+  const outcome = await rerunAfterRawDataChange(
+    candidateOverrides,
+    previousOverrides,
+    previousState,
   );
-  workflowOverrides.push({
-    variable,
-    direction,
-    override_value: overrideValue,
-    reason,
-  });
-  await rerunAfterOverrideChange(previousOverrides, previousState, "Override save");
+  rawDataEditorSaving = false;
+  if (outcome === "saved") {
+    workflowOverrides = candidateOverrides;
+    if (Array.isArray(currentWorkflow?.variables)) renderWorkflow(currentWorkflow);
+    setRawDataEditorAvailability(
+      true,
+      `${candidateOverrides.length} edited value${candidateOverrides.length === 1 ? "" : "s"} saved and the assessment recalculated.`,
+    );
+    return true;
+  }
+  if (outcome === "restored") {
+    restoreRawDataDraft(
+      draft,
+      "Save failed. The previous completed assessment was restored; your unsaved values are still available to correct or discard.",
+    );
+  }
+  return false;
 }
 
-async function rerunAfterOverrideChange(previousOverrides, previousState, actionLabel) {
+async function rerunAfterRawDataChange(candidateOverrides, previousOverrides, previousState) {
   const runIdBeforeAttempt = workflowRunId;
-  const succeeded = await runWorkflow();
-  if (succeeded) return true;
-  if (workflowRunId > runIdBeforeAttempt + 1) return false;
+  const succeeded = await runWorkflow({ workflowOverrides: candidateOverrides });
+  if (succeeded) return "saved";
+  if (workflowRunId > runIdBeforeAttempt + 1) {
+    if (!currentWorkflow && !activeWorkflowController) {
+      workflowOverrides = previousOverrides;
+      restoreCompletedWorkflowState(
+        previousState,
+        "Raw Data save was cancelled because assessment inputs changed. "
+          + "The previous completed assessment was restored.",
+      );
+      return "restored";
+    }
+    return "superseded";
+  }
   const failureMessage = workflowSummary.textContent;
   workflowOverrides = previousOverrides;
   restoreCompletedWorkflowState(
     previousState,
-    `${actionLabel} was not applied. The previous completed assessment was restored. ${failureMessage}`,
+    `Raw Data changes were not saved. The previous completed assessment was restored. ${failureMessage}`,
   );
-  return false;
+  return "restored";
 }
 
 function captureCompletedWorkflowState() {

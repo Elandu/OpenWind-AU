@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260715-consumer-readiness-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260729-raw-edit-2" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -402,6 +402,28 @@
       </section>
 
       <section id="workspace-panel-raw-data" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-raw-data" data-workspace-panel="raw-data" hidden>
+      <div class="raw-data-toolbar">
+        <div class="raw-data-toolbar-copy">
+          <strong>Editable assessment values</strong>
+          <span>Edit values in place, add one audit reason, then save all changes together.</span>
+          <span id="raw-data-edit-status" class="note" role="status" aria-live="polite">Run the assessment to edit its values.</span>
+        </div>
+        <div class="raw-data-toolbar-actions">
+          <label for="raw-data-edit-reason">
+            Change reason
+            <input
+              id="raw-data-edit-reason"
+              type="text"
+              maxlength="2000"
+              placeholder="Optional; a standard audit note is used if blank"
+              disabled
+            />
+          </label>
+          <button id="raw-data-use-calculated" class="secondary-action" type="button" disabled>Use calculated values</button>
+          <button id="raw-data-discard" class="secondary-action" type="button" disabled>Discard changes</button>
+          <button id="raw-data-save" type="button" disabled>Save all changes</button>
+        </div>
+      </div>
       <div class="workflow-column raw-results-layout">
 
       <section id="resolved-wind-inputs" class="panel workflow-step" data-step="2">
@@ -413,7 +435,7 @@
         <div class="assessment-basis-variable-grid">
           <section id="wind-region-vr" class="workflow-anchor assessment-basis-variable" data-step="4">
             <h3>Regional Wind Speed, VR</h3>
-            <p class="note">Calculated regional speed shown once, with an optional engineering override.</p>
+            <p class="note">Regional speed is editable in place and saved with the other Raw Data changes.</p>
           </section>
           <section id="climate-change-mc" class="workflow-anchor assessment-basis-variable" data-step="5">
             <h3>Climate Change Multiplier, Mc</h3>
@@ -425,6 +447,7 @@
       <section id="vsitb-summary" class="panel workflow-step" data-step="3">
         <h2>Directional Site Wind Speed, Vsit,b</h2>
         <p class="note">Selected calculation summary: VR x Mc x Md x Mz,cat x Ms x Mt. VR and Mc are non-directional and are shown once in the assessment basis.</p>
+        <p id="directional-edit-restrictions" class="note directional-edit-restrictions" hidden></p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -470,31 +493,6 @@
       </section>
 
       <details class="raw-detail-group">
-        <summary>Engineering overrides</summary>
-        <div class="raw-detail-stack">
-      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="6">
-        <h2>Wind Direction Multiplier, Md</h2>
-        <p class="note">Table-derived direction multipliers for the assessed wind region.</p>
-      </section>
-
-      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="7">
-        <h2>Terrain Category / Mz,cat</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
-
-      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="8">
-        <h2>Shielding Multiplier, Ms</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
-
-      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="9">
-        <h2>Topographic Multiplier, Mt</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
-        </div>
-      </details>
-
-      <details class="raw-detail-group">
         <summary>Calculation provenance and warnings</summary>
         <div id="raw-provenance" class="workflow-card">
           <p class="note">Run the assessment to display unique calculation sources and warnings.</p>
@@ -521,6 +519,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260729-vdes-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-raw-edit-2"></script>
   </body>
 </html>

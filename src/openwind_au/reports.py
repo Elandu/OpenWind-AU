@@ -13,6 +13,7 @@ from xml.sax.saxutils import escape
 import folium
 import plotly.graph_objects as go
 from jinja2 import Environment, select_autoescape
+from reportlab.graphics.shapes import Circle, Drawing, Line, Polygon, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -1731,6 +1732,12 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         parent=body_style,
         spaceAfter=0.5 * mm,
     )
+    subheading_style = ParagraphStyle(
+        "WindReportSubheading",
+        parent=body_style,
+        fontName="Helvetica-Bold",
+        keepWithNext=True,
+    )
     lineage_style = ParagraphStyle(
         "WindReportLineage",
         parent=muted_style,
@@ -1766,7 +1773,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         ["Site", site_label],
         [
             "Coordinates",
-            f"{result.site.latitude:.6f}, {result.site.longitude:.6f} "
+            f"{result.site.latitude:+.6f}, {result.site.longitude:+.6f} "
             f"(RL {result.site.ground_elevation_m:.2f} m)",
         ],
         ["Building", _wind_report_building_summary(result)],
@@ -1786,7 +1793,30 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     ]
     if result.governing_vdes_mps is not None:
         summary_rows.append(["Governing Vdes,theta", _wind_report_vdes_summary(result)])
-    story.append(_wind_pdf_table(summary_rows, [38 * mm, 140 * mm], header=False))
+    overview_table = Table(
+        [
+            [
+                _wind_pdf_table(summary_rows, [32 * mm, 81 * mm], header=False),
+                _wind_pdf_site_map(result),
+            ]
+        ],
+        colWidths=[116 * mm, 62 * mm],
+        hAlign="LEFT",
+    )
+    overview_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (0, 0), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 3 * mm),
+                ("LEFTPADDING", (1, 0), (1, 0), 0),
+                ("RIGHTPADDING", (1, 0), (1, 0), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    story.append(overview_table)
     story.extend(
         [
             Paragraph("Directional site wind speeds", section_style),
@@ -1892,12 +1922,12 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     ):
         story.append(Paragraph("Review items", section_style))
     if warnings:
-        story.append(Paragraph("Warnings", body_style))
+        story.append(Paragraph("Warnings", subheading_style))
         story.extend(
             Paragraph(f"- {escape(str(warning))}", compact_body_style) for warning in warnings
         )
     if result.input.workflow_overrides or result.input.class_multiplier_overrides:
-        story.append(Paragraph("Overrides", body_style))
+        story.append(Paragraph("Edited values", subheading_style))
         override_rows = [["Variable", "Direction", "Value", "Reason"]]
         override_rows.extend(
             [
@@ -1943,6 +1973,341 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     story.append(Paragraph(_wind_pdf_lineage_reference(), lineage_style))
     doc.build(story, onFirstPage=_draw_wind_pdf_page, onLaterPages=_draw_wind_pdf_page)
     return output.getvalue()
+
+
+def _wind_pdf_site_map(result: WindWorkflowResult) -> Drawing:
+    """Return a deterministic, offline site-plan map for the issued PDF.
+
+    Completed workflow results intentionally contain no interactive Leaflet document,
+    external map tiles, or server-only GIS geometry. This scaled vector view therefore
+    records the signed report context that can be reproduced offline: site coordinates,
+    wind region, cardinal wind directions and the design-building footprint/orientation.
+    """
+
+    drawing_width = 62 * mm
+    drawing_height = 62 * mm
+    drawing = Drawing(drawing_width, drawing_height)
+    background = colors.HexColor("#f8fafc")
+    border = colors.HexColor("#d0d5dd")
+    grid = colors.HexColor("#e4e7ec")
+    navy = colors.HexColor("#17324d")
+    body = colors.HexColor("#344054")
+    muted = colors.HexColor("#667085")
+    orange = colors.HexColor("#d97706")
+    governing = colors.HexColor("#b42318")
+
+    drawing.add(
+        Rect(
+            0,
+            0,
+            drawing_width,
+            drawing_height,
+            rx=3,
+            ry=3,
+            fillColor=background,
+            strokeColor=border,
+            strokeWidth=0.6,
+        )
+    )
+
+    plan_x = 4 * mm
+    plan_y = 6 * mm
+    plan_size = 54 * mm
+    drawing.add(
+        Rect(
+            plan_x,
+            plan_y,
+            plan_size,
+            plan_size,
+            fillColor=colors.white,
+            strokeColor=border,
+            strokeWidth=0.6,
+        )
+    )
+    for grid_index in range(1, 4):
+        coordinate = plan_x + plan_size * grid_index / 4
+        drawing.add(
+            Line(
+                coordinate,
+                plan_y,
+                coordinate,
+                plan_y + plan_size,
+                strokeColor=grid,
+                strokeWidth=0.35,
+            )
+        )
+        coordinate = plan_y + plan_size * grid_index / 4
+        drawing.add(
+            Line(
+                plan_x,
+                coordinate,
+                plan_x + plan_size,
+                coordinate,
+                strokeColor=grid,
+                strokeWidth=0.35,
+            )
+        )
+
+    centre_x = plan_x + plan_size / 2
+    centre_y = plan_y + plan_size / 2
+    map_inset = 7 * mm
+    usable_plan_size = plan_size - 2 * map_inset
+    width_m = result.input.building_width_m
+    length_m = result.input.building_length_m
+    maximum_dimension_m = max(width_m or 0, length_m or 0)
+    map_span_m = max(60.0, maximum_dimension_m * 2.2)
+    points_per_metre = usable_plan_size / map_span_m
+
+    governing_directions = set(result.governing_directions)
+    direction_bearings = {
+        "N": 0.0,
+        "NE": 45.0,
+        "E": 90.0,
+        "SE": 135.0,
+        "S": 180.0,
+        "SW": 225.0,
+        "W": 270.0,
+        "NW": 315.0,
+    }
+    spoke_outer_radius = usable_plan_size / 2
+    spoke_inner_radius = 4.5 * mm
+    for direction, bearing in direction_bearings.items():
+        radians = math.radians(bearing)
+        east = math.sin(radians)
+        north = math.cos(radians)
+        outer_x = centre_x + east * spoke_outer_radius
+        outer_y = centre_y + north * spoke_outer_radius
+        inner_x = centre_x + east * spoke_inner_radius
+        inner_y = centre_y + north * spoke_inner_radius
+        colour = governing if direction in governing_directions else colors.HexColor("#98a2b3")
+        drawing.add(
+            Line(
+                outer_x,
+                outer_y,
+                inner_x,
+                inner_y,
+                strokeColor=colour,
+                strokeWidth=1.15 if direction in governing_directions else 0.6,
+            )
+        )
+        arrow_base_x = inner_x + east * 3.2
+        arrow_base_y = inner_y + north * 3.2
+        perpendicular_x = north * 1.6
+        perpendicular_y = -east * 1.6
+        drawing.add(
+            Polygon(
+                [
+                    inner_x,
+                    inner_y,
+                    arrow_base_x + perpendicular_x,
+                    arrow_base_y + perpendicular_y,
+                    arrow_base_x - perpendicular_x,
+                    arrow_base_y - perpendicular_y,
+                ],
+                fillColor=colour,
+                strokeColor=colour,
+                strokeWidth=0.2,
+            )
+        )
+        label_radius = spoke_outer_radius + 3.5 * mm
+        drawing.add(
+            String(
+                centre_x + east * label_radius,
+                centre_y + north * label_radius - 1.8,
+                "TRUE N" if direction == "N" else direction,
+                fontName="Helvetica-Bold",
+                fontSize=5.2,
+                fillColor=governing if direction in governing_directions else muted,
+                textAnchor="middle",
+            )
+        )
+
+    if width_m is not None and length_m is not None:
+        orientation = result.input.structure_orientation_deg or 0.0
+        orientation_radians = math.radians(orientation)
+        front_east = math.sin(orientation_radians)
+        front_north = math.cos(orientation_radians)
+        right_east = math.cos(orientation_radians)
+        right_north = -math.sin(orientation_radians)
+        half_length = length_m * points_per_metre / 2
+        half_width = width_m * points_per_metre / 2
+
+        def footprint_point(front_factor: float, right_factor: float) -> tuple[float, float]:
+            return (
+                centre_x
+                + front_east * half_length * front_factor
+                + right_east * half_width * right_factor,
+                centre_y
+                + front_north * half_length * front_factor
+                + right_north * half_width * right_factor,
+            )
+
+        front_left = footprint_point(1, -1)
+        front_right = footprint_point(1, 1)
+        back_right = footprint_point(-1, 1)
+        back_left = footprint_point(-1, -1)
+        drawing.add(
+            Polygon(
+                [
+                    *front_left,
+                    *front_right,
+                    *back_right,
+                    *back_left,
+                ],
+                fillColor=colors.HexColor("#dbeafe"),
+                strokeColor=navy,
+                strokeWidth=1.0,
+            )
+        )
+        if result.input.structure_orientation_deg is not None:
+            drawing.add(
+                Line(
+                    *front_left,
+                    *front_right,
+                    strokeColor=orange,
+                    strokeWidth=2.0,
+                )
+            )
+            arrow_end_x = centre_x + front_east * (half_length + 4 * mm)
+            arrow_end_y = centre_y + front_north * (half_length + 4 * mm)
+            drawing.add(
+                Line(
+                    centre_x,
+                    centre_y,
+                    arrow_end_x,
+                    arrow_end_y,
+                    strokeColor=orange,
+                    strokeWidth=1.2,
+                )
+            )
+            arrow_base_x = arrow_end_x - front_east * 4
+            arrow_base_y = arrow_end_y - front_north * 4
+            perpendicular_x = front_north * 2
+            perpendicular_y = -front_east * 2
+            drawing.add(
+                Polygon(
+                    [
+                        arrow_end_x,
+                        arrow_end_y,
+                        arrow_base_x + perpendicular_x,
+                        arrow_base_y + perpendicular_y,
+                        arrow_base_x - perpendicular_x,
+                        arrow_base_y - perpendicular_y,
+                    ],
+                    fillColor=orange,
+                    strokeColor=orange,
+                    strokeWidth=0.2,
+                )
+            )
+    else:
+        drawing.add(
+            Circle(
+                centre_x,
+                centre_y,
+                2.2 * mm,
+                fillColor=colors.HexColor("#fee4e2"),
+                strokeColor=governing,
+                strokeWidth=1.0,
+            )
+        )
+
+    drawing.add(Circle(centre_x, centre_y, 1.0, fillColor=governing, strokeColor=None))
+    scale_distance_m = _wind_pdf_map_scale_distance(map_span_m)
+    scale_length = scale_distance_m * points_per_metre
+    scale_x = plan_x + 3 * mm
+    scale_y = plan_y + 3 * mm
+    drawing.add(
+        Line(
+            scale_x,
+            scale_y,
+            scale_x + scale_length,
+            scale_y,
+            strokeColor=navy,
+            strokeWidth=1.4,
+        )
+    )
+    drawing.add(Line(scale_x, scale_y - 2, scale_x, scale_y + 2, strokeColor=navy))
+    drawing.add(
+        Line(
+            scale_x + scale_length,
+            scale_y - 2,
+            scale_x + scale_length,
+            scale_y + 2,
+            strokeColor=navy,
+        )
+    )
+    drawing.add(
+        String(
+            scale_x + scale_length / 2,
+            scale_y + 2.3,
+            f"{scale_distance_m:g} m",
+            fontName="Helvetica",
+            fontSize=4.7,
+            fillColor=body,
+            textAnchor="middle",
+        )
+    )
+
+    drawing.add(
+        String(
+            plan_x + 2 * mm,
+            plan_y + plan_size - 3 * mm,
+            "SITE / LOCATION MAP",
+            fontName="Helvetica-Bold",
+            fontSize=4.8,
+            fillColor=navy,
+        )
+    )
+    if width_m is not None and length_m is not None:
+        if result.input.structure_orientation_deg is not None:
+            map_context = f"FOOTPRINT | front beta {result.input.structure_orientation_deg:.1f} deg"
+        else:
+            map_context = "FOOTPRINT | orientation not supplied"
+    else:
+        map_context = "SITE MARKER | footprint not supplied"
+    drawing.add(
+        String(
+            plan_x + plan_size - 2 * mm,
+            plan_y + plan_size - 3 * mm,
+            map_context,
+            fontName="Helvetica",
+            fontSize=4.3,
+            fillColor=orange if result.input.structure_orientation_deg is not None else muted,
+            textAnchor="end",
+        )
+    )
+    drawing.add(
+        String(
+            plan_x + plan_size - 2 * mm,
+            plan_y + 2 * mm,
+            "wind from",
+            fontName="Helvetica",
+            fontSize=4.6,
+            fillColor=muted,
+            textAnchor="end",
+        )
+    )
+    drawing.add(
+        String(
+            drawing_width / 2,
+            2.2 * mm,
+            f"Location {result.site.latitude:+.6f}, {result.site.longitude:+.6f}",
+            fontName="Helvetica",
+            fontSize=4.7,
+            fillColor=body,
+            textAnchor="middle",
+        )
+    )
+    return drawing
+
+
+def _wind_pdf_map_scale_distance(map_span_m: float) -> float:
+    """Return a stable 1/2/5 scale-bar distance not exceeding one quarter of the map span."""
+
+    target = max(map_span_m / 4, 1.0)
+    exponent = math.floor(math.log10(target))
+    magnitude = 10**exponent
+    return max(factor * magnitude for factor in (1, 2, 5) if factor * magnitude <= target)
 
 
 def _wind_report_building_summary(result: WindWorkflowResult) -> str:

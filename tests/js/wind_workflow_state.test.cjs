@@ -1396,7 +1396,7 @@ test("stream map failure preserves a completed assessment and report controls", 
   );
 });
 
-test("raw-data override rows render the calculated value once and preserve overrides", () => {
+test("Raw Data renders one canonical inline Value input with no per-row override controls", () => {
   const harness = createHarness();
   harness.context.__row = {
     variable: "Mzcat",
@@ -1413,18 +1413,12 @@ test("raw-data override rows render the calculated value once and preserve overr
   };
 
   const initialHtml = harness.evaluate("variableRow(__row)");
-  assert.equal((initialHtml.match(/1\.040/g) || []).length, 1);
-  assert.match(initialHtml, /placeholder="optional override"/);
-  assert.match(initialHtml, /min="0\.001" max="10"/);
-  assert.match(initialHtml, /maxlength="2000"/);
-  assert.doesNotMatch(initialHtml, /muted">calculated/);
-
-  harness.context.__embeddedValueRow = {
-    ...harness.context.__row,
-    recommended_label: "Recommended TC 2.5; Recommended Mz,cat 1.040",
-  };
-  const embeddedValueHtml = harness.evaluate("variableRow(__embeddedValueRow)");
-  assert.equal((embeddedValueHtml.match(/1\.040/g) || []).length, 1);
+  assert.match(initialHtml, /data-raw-value/);
+  assert.match(initialHtml, /value="1\.04"/);
+  assert.match(initialHtml, /data-calculated-value="1\.04"/);
+  assert.match(initialHtml, /min="0\.001"[\s\S]*max="10"/);
+  assert.doesNotMatch(initialHtml, /data-override-field|data-override-action/);
+  assert.doesNotMatch(initialHtml, /placeholder="reason|>Save<|>Reset</);
 
   harness.context.__roundedValueRow = {
     ...harness.context.__row,
@@ -1434,18 +1428,27 @@ test("raw-data override rows render the calculated value once and preserve overr
     recommended_label: "Recommended Mz,cat 1.040",
   };
   const roundedValueHtml = harness.evaluate("variableRow(__roundedValueRow)");
-  assert.equal((roundedValueHtml.match(/1\.040/g) || []).length, 1);
+  assert.match(roundedValueHtml, /value="1\.0396"/);
+  assert.match(roundedValueHtml, /data-initial-value="1\.0396"/);
 
-  harness.context.__classNumberRow = {
+  harness.context.__longPrecisionRow = {
     ...harness.context.__row,
-    recommended_value: 3,
-    calculated_value: 3,
-    final_value: 3,
-    recommended_label: "Recommended TC3",
+    variable: "Ms",
+    recommended_value: 0.7019200058768141,
+    calculated_value: 0.7019200058768141,
+    final_value: 0.7019200058768141,
   };
-  const classNumberHtml = harness.evaluate("variableRow(__classNumberRow)");
-  assert.match(classNumberHtml, /Recommended TC3/);
-  assert.equal((classNumberHtml.match(/3\.000/g) || []).length, 1);
+  const longPrecisionHtml = harness.evaluate("variableRow(__longPrecisionRow)");
+  assert.match(longPrecisionHtml, /value="0\.70192"/);
+  assert.match(
+    longPrecisionHtml,
+    /data-initial-value="0\.7019200058768141"/,
+  );
+  assert.equal(
+    harness.evaluate("rawDataValuesEqual(0.70192, 0.7019200058768141)"),
+    true,
+  );
+  assert.equal(harness.evaluate("rawDataValuesEqual(1.039601, 1.0396)"), false);
 
   harness.evaluate(`
     workflowOverrides = [{
@@ -1456,13 +1459,63 @@ test("raw-data override rows render the calculated value once and preserve overr
     }];
   `);
   const overrideHtml = harness.evaluate("variableRow(__row)");
-  assert.equal((overrideHtml.match(/1\.040/g) || []).length, 1);
   assert.match(overrideHtml, /value="1\.08"/);
-  assert.match(overrideHtml, /value="Reviewed terrain category"/);
-  assert.match(overrideHtml, />Reset<\/button>/);
+  assert.match(overrideHtml, /title="Reviewed terrain category">edited/);
+  assert.doesNotMatch(overrideHtml, /data-override-field|data-override-action|>Reset</);
+
+  const toolbar = HTML_SOURCE.match(/<div class="raw-data-toolbar">[\s\S]*?<\/div>\s*<div class="workflow-column/)[0];
+  assert.equal((toolbar.match(/id="raw-data-save"/g) || []).length, 1);
+  assert.equal((toolbar.match(/id="raw-data-edit-reason"/g) || []).length, 1);
+  assert.match(toolbar, />Save all changes</);
+  assert.match(toolbar, />Discard changes</);
+  assert.doesNotMatch(HTML_SOURCE, /<th>Override \(optional\)<\/th>|data-override-field/);
 });
 
-test("override values enforce backend maxima and mandatory Md/Ms rules before mutation", async () => {
+test("draft typing pauses reports without mutating accepted overrides, fingerprint, or request token", () => {
+  const harness = createHarness();
+  harness.evaluate(`
+    workflowOverrides = [{
+      variable: "Mzcat",
+      direction: "N",
+      override_value: 1.04,
+      reason: "Accepted review",
+    }];
+    currentWorkflow = { marker: "accepted" };
+    currentWorkflowFingerprint = assessmentFingerprint();
+    reportRequestId = 17;
+    globalThis.__draftInput = {
+      value: "1.08",
+      disabled: false,
+      dataset: {
+        rawValue: "",
+        key: "Mzcat:N",
+        variable: "Mzcat",
+        direction: "N",
+        calculatedValue: "1.0396",
+        initialValue: "1.04",
+      },
+    };
+    rawDataPanel.querySelectorAll = () => [__draftInput];
+    refreshRawDataEditorState();
+  `);
+
+  assert.equal(harness.evaluate("rawDataEditorDirty"), true);
+  assert.equal(harness.element("workflow-pdf").disabled, true);
+  assert.equal(harness.element("workflow-report").disabled, true);
+  assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
+  assert.equal(harness.evaluate("currentWorkflowFingerprint"), harness.evaluate("assessmentFingerprint()"));
+  assert.equal(harness.evaluate("reportRequestId"), 17);
+
+  const runIdBeforeDiscard = harness.evaluate("workflowRunId");
+  harness.evaluate("discardRawDataEdits()");
+  assert.equal(harness.evaluate("__draftInput.value"), "1.04");
+  assert.equal(harness.evaluate("rawDataEditorDirty"), false);
+  assert.equal(harness.evaluate("workflowRunId"), runIdBeforeDiscard);
+  assert.equal(harness.element("workflow-pdf").disabled, false);
+  assert.equal(harness.element("workflow-report").disabled, false);
+});
+
+test("global validation enforces maxima and mandatory Md, Ms, and Mzcat rules before mutation", () => {
   const harness = createHarness({
     values: {
       wind_direction_multiplier_case: "circular_or_polygonal_chimney_tank_or_pole",
@@ -1479,57 +1532,151 @@ test("override values enforce backend maxima and mandatory Md/Ms rules before mu
       override_value: 1.04,
       reason: "Existing reviewed value",
     }];
-    globalThis.__valueInput = { value: "11" };
-    globalThis.__reasonInput = { value: "Too high" };
-    globalThis.__panel = {
-      querySelector(selector) {
-        return selector.includes("override_value") ? __valueInput : __reasonInput;
+    globalThis.__input = {
+      value: "11",
+      disabled: false,
+      dataset: {
+        key: "Mzcat:N",
+        variable: "Mzcat",
+        direction: "N",
+        calculatedValue: "1.0396",
+        initialValue: "1.04",
       },
     };
-    globalThis.__button = {
-      dataset: { key: "Mzcat:N", overrideAction: "apply" },
-      closest() { return __panel; },
-    };
   `);
 
-  await harness.evaluate("updateOverride(__button)");
+  assert.throws(
+    () => harness.evaluate("validateAndBuildRawDataOverrides([__input], 'Too high')"),
+    /no greater than 10/,
+  );
   assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
-  assert.match(harness.element("workflow-summary").textContent, /no greater than 10/);
+
+  harness.evaluate("__input.value = '1.05'");
+  assert.throws(
+    () => harness.evaluate("validateAndBuildRawDataOverrides([__input], 'x'.repeat(2001))"),
+    /2000 characters or fewer/,
+  );
 
   harness.evaluate(`
-    __valueInput.value = "1.05";
-    __reasonInput.value = "x".repeat(2001);
+    __input.value = "0.95";
+    __input.dataset.key = "Md:N";
+    __input.dataset.variable = "Md";
   `);
-  await harness.evaluate("updateOverride(__button)");
-  assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
-  assert.match(harness.element("workflow-summary").textContent, /2000 characters or fewer/);
-
-  harness.evaluate(`
-    __valueInput.value = "0.95";
-    __reasonInput.value = "Attempted Md edit";
-    __button.dataset.key = "Md:N";
-  `);
-  await harness.evaluate("updateOverride(__button)");
-  assert.equal(harness.evaluate("workflowOverrides.length"), 1);
-  assert.match(harness.element("workflow-summary").textContent, /Clause 3\.3.*Md = 1\.0/);
+  assert.throws(
+    () => harness.evaluate("validateAndBuildRawDataOverrides([__input], 'Attempted Md edit')"),
+    /Clause 3\.3.*Md = 1\.0/,
+  );
 
   harness.element("wind_direction_multiplier_case").value = "main_structure";
   harness.evaluate(
-    '__valueInput.value = "0.9"; __reasonInput.value = "Attempted high-rise Ms edit"; __button.dataset.key = "Ms:N";',
+    '__input.value = "0.9"; __input.dataset.key = "Ms:N"; __input.dataset.variable = "Ms";',
   );
-  await harness.evaluate("updateOverride(__button)");
-  assert.equal(harness.evaluate("workflowOverrides.length"), 1);
-  assert.match(harness.element("workflow-summary").textContent, /Clause 4\.3\.1.*Ms = 1\.0/);
+  assert.throws(
+    () => harness.evaluate("validateAndBuildRawDataOverrides([__input], 'Attempted high-rise Ms edit')"),
+    /Clause 4\.3\.1.*Ms = 1\.0/,
+  );
 
   harness.evaluate(
-    'currentWorkflow = { wind_region_assessment: { wind_region: "A0" } }; __valueInput.value = "0.5"; __reasonInput.value = "Attempted A0 Mzcat edit"; __button.dataset.key = "Mzcat:N";',
+    'currentWorkflow = { wind_region_assessment: { wind_region: "A0" } }; __input.value = "0.5"; __input.dataset.key = "Mzcat:N"; __input.dataset.variable = "Mzcat";',
   );
-  await harness.evaluate("updateOverride(__button)");
+  assert.throws(
+    () => harness.evaluate("validateAndBuildRawDataOverrides([__input], 'Attempted A0 Mzcat edit')"),
+    /Region A0 Table 4\.1.*mandatory/,
+  );
   assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
-  assert.match(harness.element("workflow-summary").textContent, /Region A0 Table 4\.1.*mandatory/);
 });
 
-test("a rejected override restores the previous completed workflow and controls", async () => {
+test("mandatory directional values use one clause note and compact cell locks", () => {
+  const harness = createHarness({
+    values: {
+      wind_direction_multiplier_case: "circular_or_polygonal_chimney_tank_or_pole",
+    },
+  });
+  harness.context.__rows = [
+    {
+      direction: "N",
+      md: 1,
+      mzcat: 0.83,
+      ms: 1,
+      mt: 1,
+      recommended_vsitb: 37.35,
+      final_vsitb: 37.35,
+      is_governing: true,
+    },
+    {
+      direction: "S",
+      md: 1,
+      mzcat: 0.83,
+      ms: 1,
+      mt: 1,
+      recommended_vsitb: 37.35,
+      final_vsitb: 37.35,
+      is_governing: true,
+    },
+  ];
+
+  harness.evaluate("renderVsitbTable(__rows)");
+
+  const restriction = harness.element("directional-edit-restrictions");
+  const rowsHtml = harness.element("vsitb-table").innerHTML;
+  assert.equal(restriction.hidden, false);
+  assert.match(restriction.textContent, /Clause 3\.3.*Md = 1\.0/);
+  assert.equal((restriction.textContent.match(/Clause 3\.3/g) || []).length, 1);
+  assert.doesNotMatch(rowsHtml.replaceAll(/ title="[^"]*"/g, ""), /Clause 3\.3/);
+  assert.equal((rowsHtml.match(/>locked<\/span>/g) || []).length, 2);
+});
+
+test("one global save builds an audited override and performs exactly one rerun", async () => {
+  const harness = createHarness();
+  harness.evaluate(`
+    workflowOverrides = [];
+    currentWorkflow = { marker: "accepted" };
+    currentWorkflowFingerprint = assessmentFingerprint();
+    globalThis.__saveInput = {
+      value: "1.08",
+      disabled: false,
+      dataset: {
+        rawValue: "",
+        key: "Mzcat:N",
+        variable: "Mzcat",
+        direction: "N",
+        calculatedValue: "1.0396",
+        initialValue: "1.0396",
+      },
+    };
+    rawDataPanel.querySelectorAll = () => [__saveInput];
+    globalThis.__runCalls = 0;
+    globalThis.__submittedOverrides = null;
+    globalThis.__acceptedOverrideCountDuringRun = null;
+    runWorkflow = async function (options) {
+      __runCalls += 1;
+      __submittedOverrides = options.workflowOverrides;
+      __acceptedOverrideCountDuringRun = workflowOverrides.length;
+      workflowRunId += 1;
+      __saveInput.dataset.initialValue = __saveInput.value;
+      currentWorkflow = { marker: "recalculated" };
+      currentWorkflowFingerprint = assessmentFingerprint();
+      return true;
+    };
+    refreshRawDataEditorState();
+  `);
+
+  const saved = await harness.evaluate("saveRawDataEdits()");
+
+  assert.equal(saved, true);
+  assert.equal(harness.evaluate("__runCalls"), 1);
+  assert.equal(harness.evaluate("__acceptedOverrideCountDuringRun"), 0);
+  assert.equal(harness.evaluate("__submittedOverrides[0].override_value"), 1.08);
+  assert.equal(harness.evaluate("workflowOverrides.length"), 1);
+  assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.08);
+  assert.match(
+    harness.evaluate("workflowOverrides[0].reason"),
+    /no user change reason was provided/,
+  );
+  assert.equal(harness.evaluate("rawDataEditorDirty"), false);
+});
+
+test("a rejected global save restores accepted state but preserves the unsaved draft", async () => {
   const harness = createHarness();
   harness.evaluate(`
     workflowOverrides = [{
@@ -1545,9 +1692,10 @@ test("a rejected override restores the previous completed workflow and controls"
     document.getElementById("terrain-profile-frame").srcdoc = "<p>valid terrain</p>";
     renderWorkflow = function (workflow) {
       globalThis.__restoredWorkflow = workflow;
-      document.getElementById("terrain-category-mzcat").innerHTML = "restored override controls";
     };
+    globalThis.__runCalls = 0;
     runWorkflow = async function () {
+      __runCalls += 1;
       workflowRunId += 1;
       currentWorkflow = null;
       currentWorkflowFingerprint = null;
@@ -1556,31 +1704,128 @@ test("a rejected override restores the previous completed workflow and controls"
       document.getElementById("workflow-summary").textContent = "Workflow failed: backend rejected override";
       return false;
     };
-    globalThis.__valueInput = { value: "1.08" };
-    globalThis.__reasonInput = { value: "Attempted replacement" };
-    globalThis.__panel = {
-      querySelector(selector) {
-        return selector.includes("override_value") ? __valueInput : __reasonInput;
+    globalThis.__draftInput = {
+      value: "1.08",
+      disabled: false,
+      dataset: {
+        rawValue: "",
+        key: "Mzcat:N",
+        variable: "Mzcat",
+        direction: "N",
+        calculatedValue: "1.0396",
+        initialValue: "1.04",
       },
     };
-    globalThis.__button = {
-      dataset: { key: "Mzcat:N", overrideAction: "apply" },
-      closest() { return __panel; },
-    };
+    rawDataPanel.querySelectorAll = () => [__draftInput];
+    rawDataEditReason.value = "Attempted replacement";
+    refreshRawDataEditorState();
   `);
 
-  await harness.evaluate("updateOverride(__button)");
+  const saved = await harness.evaluate("saveRawDataEdits()");
 
+  assert.equal(saved, false);
+  assert.equal(harness.evaluate("__runCalls"), 1);
   assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
   assert.equal(harness.evaluate("currentWorkflow.marker"), "valid completed workflow");
   assert.equal(harness.evaluate("activeWorkflowPayload.marker"), "valid payload");
   assert.equal(harness.evaluate("__restoredWorkflow.marker"), "valid completed workflow");
-  assert.match(harness.element("terrain-category-mzcat").innerHTML, /restored override controls/);
   assert.match(harness.element("workflow-map-frame").srcdoc, /valid map/);
   assert.match(harness.element("terrain-profile-frame").srcdoc, /valid terrain/);
   assert.match(harness.element("workflow-summary").textContent, /previous completed assessment was restored/i);
-  assert.equal(harness.element("workflow-pdf").disabled, false);
-  assert.equal(harness.element("workflow-report").disabled, false);
+  assert.equal(harness.evaluate("__draftInput.value"), "1.08");
+  assert.equal(harness.element("raw-data-edit-reason").value, "Attempted replacement");
+  assert.equal(harness.evaluate("rawDataEditorDirty"), true);
+  assert.equal(harness.element("workflow-pdf").disabled, true);
+  assert.equal(harness.element("workflow-report").disabled, true);
+});
+
+test("a form change that cancels a save cannot leak candidate overrides", async () => {
+  const harness = createHarness();
+  harness.evaluate(`
+    workflowOverrides = [{
+      variable: "Mzcat",
+      direction: "N",
+      override_value: 1.04,
+      reason: "Existing reviewed value",
+    }];
+    currentWorkflow = { marker: "valid completed workflow" };
+    currentWorkflowFingerprint = assessmentFingerprint();
+    activeWorkflowPayload = { marker: "valid payload" };
+    document.getElementById("workflow-map-frame").srcdoc = "<p>valid map</p>";
+    globalThis.__draftInput = {
+      value: "1.08",
+      disabled: false,
+      dataset: {
+        rawValue: "",
+        key: "Mzcat:N",
+        variable: "Mzcat",
+        direction: "N",
+        calculatedValue: "1.0396",
+        initialValue: "1.04",
+      },
+    };
+    rawDataPanel.querySelectorAll = () => [__draftInput];
+    runWorkflow = async function (options) {
+      globalThis.__cancelledCandidate = options.workflowOverrides;
+      workflowRunId += 2;
+      currentWorkflow = null;
+      currentWorkflowFingerprint = null;
+      activeWorkflowController = null;
+      document.getElementById("workflow-map-frame").srcdoc = "";
+      return false;
+    };
+    renderWorkflow = function (workflow) {
+      globalThis.__restoredWorkflow = workflow;
+    };
+    refreshRawDataEditorState();
+  `);
+
+  const saved = await harness.evaluate("saveRawDataEdits()");
+
+  assert.equal(saved, false);
+  assert.equal(harness.evaluate("__cancelledCandidate[0].override_value"), 1.08);
+  assert.equal(harness.evaluate("workflowOverrides.length"), 1);
+  assert.equal(harness.evaluate("workflowOverrides[0].override_value"), 1.04);
+  assert.equal(harness.evaluate("currentWorkflow.marker"), "valid completed workflow");
+  assert.equal(harness.evaluate("__restoredWorkflow.marker"), "valid completed workflow");
+  assert.match(harness.element("workflow-map-frame").srcdoc, /valid map/);
+  assert.equal(harness.evaluate("__draftInput.value"), "1.08");
+  assert.equal(harness.evaluate("rawDataEditorDirty"), true);
+});
+
+test("a newly mandatory clause removes an incompatible saved edit before rerun", () => {
+  const harness = createHarness({
+    values: {
+      wind_direction_multiplier_case: "circular_or_polygonal_chimney_tank_or_pole",
+    },
+  });
+  harness.evaluate(`
+    workflowOverrides = [
+      {
+        variable: "Md",
+        direction: "N",
+        override_value: 0.9,
+        reason: "Prior main-structure review",
+      },
+      {
+        variable: "Mt",
+        direction: "N",
+        override_value: 1.1,
+        reason: "Still applicable",
+      },
+    ];
+  `);
+
+  assert.equal(harness.evaluate("removeNowRestrictedWorkflowOverrides()"), 1);
+  assert.deepEqual(
+    JSON.parse(harness.evaluate("JSON.stringify(workflowOverrides)")),
+    [{
+      variable: "Mt",
+      direction: "N",
+      override_value: 1.1,
+      reason: "Still applicable",
+    }],
+  );
 });
 
 test("raw provenance includes and deduplicates workflow-level standards warnings", () => {
@@ -1651,10 +1896,14 @@ test("directional Vsit,b rows omit constants and show VR and Mc once in Assessme
   assert.doesNotMatch(rowHtml, /47\.125/);
   assert.doesNotMatch(rowHtml, /0\.876/);
   assert.equal((rowHtml.match(/<td>/g) || []).length, 6);
-  assert.equal(((vrHtml + mcHtml + rowHtml).match(/47\.125/g) || []).length, 1);
-  assert.equal(((vrHtml + mcHtml + rowHtml).match(/0\.876/g) || []).length, 1);
-  assert.match(vrHtml, /Override \(optional\)/);
-  assert.doesNotMatch(mcHtml, /Override \(optional\)|data-override-action/);
+  for (const variable of ["Md", "Mzcat", "Ms", "Mt", "Vsitb"]) {
+    assert.equal((rowHtml.match(new RegExp(`data-variable="${variable}"`, "g")) || []).length, 1);
+  }
+  assert.match(vrHtml, /data-variable="VR"/);
+  assert.match(vrHtml, /value="47\.125"/);
+  assert.doesNotMatch(vrHtml, /Override \(optional\)|data-override-action/);
+  assert.match(mcHtml, /0\.876/);
+  assert.doesNotMatch(mcHtml, /data-raw-value|Override \(optional\)|data-override-action/);
   assert.deepEqual(
     JSON.parse(harness.evaluate("JSON.stringify(variableOrder)")),
     ["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"],
@@ -1672,6 +1921,10 @@ test("directional Vsit,b rows omit constants and show VR and Mc once in Assessme
   assert.ok(HTML_SOURCE.indexOf('id="wind-region-vr"') < directionalStart);
   assert.ok(HTML_SOURCE.indexOf('id="climate-change-mc"') > basisStart);
   assert.ok(HTML_SOURCE.indexOf('id="climate-change-mc"') < directionalStart);
+  assert.doesNotMatch(
+    HTML_SOURCE,
+    /id="wind-direction-md"|id="terrain-category-mzcat"|id="shielding-ms"|id="topographic-mt"/,
+  );
   assert.doesNotMatch(SCRIPT_SOURCE, /non_directional_inputs/);
 });
 
@@ -1920,7 +2173,11 @@ test("dashboard shows every tied governing direction and serves the current UI a
   );
   assert.match(
     HTML_SOURCE,
-    /wind_workflow\.js\?v=20260729-vdes-1/,
+    /wind_workflow\.js\?v=20260729-raw-edit-2/,
+  );
+  assert.match(
+    HTML_SOURCE,
+    /styles\.css\?v=20260729-raw-edit-2/,
   );
 });
 
