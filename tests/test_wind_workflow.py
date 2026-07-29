@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import get_args
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image as PillowImage
 from pydantic import BaseModel
-from reportlab.graphics.shapes import Circle, Polygon, String
-from reportlab.lib.units import mm
 
 import openwind_au.api as api_module
 import openwind_au.reports as reports_module
@@ -25,9 +27,13 @@ from openwind_au.models import (
 )
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import (
-    _wind_pdf_map_scale_distance,
-    _wind_pdf_site_map,
+    WIND_WORKFLOW_REPORT_SCOPE,
+    WIND_WORKFLOW_REPORT_SUBTITLE,
+    _draw_wind_pdf_page,
+    _validate_wind_pdf_map_screenshot,
+    _validate_wind_pdf_map_screenshot_dimensions,
     concise_workflow_warnings,
+    render_wind_workflow_pdf_report,
 )
 from openwind_au.standard_calculations import design_wind_speed
 from openwind_au.wind_inputs import VR_EQUATION_REFERENCE
@@ -53,6 +59,16 @@ def workflow_payload() -> dict:
         "building_dimensions": "30 m x 20 m x 10 m",
         "design_life_years": 50,
     }
+
+
+def map_screenshot_bytes(
+    image_format: str = "PNG",
+    size: tuple[int, int] = (1200, 675),
+) -> bytes:
+    output = BytesIO()
+    image = PillowImage.new("RGB", size, color=(220, 235, 228))
+    image.save(output, format=image_format)
+    return output.getvalue()
 
 
 def sample_overrides() -> list[dict]:
@@ -166,12 +182,14 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'class="workspace-tabs"' in body
     assert 'data-workspace-tab="map"' in body
     assert 'data-workspace-tab="profile"' in body
-    assert 'data-workspace-tab="raw-data"' in body
-    assert 'data-workspace-tab="documents"' in body
+    assert 'data-workspace-tab="raw-data"' not in body
+    assert 'data-workspace-tab="documents"' not in body
     assert 'aria-selected="false" tabindex="-1"' in body
     assert 'data-workspace-panel="profile"' in body
-    assert 'data-workspace-panel="raw-data"' in body
-    assert 'data-workspace-panel="documents"' in body
+    assert 'id="workspace-panel-raw-data" class="below-map-output"' in body
+    assert 'id="workspace-panel-documents" class="below-map-output"' in body
+    assert 'data-workspace-panel="raw-data"' not in body
+    assert 'data-workspace-panel="documents"' not in body
     assert 'class="workflow-sidepanel"' not in body
     assert 'role="tablist"' in body
     assert 'data-sidepanel-tab="maps"' not in body
@@ -208,8 +226,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert 'step="0.1"' in orientation_control
     assert "required" in orientation_control
     assert '<select id="structure_orientation_deg"' not in body
-    assert "Right, Back, and Left are" in body
-    assert "Orientation drives the Clause 2.3" in body
+    assert "Right, Back, and Left add" in body
+    assert "drives the Clause 2.3" in body
     assert 'id="vdes-table"' in body
     assert "Street address" not in body
     assert "Review and issue status" in body
@@ -218,8 +236,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "Editable assessment values" in body
     assert 'id="raw-data-save"' in body
     assert "Save all changes" in body
-    assert "Discard changes" in body
-    assert "Use calculated values" in body
+    assert "Undo unsaved edits" in body
+    assert "Reset to calculated values" in body
     assert "Engineering overrides" not in body
     assert 'id="raw-provenance"' in body
     assert "required" not in body.split('id="dashboard-address"', 1)[1].split("/>", 1)[0]
@@ -411,7 +429,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260729-raw-edit-2" in page.text
+    assert "20260729-map-pdf-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -433,7 +451,10 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert response.text.count("<section") == 4
     assert "Assessment status" in response.text
     assert "Draft preliminary" in response.text
-    assert "PRELIMINARY - NOT FOR CERTIFICATION" in response.text
+    assert "Site wind inputs and calculated cardinal Vsit,b" in response.text
+    assert "outside its scope" in response.text
+    assert "certif" not in response.text.lower()
+    assert "compliance" not in response.text.lower()
     assert "Executive Summary" not in response.text
     assert "Variable Summary" not in response.text
     assert "Wind Region Assessment" not in response.text
@@ -455,7 +476,7 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "enclosed industrial building" not in response.text
     assert "30 m x 20 m x 10 m" not in response.text
     assert "Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt" in response.text
-    assert response.text.count("No final design pressures") == 1
+    assert response.text.count("Final design pressures") == 1
 
 
 def test_workflow_report_shows_effective_overrides_and_reference_heights(monkeypatch) -> None:
@@ -539,7 +560,7 @@ def test_final_issue_status_is_rejected_by_workflow_and_request_report_routes(mo
         response = test_client.post(path, json=payload)
 
         assert response.status_code == 422
-        assert "Final or certified issue is not supported" in response.text
+        assert "Final issue is not supported" in response.text
 
 
 def test_reviewed_preliminary_status_requires_reviewer_and_notes(monkeypatch) -> None:
@@ -582,7 +603,8 @@ def test_reviewed_preliminary_report_records_reviewer_without_duplicate_result_f
     assert "engineer_notes" not in {key for key in body if key != "input"}
     assert report.status_code == 200
     assert "Reviewed preliminary - Engineer A" in report.text
-    assert "PRELIMINARY - NOT FOR CERTIFICATION" in report.text
+    assert "certif" not in report.text.lower()
+    assert "compliance" not in report.text.lower()
 
 
 def test_completed_result_report_routes_reject_tampered_or_redundant_status(monkeypatch) -> None:
@@ -601,7 +623,7 @@ def test_completed_result_report_routes_reject_tampered_or_redundant_status(monk
         redundant_response = test_client.post(path, json=redundant)
 
         assert tampered_response.status_code == 422
-        assert "Final or certified issue is not supported" in tampered_response.text
+        assert "Final issue is not supported" in tampered_response.text
         assert redundant_response.status_code == 422
         assert "Extra inputs are not permitted" in redundant_response.text
 
@@ -837,61 +859,103 @@ def test_wind_workflow_pdf_endpoint_returns_compact_download(monkeypatch) -> Non
     assert len(response.content) > 2_000
 
 
-def test_wind_workflow_pdf_site_map_records_signed_location_and_oriented_footprint(
+def test_wind_workflow_report_scope_and_pdf_footer_omit_claim_boilerplate() -> None:
+    visible_copy = f"{WIND_WORKFLOW_REPORT_SUBTITLE} {WIND_WORKFLOW_REPORT_SCOPE}".lower()
+    assert "certif" not in visible_copy
+    assert "compliance" not in visible_copy
+    assert "final design pressures" in visible_copy
+    assert "outside its scope" in visible_copy
+
+    rendered_strings = []
+
+    class RecordingCanvas:
+        def __getattr__(self, _name):
+            def record(*args, **_kwargs):
+                rendered_strings.extend(value for value in args if isinstance(value, str))
+
+            return record
+
+    _draw_wind_pdf_page(RecordingCanvas(), SimpleNamespace(page=2))
+    footer_copy = " ".join(rendered_strings)
+    assert "OpenWind-AU | Site Wind Assessment" in footer_copy
+    assert "Page 2" in footer_copy
+    assert "PRELIMINARY - NOT FOR CERTIFICATION" not in footer_copy
+    assert "certif" not in footer_copy.lower()
+    assert "compliance" not in footer_copy.lower()
+
+
+def test_wind_workflow_pdf_embeds_validated_png_and_jpeg_map_screenshots(
     monkeypatch,
 ) -> None:
     test_client = client(monkeypatch)
-    payload = workflow_payload()
-    payload.pop("building_dimensions")
-    payload.update(
-        {
-            "project_number": "OW-2026-MAP",
-            "building_width_m": 20.0,
-            "building_length_m": 30.0,
-            "structure_orientation_deg": 315.0,
-        }
-    )
-    workflow_response = test_client.post("/api/wind-workflow", json=payload)
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
 
     assert workflow_response.status_code == 200
     result = WindWorkflowResult.model_validate(workflow_response.json())
-    site_map = _wind_pdf_site_map(result)
-    labels = {item.text for item in site_map.contents if isinstance(item, String)}
+    png = map_screenshot_bytes()
+    jpeg = map_screenshot_bytes("JPEG", (900, 600))
+    png_data_uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
-    assert site_map.width == pytest.approx(62 * mm)
-    assert site_map.height == pytest.approx(62 * mm)
-    assert "SITE / LOCATION MAP" in labels
-    assert "TRUE N" in labels
-    assert "FOOTPRINT | front beta 315.0 deg" in labels
-    assert "Location -33.860000, +151.210000" in labels
-    assert len([item for item in site_map.contents if isinstance(item, Polygon)]) >= 10
-    assert len([item for item in site_map.contents if isinstance(item, Circle)]) >= 1
-    assert _wind_pdf_map_scale_distance(60.0) == 10.0
-    assert _wind_pdf_map_scale_distance(120.0) == 20.0
+    validated_png = _validate_wind_pdf_map_screenshot(png)
+    validated_uri = _validate_wind_pdf_map_screenshot(png_data_uri)
+    validated_jpeg = _validate_wind_pdf_map_screenshot(jpeg)
 
-    rendered_map_contexts = []
-    original_site_map = reports_module._wind_pdf_site_map
+    assert validated_png is not None
+    assert validated_png.media_type == "image/png"
+    assert (validated_png.width_px, validated_png.height_px) == (1200, 675)
+    assert validated_uri == validated_png
+    assert validated_jpeg is not None
+    assert validated_jpeg.media_type == "image/jpeg"
+    assert (validated_jpeg.width_px, validated_jpeg.height_px) == (900, 600)
 
-    def capture_site_map(render_result):
-        rendered_map_contexts.append(
-            (
-                render_result.site.latitude,
-                render_result.site.longitude,
-                render_result.input.building_width_m,
-                render_result.input.building_length_m,
-                render_result.input.structure_orientation_deg,
-            )
-        )
-        return original_site_map(render_result)
+    def reject_vector_fallback(*_args, **_kwargs):
+        raise AssertionError("issued PDF called the retired vector schematic")
 
-    monkeypatch.setattr(reports_module, "_wind_pdf_site_map", capture_site_map)
-    pdf_response = test_client.post(
-        "/api/wind-workflow/result/report/pdf",
-        json=workflow_response.json(),
-    )
-    assert pdf_response.status_code == 200
-    assert pdf_response.content.startswith(b"%PDF-")
-    assert rendered_map_contexts == [(-33.86, 151.21, 20.0, 30.0, 315.0)]
+    monkeypatch.setattr(reports_module, "_wind_pdf_site_map", reject_vector_fallback)
+    without_map = render_wind_workflow_pdf_report(result)
+    with_png = render_wind_workflow_pdf_report(result, map_screenshot=png)
+    with_png_uri = render_wind_workflow_pdf_report(result, map_screenshot=png_data_uri)
+    with_jpeg = render_wind_workflow_pdf_report(result, map_screenshot=jpeg)
+
+    assert b"/Subtype /Image" not in without_map
+    for rendered in (with_png, with_png_uri, with_jpeg):
+        assert rendered.startswith(b"%PDF-")
+        assert b"/Subtype /Image" in rendered
+        assert len(rendered) > len(without_map)
+
+
+@pytest.mark.parametrize(
+    "invalid_screenshot",
+    [
+        b"",
+        b"not an image",
+        b"\xff\xd8\xff\xd9",
+        "https://example.test/map.png",
+        "data:image/gif;base64,R0lGODlhAQABAIAAAAUEBA==",
+        "data:image/png;base64,not-valid-***",
+    ],
+)
+def test_wind_workflow_pdf_rejects_unsupported_or_malformed_map_screenshots(
+    invalid_screenshot,
+) -> None:
+    with pytest.raises(ValueError, match="Map screenshot"):
+        _validate_wind_pdf_map_screenshot(invalid_screenshot)
+
+
+def test_wind_workflow_pdf_rejects_mime_mismatch_trailing_bytes_and_unsafe_dimensions() -> None:
+    png = map_screenshot_bytes()
+    mismatched_uri = "data:image/jpeg;base64," + base64.b64encode(png).decode("ascii")
+
+    with pytest.raises(ValueError, match="declared MIME type"):
+        _validate_wind_pdf_map_screenshot(mismatched_uri)
+    with pytest.raises(ValueError, match="complete PNG"):
+        _validate_wind_pdf_map_screenshot(png + b"trailing data")
+    with pytest.raises(ValueError, match="at least 64 px"):
+        _validate_wind_pdf_map_screenshot(map_screenshot_bytes(size=(63, 100)))
+    with pytest.raises(ValueError, match="1.024 megapixel"):
+        _validate_wind_pdf_map_screenshot_dimensions(8193, 100)
+    with pytest.raises(ValueError, match="aspect ratio"):
+        _validate_wind_pdf_map_screenshot_dimensions(1000, 100)
 
 
 def test_wind_workflow_pdf_keeps_effective_override_summary_on_one_page(monkeypatch) -> None:
@@ -980,6 +1044,65 @@ def test_completed_workflow_pdf_endpoint_does_not_rerun_analysis(monkeypatch) ->
     assert response.content.startswith(b"%PDF-")
 
 
+def test_completed_workflow_pdf_accepts_browser_map_wrapper(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow_response.status_code == 200
+    result = workflow_response.json()
+    map_data_uri = "data:image/jpeg;base64," + base64.b64encode(
+        map_screenshot_bytes("JPEG", (900, 600))
+    ).decode("ascii")
+    captured = {}
+
+    def render_with_map(report_result, *, map_screenshot=None):
+        captured["integrity_token"] = report_result.integrity_token
+        captured["map_screenshot"] = map_screenshot
+        return b"%PDF-" + b"browser-map" * 200
+
+    monkeypatch.setattr(api_module, "render_wind_workflow_pdf_report", render_with_map)
+    response = test_client.post(
+        "/api/wind-workflow/result/report/pdf",
+        json={"result": result, "map_screenshot": map_data_uri},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert captured == {
+        "integrity_token": result["integrity_token"],
+        "map_screenshot": map_data_uri,
+    }
+
+
+def test_completed_workflow_pdf_map_wrapper_rejects_invalid_map_and_tampered_result(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    workflow_response = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow_response.status_code == 200
+    result = workflow_response.json()
+
+    invalid_map = test_client.post(
+        "/api/wind-workflow/result/report/pdf",
+        json={"result": result, "map_screenshot": "data:image/png;base64,not-valid-***"},
+    )
+    tampered = json.loads(json.dumps(result))
+    tampered["directional_vsitb"][0]["final_vsitb"] += 1
+    tampered_result = test_client.post(
+        "/api/wind-workflow/result/report/pdf",
+        json={
+            "result": tampered,
+            "map_screenshot": (
+                "data:image/png;base64," + base64.b64encode(map_screenshot_bytes()).decode("ascii")
+            ),
+        },
+    )
+
+    assert invalid_map.status_code == 422
+    assert "Map screenshot" in invalid_map.text
+    assert tampered_result.status_code == 422
+    assert "inconsistent" in tampered_result.text.lower()
+
+
 def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     test_client = client(monkeypatch)
 
@@ -998,6 +1121,13 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Design building" in body
     assert "openWindDesignBuilding" in body
     assert "openWindWorkflowMap" in body
+    assert "crossOrigin" in body
+    assert '"anonymous"' in body
+    assert "capture-screenshot" in body
+    assert "openwind-map-screenshot" in body
+    assert "drawVisibleTiles" in body
+    assert "drawSvgOverlays" in body
+    assert "window.openWindMapCapture" in body
     assert "nudgeDesignBuilding" in body
     assert "offset_east_m" in body
     assert "orientation_options" in body

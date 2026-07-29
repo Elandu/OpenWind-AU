@@ -77,6 +77,8 @@ const workflowOverrideMaximums = Object.freeze({
 const workflowOverrideReasonMaximum = 2000;
 const rawDataDisplayDecimals = 6;
 const rawDataDisplayTolerance = 0.5 * (10 ** -rawDataDisplayDecimals);
+const mapScreenshotTimeoutMs = 10000;
+const maxMapScreenshotDataUrlCharacters = 2800000;
 
 const hiddenWindInputWarningPatterns = [
   /GIS interpretation/i,
@@ -91,6 +93,8 @@ let activeWorkflowController = null;
 let workflowRunId = 0;
 let activeReportController = null;
 let reportRequestId = 0;
+let mapScreenshotRequestId = 0;
+const pendingMapScreenshotRequests = new Map();
 let workflowOverrides = [];
 let rawDataEditorDirty = false;
 let rawDataEditorSaving = false;
@@ -193,8 +197,32 @@ workspaceTabs.forEach((button) => {
 
 window.addEventListener("message", (event) => {
   if (event.source !== workflowMapFrame?.contentWindow) return;
-  if (event.data?.type !== "openwind-design-building-change") return;
-  updateDesignBuildingState(event.data.state, { source: "map" });
+  if (event.data?.type === "openwind-design-building-change") {
+    updateDesignBuildingState(event.data.state, { source: "map" });
+    return;
+  }
+  if (event.data?.type !== "openwind-map-screenshot") return;
+  const requestId = String(event.data.request_id || "");
+  const pending = pendingMapScreenshotRequests.get(requestId);
+  if (!pending) return;
+  if (event.data.result_integrity_token !== pending.resultIntegrityToken) {
+    pending.reject(new Error("The map screenshot did not match the current assessment."));
+    return;
+  }
+  if (event.data.error) {
+    pending.reject(new Error(`Map screenshot failed: ${event.data.error}`));
+    return;
+  }
+  const dataUrl = String(event.data.data_url || "");
+  if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
+    pending.reject(new Error("The map did not return a valid PNG or JPEG screenshot."));
+    return;
+  }
+  if (dataUrl.length > maxMapScreenshotDataUrlCharacters) {
+    pending.reject(new Error("The captured map is too large for the PDF report."));
+    return;
+  }
+  pending.resolve(dataUrl);
 });
 
 function endMapDesignInteraction() {
@@ -378,11 +406,24 @@ workflowPdf?.addEventListener("click", async () => {
   const reportWindow = window.open("about:blank", "_blank");
   if (reportWindow) reportWindow.document.body.textContent = "Generating PDF report...";
   workflowPdf.disabled = true;
-  if (reportStatus) reportStatus.textContent = "Generating PDF from the completed assessment...";
+  if (reportStatus) reportStatus.textContent = "Capturing the current map for the PDF...";
   try {
+    const mapScreenshot = await captureWorkflowMapScreenshot(
+      reportPayload,
+      controller.signal,
+    );
+    if (!reportRequestIsCurrent(requestId, reportFingerprint)) {
+      reportWindow?.close();
+      return;
+    }
+    if (reportWindow) reportWindow.document.body.textContent = "Generating PDF report...";
+    if (reportStatus) reportStatus.textContent = "Generating PDF from the completed assessment...";
     const response = await postJson(
       "/api/wind-workflow/result/report/pdf",
-      reportPayload,
+      {
+        result: reportPayload,
+        map_screenshot: mapScreenshot,
+      },
       { signal: controller.signal },
     );
     const pdf = await response.blob();
@@ -950,6 +991,69 @@ function updateReportAvailability() {
   } else if (!currentWorkflow) {
     reportStatus.textContent = "";
   }
+}
+
+function captureWorkflowMapScreenshot(result, signal) {
+  const resultIntegrityToken = String(result?.integrity_token || "");
+  if (!resultIntegrityToken) {
+    return Promise.reject(new Error("The current assessment cannot be linked to a map screenshot."));
+  }
+  if (!workflowMapFrame?.contentWindow) {
+    return Promise.reject(new Error("The interactive map is not available for capture."));
+  }
+  const activeWorkspaceTab = workspaceTabs.find((tab) => tab.classList.contains("is-active"))
+    ?.dataset.workspaceTab;
+  const restoreWorkspaceTab = activeWorkspaceTab === "profile" ? "profile" : null;
+  if (restoreWorkspaceTab) activateWorkspaceTab("map");
+  mapScreenshotRequestId += 1;
+  const requestId = `pdf-map-${mapScreenshotRequestId}`;
+  return new Promise((resolve, reject) => {
+    let timeoutId = null;
+    let sendTimeoutId = null;
+    let abortListener = null;
+    const settle = (callback, value) => {
+      if (!pendingMapScreenshotRequests.has(requestId)) return;
+      pendingMapScreenshotRequests.delete(requestId);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (sendTimeoutId !== null) clearTimeout(sendTimeoutId);
+      if (abortListener && signal) signal.removeEventListener("abort", abortListener);
+      if (restoreWorkspaceTab) activateWorkspaceTab(restoreWorkspaceTab);
+      callback(value);
+    };
+    const pending = {
+      resultIntegrityToken,
+      resolve: (value) => settle(resolve, value),
+      reject: (error) => settle(reject, error),
+    };
+    pendingMapScreenshotRequests.set(requestId, pending);
+    timeoutId = setTimeout(() => {
+      pending.reject(new Error("Map screenshot timed out. Try the PDF again."));
+    }, mapScreenshotTimeoutMs);
+    if (signal) {
+      abortListener = () => {
+        const error = new Error("Map screenshot cancelled.");
+        error.name = "AbortError";
+        pending.reject(error);
+      };
+      if (signal.aborted) {
+        abortListener();
+        return;
+      }
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+    const requestCapture = () => {
+      postWorkflowMapCommand("capture-screenshot", {
+        request_id: requestId,
+        result_integrity_token: resultIntegrityToken,
+      });
+    };
+    if (restoreWorkspaceTab) {
+      workflowMapFrame.getBoundingClientRect();
+      sendTimeoutId = setTimeout(requestCapture, 100);
+    } else {
+      requestCapture();
+    }
+  });
 }
 
 function startReportRequest() {
@@ -3091,7 +3195,7 @@ function stageCalculatedRawDataValues() {
     if (calculated !== null) input.value = rawDataEditableDisplayValue(calculated);
   });
   refreshRawDataEditorState(
-    "Calculated values are staged. Save changes to remove saved edits, or discard to undo.",
+    "Calculated values are ready to save. Save all changes to remove saved edits, or undo to keep them.",
   );
 }
 
@@ -3101,7 +3205,7 @@ function discardRawDataEdits() {
     input.value = rawDataEditableDisplayValue(input.dataset.initialValue);
   });
   if (rawDataEditReason) rawDataEditReason.value = "";
-  refreshRawDataEditorState("Unsaved Raw Data changes were discarded.");
+  refreshRawDataEditorState("Unsaved Raw Data edits were undone.");
 }
 
 function captureRawDataDraft() {

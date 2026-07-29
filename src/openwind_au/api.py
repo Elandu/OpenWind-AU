@@ -44,6 +44,7 @@ from openwind_au.models import (
     ApiErrorResponse,
     ApiValidationErrorResponse,
     CombinedMapRequest,
+    CompletedWindWorkflowPdfRequest,
     FullAnalysisResult,
     GeocodeQueryRequest,
     GeocodeResult,
@@ -606,11 +607,19 @@ def create_app() -> FastAPI:
             **PDF_FAILURE_RESPONSE,
         },
     )
-    def wind_workflow_result_report_pdf(result: WindWorkflowResult) -> Response:
+    def wind_workflow_result_report_pdf(
+        request: WindWorkflowResult | CompletedWindWorkflowPdfRequest,
+    ) -> Response:
         """Render an already completed workflow without repeating external data calls."""
 
+        if isinstance(request, CompletedWindWorkflowPdfRequest):
+            result = request.result
+            map_screenshot = request.map_screenshot
+        else:
+            result = request
+            map_screenshot = None
         _verify_completed_workflow_result(result)
-        return _wind_workflow_pdf_response(result)
+        return _wind_workflow_pdf_response(result, map_screenshot=map_screenshot)
 
     def _verify_completed_workflow_result(result: WindWorkflowResult) -> None:
         try:
@@ -618,9 +627,19 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    def _wind_workflow_pdf_response(result: WindWorkflowResult) -> Response:
+    def _wind_workflow_pdf_response(
+        result: WindWorkflowResult,
+        *,
+        map_screenshot: str | None = None,
+    ) -> Response:
         try:
-            content = render_wind_workflow_pdf_report(result)
+            content = (
+                render_wind_workflow_pdf_report(result)
+                if map_screenshot is None
+                else render_wind_workflow_pdf_report(result, map_screenshot=map_screenshot)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             LOGGER.exception("Failed to generate site-wind workflow PDF")
             raise HTTPException(

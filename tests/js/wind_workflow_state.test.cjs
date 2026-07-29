@@ -152,12 +152,17 @@ class FakeElement {
   setCustomValidity(message) {
     this.validationMessage = message;
   }
+
+  getBoundingClientRect() {
+    return { x: 0, y: 0, width: 800, height: 600 };
+  }
 }
 
 function createHarness(options = {}) {
   const elements = new Map();
   const storageValues = new Map();
   const timers = new Map();
+  const timerDelays = new Map();
   const scheduledDelays = [];
   const createdElements = [];
   const createdObjectUrls = [];
@@ -263,6 +268,22 @@ function createHarness(options = {}) {
     button.dataset.mapNudgeNorth = north;
     return button;
   });
+  const activeWorkspaceTab = options.activeWorkspaceTab || "map";
+  const workspaceTabs = ["map", "profile"].map((name) => {
+    const button = new FakeElement(`workspace-tab-${name}`);
+    button.dataset.workspaceTab = name;
+    if (name === activeWorkspaceTab) button.classList.add("is-active");
+    return button;
+  });
+  const workspacePanels = ["map", "profile"].map((name) => {
+    const panel = new FakeElement(`workspace-panel-${name}`);
+    panel.dataset.workspacePanel = name;
+    panel.hidden = name !== activeWorkspaceTab;
+    if (name === activeWorkspaceTab) panel.classList.add("is-active");
+    return panel;
+  });
+  element("workflow-map-frame").hidden = activeWorkspaceTab !== "map";
+  element("terrain-profile-frame").hidden = activeWorkspaceTab !== "profile";
 
   const queryElements = new Map();
   const document = {
@@ -284,6 +305,12 @@ function createHarness(options = {}) {
     },
     querySelectorAll(selector) {
       if (selector === "[data-map-nudge]") return mapNudgeButtons;
+      if (selector === "[data-workspace-tab]") {
+        return options.activeWorkspaceTab ? workspaceTabs : [];
+      }
+      if (selector === "[data-workspace-panel]") {
+        return options.activeWorkspaceTab ? workspacePanels : [];
+      }
       return [];
     },
   };
@@ -318,6 +345,7 @@ function createHarness(options = {}) {
     Blob,
     clearTimeout(timerId) {
       timers.delete(timerId);
+      timerDelays.delete(timerId);
     },
     console,
     document,
@@ -332,6 +360,7 @@ function createHarness(options = {}) {
       const timerId = nextTimerId;
       nextTimerId += 1;
       timers.set(timerId, callback);
+      timerDelays.set(timerId, delay);
       scheduledDelays.push(delay);
       return timerId;
     },
@@ -363,15 +392,26 @@ function createHarness(options = {}) {
       while (timers.size) {
         const pending = [...timers.entries()];
         timers.clear();
+        timerDelays.clear();
         for (const [, callback] of pending) {
           await callback();
         }
+      }
+    },
+    async flushTimersAtDelay(delay) {
+      const pending = [...timers.entries()]
+        .filter(([timerId]) => timerDelays.get(timerId) === delay);
+      for (const [timerId, callback] of pending) {
+        timers.delete(timerId);
+        timerDelays.delete(timerId);
+        await callback();
       }
     },
     localStorage,
     mapNudgeButtons,
     revokedObjectUrls,
     scheduledDelays,
+    workspaceTabs,
     setFetch(implementation) {
       fetchImplementation = implementation;
     },
@@ -1160,13 +1200,36 @@ test("PDF generation falls back to a download when popups are blocked and surfac
   const pdf = new Blob([pdfBytes], { type: "application/pdf" });
   const harness = createHarness();
   harness.evaluate(`
-    currentWorkflow = { input: {}, variables: [], directional_vsitb: [], warnings: [] };
+    currentWorkflow = {
+      input: {},
+      variables: [],
+      directional_vsitb: [],
+      warnings: [],
+      integrity_token: "signed-pdf-result",
+    };
     currentWorkflowFingerprint = assessmentFingerprint();
     updateReportAvailability();
   `);
+  const mapFrame = harness.element("workflow-map-frame");
+  let mapCaptureCommand;
+  mapFrame.contentWindow.postMessage = (message) => {
+    mapCaptureCommand = JSON.parse(JSON.stringify(message));
+    harness.dispatchWindow("message", {
+      source: mapFrame.contentWindow,
+      data: {
+        type: "openwind-map-screenshot",
+        request_id: message.payload.request_id,
+        result_integrity_token: message.payload.result_integrity_token,
+        data_url: "data:image/jpeg;base64,/9j/AA==",
+      },
+    });
+  };
   harness.setFetch(async (url, request) => {
     assert.equal(url, "/api/wind-workflow/result/report/pdf");
     assert.equal(request.signal.aborted, false);
+    const body = JSON.parse(request.body);
+    assert.equal(body.result.integrity_token, "signed-pdf-result");
+    assert.equal(body.map_screenshot, "data:image/jpeg;base64,/9j/AA==");
     return {
       ok: true,
       async blob() { return pdf; },
@@ -1181,6 +1244,11 @@ test("PDF generation falls back to a download when popups are blocked and surfac
   assert.equal(link.download, "openwind-au-site-wind-assessment.pdf");
   assert.equal(link.clicked, true);
   assert.equal(link.removed, true);
+  assert.equal(mapCaptureCommand.action, "capture-screenshot");
+  assert.equal(
+    mapCaptureCommand.payload.result_integrity_token,
+    "signed-pdf-result",
+  );
   assert.equal(harness.createdObjectUrls.length, 1);
   assert.equal(harness.revokedObjectUrls.length, 0);
   assert.ok(harness.scheduledDelays.includes(300000));
@@ -1194,10 +1262,28 @@ test("PDF generation falls back to a download when popups are blocked and surfac
 
   const invalidHarness = createHarness();
   invalidHarness.evaluate(`
-    currentWorkflow = { input: {}, variables: [], directional_vsitb: [], warnings: [] };
+    currentWorkflow = {
+      input: {},
+      variables: [],
+      directional_vsitb: [],
+      warnings: [],
+      integrity_token: "signed-invalid-pdf-result",
+    };
     currentWorkflowFingerprint = assessmentFingerprint();
     updateReportAvailability();
   `);
+  const invalidMapFrame = invalidHarness.element("workflow-map-frame");
+  invalidMapFrame.contentWindow.postMessage = (message) => {
+    invalidHarness.dispatchWindow("message", {
+      source: invalidMapFrame.contentWindow,
+      data: {
+        type: "openwind-map-screenshot",
+        request_id: message.payload.request_id,
+        result_integrity_token: message.payload.result_integrity_token,
+        data_url: "data:image/png;base64,iVBORw0KGgo=",
+      },
+    });
+  };
   invalidHarness.setFetch(async () => ({
     ok: true,
     async blob() { return new Blob(["not pdf"], { type: "text/plain" }); },
@@ -1207,6 +1293,86 @@ test("PDF generation falls back to a download when popups are blocked and surfac
   assert.match(invalidHarness.element("report-status").textContent, /PDF report failed/);
   assert.match(invalidHarness.element("workflow-summary").textContent, /valid PDF file/);
   assert.equal(invalidHarness.createdObjectUrls.length, 0);
+});
+
+test("map screenshot capture rejects mismatched responses and times out cleanly", async () => {
+  const mismatched = createHarness();
+  const mapFrame = mismatched.element("workflow-map-frame");
+  let captureCommand;
+  mapFrame.contentWindow.postMessage = (message) => {
+    captureCommand = JSON.parse(JSON.stringify(message));
+  };
+  const rejectedCapture = mismatched.evaluate(
+    "captureWorkflowMapScreenshot({ integrity_token: 'signed-map-result' }, new AbortController().signal)",
+  );
+  const rejectedAssertion = assert.rejects(rejectedCapture, /did not match/);
+  mismatched.dispatchWindow("message", {
+    source: {},
+    data: {
+      type: "openwind-map-screenshot",
+      request_id: captureCommand.payload.request_id,
+      result_integrity_token: "signed-map-result",
+      data_url: "data:image/jpeg;base64,/9j/AA==",
+    },
+  });
+  assert.equal(
+    mismatched.evaluate("pendingMapScreenshotRequests.size"),
+    1,
+  );
+  mismatched.dispatchWindow("message", {
+    source: mapFrame.contentWindow,
+    data: {
+      type: "openwind-map-screenshot",
+      request_id: captureCommand.payload.request_id,
+      result_integrity_token: "different-result",
+      data_url: "data:image/jpeg;base64,/9j/AA==",
+    },
+  });
+  await rejectedAssertion;
+  assert.equal(
+    mismatched.evaluate("pendingMapScreenshotRequests.size"),
+    0,
+  );
+
+  const timedOut = createHarness();
+  const timeoutPromise = timedOut.evaluate(
+    "captureWorkflowMapScreenshot({ integrity_token: 'signed-timeout-result' }, new AbortController().signal)",
+  );
+  const timeoutAssertion = assert.rejects(timeoutPromise, /timed out/);
+  await timedOut.flushTimers();
+  await timeoutAssertion;
+  assert.equal(timedOut.evaluate("pendingMapScreenshotRequests.size"), 0);
+
+  const profileView = createHarness({ activeWorkspaceTab: "profile" });
+  const profileMapFrame = profileView.element("workflow-map-frame");
+  profileMapFrame.contentWindow.postMessage = (message) => {
+    profileView.dispatchWindow("message", {
+      source: profileMapFrame.contentWindow,
+      data: {
+        type: "openwind-map-screenshot",
+        request_id: message.payload.request_id,
+        result_integrity_token: message.payload.result_integrity_token,
+        data_url: "data:image/jpeg;base64,/9j/AA==",
+      },
+    });
+  };
+  const profileCapture = profileView.evaluate(
+    "captureWorkflowMapScreenshot({ integrity_token: 'signed-profile-result' })",
+  );
+  assert.equal(
+    profileView.workspaceTabs.find((tab) => tab.classList.contains("is-active"))
+      .dataset.workspaceTab,
+    "map",
+  );
+  assert.equal(profileMapFrame.hidden, false);
+  await profileView.flushTimersAtDelay(100);
+  assert.equal(await profileCapture, "data:image/jpeg;base64,/9j/AA==");
+  assert.equal(
+    profileView.workspaceTabs.find((tab) => tab.classList.contains("is-active"))
+      .dataset.workspaceTab,
+    "profile",
+  );
+  assert.equal(profileMapFrame.hidden, true);
 });
 
 test("address-only fallback adopts resolved coordinates before report fingerprinting", async () => {
@@ -1467,7 +1633,16 @@ test("Raw Data renders one canonical inline Value input with no per-row override
   assert.equal((toolbar.match(/id="raw-data-save"/g) || []).length, 1);
   assert.equal((toolbar.match(/id="raw-data-edit-reason"/g) || []).length, 1);
   assert.match(toolbar, />Save all changes</);
-  assert.match(toolbar, />Discard changes</);
+  assert.match(toolbar, />Reset to calculated values</);
+  assert.match(
+    toolbar,
+    /title="Replace every editable value with the latest calculation\. Click Save all changes to apply\."/,
+  );
+  assert.match(toolbar, />Undo unsaved edits</);
+  assert.match(
+    toolbar,
+    /title="Return to the last saved values without recalculating or saving\."/,
+  );
   assert.doesNotMatch(HTML_SOURCE, /<th>Override \(optional\)<\/th>|data-override-field/);
 });
 
@@ -2028,11 +2203,16 @@ test("orientation input and initial map use a continuous engineering azimuth edi
   assert.match(orientationInput, /max="359\.9"/);
   assert.match(orientationInput, /step="0\.1"/);
   assert.match(orientationInput, /\srequired(?:\s|\/?>)/);
+  assert.match(orientationInput, /aria-describedby="orientation-convention"/);
   assert.doesNotMatch(HTML_SOURCE, /<select id="structure_orientation_deg"/);
-  assert.match(HTML_SOURCE, /Enter &beta; for the Front, clockwise from true North/);
-  assert.match(HTML_SOURCE, /Right, Back, and Left are/);
-  assert.match(HTML_SOURCE, /Orientation drives the Clause 2\.3/);
-  assert.match(HTML_SOURCE, /building-orthogonal V<sub>des,&theta;<\/sub> calculation/);
+  assert.match(HTML_SOURCE, /class="help-tooltip-trigger"/);
+  assert.match(HTML_SOURCE, /type="button"\s+aria-label="Show orientation convention"/);
+  assert.match(HTML_SOURCE, /id="orientation-convention" class="help-tooltip-content" role="tooltip"/);
+  assert.match(HTML_SOURCE, /Front &beta; is clockwise from true North/);
+  assert.match(HTML_SOURCE, /Right, Back, and Left add/);
+  assert.match(HTML_SOURCE, /drives the Clause 2\.3 V<sub>des,&theta;<\/sub> calculation/);
+  assert.doesNotMatch(HTML_SOURCE, /id="orientation-convention" class="note"/);
+  assert.match(STYLES_SOURCE, /\.help-tooltip:focus-within \.help-tooltip-content/);
 
   const harness = createHarness({
     values: { structure_orientation_deg: "127.5" },
@@ -2053,6 +2233,40 @@ test("orientation input and initial map use a continuous engineering azimuth edi
   assert.match(mapHtml, /Drag corner to resize breadth and depth/);
   assert.match(mapHtml, /dimensions_modified/);
   assert.doesNotThrow(() => new vm.Script(embeddedMapScript));
+});
+
+test("Raw Data and Documents are persistent below-map outputs, not map-view tabs", () => {
+  const tabList = HTML_SOURCE.match(
+    /<nav class="workspace-tabs"[\s\S]*?<\/nav>/,
+  )[0];
+  const rawDataSection = HTML_SOURCE.match(
+    /<section id="workspace-panel-raw-data"[^>]*>/,
+  )[0];
+  const documentsSection = HTML_SOURCE.match(
+    /<section id="workspace-panel-documents"[^>]*>/,
+  )[0];
+
+  assert.equal((tabList.match(/data-workspace-tab=/g) || []).length, 2);
+  assert.match(tabList, />Map<\/button>/);
+  assert.match(tabList, />Profile<\/button>/);
+  assert.doesNotMatch(tabList, /Raw Data|Documents/);
+  assert.match(rawDataSection, /class="below-map-output"/);
+  assert.match(documentsSection, /class="below-map-output"/);
+  assert.doesNotMatch(rawDataSection + documentsSection, /\shidden|role="tabpanel"|data-workspace-panel/);
+  assert.ok(
+    HTML_SOURCE.indexOf('id="workspace-panel-raw-data"')
+      > HTML_SOURCE.indexOf('id="workflow-map-frame"'),
+  );
+  assert.ok(
+    HTML_SOURCE.indexOf('id="workspace-panel-documents"')
+      > HTML_SOURCE.indexOf('id="workspace-panel-raw-data"'),
+  );
+  assert.match(STYLES_SOURCE, /\.below-map-output\s*\{/);
+  assert.match(STYLES_SOURCE, /body\.dashboard-page\s*\{\s*overflow-y: auto;/);
+  assert.doesNotMatch(
+    HTML_SOURCE,
+    /does not certify the result|does not certify AS\/NZS 1170\.2 compliance/i,
+  );
 });
 
 test("client validation explains paired dimensions, roof height, and field bounds", async (t) => {
@@ -2173,11 +2387,11 @@ test("dashboard shows every tied governing direction and serves the current UI a
   );
   assert.match(
     HTML_SOURCE,
-    /wind_workflow\.js\?v=20260729-raw-edit-2/,
+    /wind_workflow\.js\?v=20260729-map-pdf-1/,
   );
   assert.match(
     HTML_SOURCE,
-    /styles\.css\?v=20260729-raw-edit-2/,
+    /styles\.css\?v=20260729-map-pdf-1/,
   );
 });
 

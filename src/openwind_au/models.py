@@ -1235,8 +1235,7 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     def reject_final_issue_status(cls, value: Any) -> Any:
         if isinstance(value, str) and value.strip().lower() == "final":
             raise ValueError(
-                "Final or certified issue is not supported. Use draft or reviewed; all "
-                "OpenWind-AU workflow outputs remain preliminary."
+                "Final issue is not supported. Use draft or reviewed for this workflow."
             )
         return value
 
@@ -1380,9 +1379,25 @@ class WindWorkflowResult(BaseModel):
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
-        "OpenWind-AU organises preliminary site wind evidence through cardinal Vsit,b and "
-        "building-orthogonal Vdes,theta for engineering review. It does not calculate final "
-        "pressures and does not certify AS/NZS 1170.2 compliance."
+        "OpenWind-AU organises site wind evidence through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta for engineering review. Pressure coefficients and "
+        "design pressures are outside this workflow."
+    )
+
+
+class CompletedWindWorkflowPdfRequest(BaseModel):
+    """Signed workflow result plus a browser-captured presentation map."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    result: WindWorkflowResult
+    map_screenshot: str | None = Field(
+        default=None,
+        max_length=3_000_000,
+        description=(
+            "Optional browser-captured map as an exact base64 PNG or JPEG data URI. "
+            "The signed workflow result remains the source of numerical report values."
+        ),
     )
 
 

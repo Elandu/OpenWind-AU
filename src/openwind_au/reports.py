@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import math
 from dataclasses import dataclass, field
@@ -18,7 +20,16 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import (
+    Image,
+    KeepTogether,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from shapely.errors import ShapelyError
 from shapely.geometry import GeometryCollection, mapping, shape
 
@@ -45,6 +56,11 @@ HTML_TEMPLATE_ENV = Environment(
 
 DEFAULT_MAP_DISPLAY_LIMIT = 500
 MAX_POLYGON_GEOJSON_PAYLOAD_BYTES = 2_500_000
+MAX_WIND_PDF_MAP_SCREENSHOT_BYTES = 2_100_000
+MIN_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX = 64
+MAX_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX = 1_280
+MAX_WIND_PDF_MAP_SCREENSHOT_PIXELS = 1_024_000
+MAX_WIND_PDF_MAP_SCREENSHOT_ASPECT_RATIO = 8.0
 MAP_ASSET_URL_REPLACEMENTS = {
     "https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js": (
         "/static/vendor/leaflet/leaflet.js"
@@ -72,6 +88,14 @@ MAP_ASSET_URL_REPLACEMENTS = {
     "https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/"
     "leaflet.awesome.rotate.min.css": "/static/vendor/folium/leaflet.awesome.rotate.min.css",
 }
+
+
+@dataclass(frozen=True)
+class _ValidatedWindMapScreenshot:
+    data: bytes
+    media_type: str
+    width_px: int
+    height_px: int
 
 
 def _json_for_inline_script(value: Any) -> str:
@@ -587,8 +611,16 @@ def combined_map_html(
         location=[site_result.site.latitude, site_result.site.longitude],
         zoom_start=14,
         control_scale=True,
+        tiles=None,
     )
-
+    folium.TileLayer(
+        tiles="OpenStreetMap",
+        name="OpenStreetMap",
+        overlay=False,
+        control=True,
+        show=True,
+        cross_origin="anonymous",
+    ).add_to(fmap)
     site_layer = folium.FeatureGroup(name="Site & analysis radius", show=True)
     wind_region_layer = folium.FeatureGroup(name="Wind regions", show=True)
     mzcat_layer = folium.FeatureGroup(name="Mz,cat sectors", show=True)
@@ -604,8 +636,14 @@ def combined_map_html(
     if wind_region_assessment is not None:
         _add_wind_region_layer(wind_region_layer, site_result.site, wind_region_assessment)
 
-    folium.Marker(
-        [site_result.site.latitude, site_result.site.longitude],
+    folium.CircleMarker(
+        location=[site_result.site.latitude, site_result.site.longitude],
+        radius=6,
+        color="#17324d",
+        weight=2,
+        fill=True,
+        fill_color="#ffffff",
+        fill_opacity=1,
         tooltip="Site",
         popup=f"Ground RL {site_result.site.ground_elevation_m:.1f} m",
     ).add_to(site_layer)
@@ -725,6 +763,7 @@ def combined_map_html(
     )
     design_building_layer.add_to(fmap)
     _add_design_building_overlay(fmap, design_building_layer, site_result)
+    _add_workflow_map_capture_bridge(fmap)
     obstruction_layer.add_to(fmap)
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
 
@@ -1202,6 +1241,8 @@ def _add_design_building_overlay(
             window.openWindDesignBuilding.endInteraction();
           }} else if (event.data.action === "invalidate") {{
             window.openWindWorkflowMap.invalidate();
+          }} else if (event.data.action === "capture-screenshot") {{
+            window.openWindMapCapture?.request(payload);
           }}
         }});
 
@@ -1218,6 +1259,290 @@ def _add_design_building_overlay(
       }}
     }})();
     """
+    fmap.get_root().script.add_child(folium.Element(script))
+
+
+def _add_workflow_map_capture_bridge(fmap: folium.Map) -> None:
+    """Allow the parent workflow page to request a bounded screenshot of the live map."""
+
+    script = """
+    (function() {
+      const mapName = "__OPENWIND_MAP_NAME__";
+      const maxWidthPx = 1280;
+      const maxHeightPx = 800;
+      const maxDataUrlCharacters = 2700000;
+      let captureQueue = Promise.resolve();
+
+      function nextRenderTick() {
+        return new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+
+      function waitForVisibleTiles(container) {
+        const pendingTiles = Array.from(container.querySelectorAll("img.leaflet-tile"))
+          .filter((tile) => !tile.complete);
+        if (!pendingTiles.length) return Promise.resolve();
+        return new Promise((resolve) => {
+          let remaining = pendingTiles.length;
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            remaining -= 1;
+            if (remaining <= 0) {
+              settled = true;
+              clearTimeout(timeoutId);
+              resolve();
+            }
+          };
+          const timeoutId = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          }, 2500);
+          pendingTiles.forEach((tile) => {
+            if (tile.complete) {
+              finish();
+              return;
+            }
+            tile.addEventListener("load", finish, { once: true });
+            tile.addEventListener("error", finish, { once: true });
+          });
+        });
+      }
+
+      function relativeRect(element, containerBounds, cropTop) {
+        const bounds = element.getBoundingClientRect();
+        return {
+          x: bounds.left - containerBounds.left,
+          y: bounds.top - containerBounds.top - cropTop,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      }
+
+      function imageFromUrl(url) {
+        return new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error("A map overlay could not be rasterised."));
+          image.src = url;
+        });
+      }
+
+      function drawVisibleTiles(context, container, containerBounds, cropTop) {
+        let tileCount = 0;
+        Array.from(container.querySelectorAll("img.leaflet-tile")).forEach((tile) => {
+          if (!tile.complete || !tile.naturalWidth || tile.crossOrigin !== "anonymous") return;
+          const rect = relativeRect(tile, containerBounds, cropTop);
+          try {
+            context.drawImage(tile, rect.x, rect.y, rect.width, rect.height);
+            tileCount += 1;
+          } catch (_error) {
+            // A failed tile is skipped; at least one safe tile is required below.
+          }
+        });
+        if (!tileCount) throw new Error("Map tiles are unavailable for the report screenshot.");
+      }
+
+      async function drawSvgOverlays(context, container, containerBounds, cropTop) {
+        const serializer = new XMLSerializer();
+        for (const svg of container.querySelectorAll(".leaflet-overlay-pane svg")) {
+          const rect = relativeRect(svg, containerBounds, cropTop);
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const clone = svg.cloneNode(true);
+          clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+          const markup = serializer.serializeToString(clone);
+          const objectUrl = URL.createObjectURL(
+            new Blob([markup], { type: "image/svg+xml;charset=utf-8" })
+          );
+          try {
+            const image = await imageFromUrl(objectUrl);
+            context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+          } finally {
+            URL.revokeObjectURL(objectUrl);
+          }
+        }
+      }
+
+      function drawMarkerImages(context, container, containerBounds, cropTop) {
+        const selectors = [
+          ".leaflet-overlay-pane img",
+          ".leaflet-shadow-pane img",
+          ".leaflet-marker-pane img",
+        ];
+        Array.from(container.querySelectorAll(selectors.join(","))).forEach((image) => {
+          if (!image.complete || !image.naturalWidth) return;
+          const source = String(image.currentSrc || image.src || "");
+          if (
+            !source.startsWith("data:")
+            && !source.startsWith("blob:")
+            && image.crossOrigin !== "anonymous"
+          ) return;
+          const rect = relativeRect(image, containerBounds, cropTop);
+          try {
+            context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+          } catch (_error) {
+            // Optional marker images must not invalidate an otherwise complete map.
+          }
+        });
+      }
+
+      function drawPermanentTooltips(context, container, containerBounds, cropTop) {
+        Array.from(container.querySelectorAll(".leaflet-tooltip")).forEach((tooltip) => {
+          const text = String(tooltip.textContent || "").trim().replace(/\\s+/g, " ");
+          if (!text) return;
+          const rect = relativeRect(tooltip, containerBounds, cropTop);
+          if (rect.width <= 0 || rect.height <= 0) return;
+          const style = window.getComputedStyle(tooltip);
+          context.save();
+          context.globalAlpha = Number.parseFloat(style.opacity) || 1;
+          context.fillStyle = style.backgroundColor || "rgba(255,255,255,0.92)";
+          context.fillRect(rect.x, rect.y, rect.width, rect.height);
+          context.strokeStyle = style.borderColor || "#17324d";
+          context.lineWidth = Number.parseFloat(style.borderWidth) || 1;
+          context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+          context.fillStyle = style.color || "#17324d";
+          context.font = style.font || "600 12px Arial";
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(text, rect.x + rect.width / 2, rect.y + rect.height / 2);
+          context.restore();
+        });
+      }
+
+      function drawMapCredits(context, container, width, height) {
+        const attribution = String(
+          container.querySelector(".leaflet-control-attribution")?.textContent || ""
+        ).trim().replace(/\\s+/g, " ");
+        if (attribution) {
+          context.save();
+          context.font = "11px Arial";
+          const textWidth = context.measureText(attribution).width;
+          const boxWidth = Math.min(width - 12, textWidth + 10);
+          context.fillStyle = "rgba(255,255,255,0.88)";
+          context.fillRect(width - boxWidth - 4, height - 21, boxWidth, 17);
+          context.fillStyle = "#333333";
+          context.textAlign = "right";
+          context.textBaseline = "middle";
+          context.fillText(attribution, width - 9, height - 12, boxWidth - 8);
+          context.restore();
+        }
+        const scaleText = String(
+          container.querySelector(".leaflet-control-scale-line")?.textContent || ""
+        ).trim();
+        if (scaleText) {
+          context.save();
+          context.font = "11px Arial";
+          const boxWidth = Math.max(48, context.measureText(scaleText).width + 14);
+          context.fillStyle = "rgba(255,255,255,0.82)";
+          context.fillRect(5, height - 23, boxWidth, 17);
+          context.strokeStyle = "#555555";
+          context.lineWidth = 1;
+          context.beginPath();
+          context.moveTo(5, height - 23);
+          context.lineTo(5, height - 6);
+          context.lineTo(5 + boxWidth, height - 6);
+          context.lineTo(5 + boxWidth, height - 23);
+          context.stroke();
+          context.fillStyle = "#222222";
+          context.textAlign = "center";
+          context.textBaseline = "middle";
+          context.fillText(scaleText, 5 + boxWidth / 2, height - 15);
+          context.restore();
+        }
+      }
+
+      async function captureMap() {
+        const map = window[mapName];
+        if (!map || !window.L) throw new Error("Interactive map is not ready.");
+        const container = map.getContainer();
+        map.invalidateSize();
+        container.getBoundingClientRect();
+        await nextRenderTick();
+        await waitForVisibleTiles(container);
+        await nextRenderTick();
+
+        const bounds = container.getBoundingClientRect();
+        const width = Math.round(bounds.width);
+        const height = Math.round(bounds.height);
+        if (width < 64 || height < 64) {
+          throw new Error("Interactive map is not visible.");
+        }
+        const captureHeight = Math.min(height, Math.round(width * 9 / 16));
+        const cropTop = Math.max(0, Math.round((height - captureHeight) / 2));
+        const scale = Math.min(2, maxWidthPx / width, maxHeightPx / captureHeight);
+        if (!Number.isFinite(scale) || scale <= 0) {
+          throw new Error("Interactive map has invalid dimensions.");
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(64, Math.floor(width * scale));
+        canvas.height = Math.max(64, Math.floor(captureHeight * scale));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) throw new Error("Map screenshot canvas is unavailable.");
+        context.scale(scale, scale);
+        context.fillStyle = "#e5e7eb";
+        context.fillRect(0, 0, width, captureHeight);
+        drawVisibleTiles(context, container, bounds, cropTop);
+        await drawSvgOverlays(context, container, bounds, cropTop);
+        drawMarkerImages(context, container, bounds, cropTop);
+        drawPermanentTooltips(context, container, bounds, cropTop);
+        drawMapCredits(context, container, width, captureHeight);
+        if (
+          canvas.width < 64
+          || canvas.height < 64
+          || canvas.width > maxWidthPx
+          || canvas.height > maxHeightPx
+        ) {
+          throw new Error("Captured map dimensions are outside the report limits.");
+        }
+        let dataUrl = canvas.toDataURL("image/jpeg", 0.88);
+        if (dataUrl.length > maxDataUrlCharacters) {
+          dataUrl = canvas.toDataURL("image/jpeg", 0.76);
+        }
+        if (dataUrl.length > maxDataUrlCharacters) {
+          dataUrl = canvas.toDataURL("image/jpeg", 0.65);
+        }
+        if (dataUrl.length > maxDataUrlCharacters) {
+          throw new Error("Captured map is too large for the report.");
+        }
+        return {
+          data_url: dataUrl,
+          width_px: canvas.width,
+          height_px: canvas.height,
+        };
+      }
+
+      function respond(payload, response) {
+        window.parent.postMessage(Object.assign({
+          type: "openwind-map-screenshot",
+          request_id: payload.request_id,
+          result_integrity_token: payload.result_integrity_token,
+        }, response), "*");
+      }
+
+      function requestCapture(payload) {
+        if (
+          typeof payload.request_id !== "string"
+          || !payload.request_id
+          || typeof payload.result_integrity_token !== "string"
+          || !payload.result_integrity_token
+        ) return;
+        captureQueue = captureQueue
+          .catch(() => undefined)
+          .then(captureMap)
+          .then((capture) => respond(payload, capture))
+          .catch((error) => {
+            respond(payload, {
+              error: String(error && error.message ? error.message : error),
+            });
+          });
+      }
+
+      window.openWindMapCapture = {
+        capture: captureMap,
+        request: requestCapture,
+      };
+    })();
+    """.replace("__OPENWIND_MAP_NAME__", fmap.get_name())
     fmap.get_root().script.add_child(folium.Element(script))
 
 
@@ -1606,6 +1931,17 @@ def render_terrain_category_report_html(result: TerrainCategoryEvidenceResult) -
     )
 
 
+WIND_WORKFLOW_REPORT_SUBTITLE = (
+    "Site wind inputs and calculated cardinal Vsit,b and building-orthogonal Vdes,theta."
+)
+WIND_WORKFLOW_REPORT_SCOPE = (
+    "This report contains site wind inputs and calculated wind speeds through Vsit,b and "
+    "Vdes,theta. Final design pressures, pressure coefficients and cladding pressures are "
+    "outside its scope. Terrain, shielding and topographic inputs require competent "
+    "engineering review."
+)
+
+
 def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
     """Render a concise HTML AS/NZS 1170.2 site wind workflow report."""
 
@@ -1625,6 +1961,8 @@ def render_wind_workflow_report_html(result: WindWorkflowResult) -> str:
         has_vsitb_overrides=_wind_report_has_vsitb_overrides(result),
         vsitb_override_directions=_wind_report_vsitb_override_directions(result),
         calculation_basis_reference=calculation_basis_report_reference(),
+        report_subtitle=WIND_WORKFLOW_REPORT_SUBTITLE,
+        report_scope=WIND_WORKFLOW_REPORT_SCOPE,
     )
 
 
@@ -1677,9 +2015,18 @@ def _workflow_warning_priority(warning: str) -> int:
     return 3
 
 
-def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
-    """Render a compact site wind assessment PDF in memory."""
+def render_wind_workflow_pdf_report(
+    result: WindWorkflowResult,
+    *,
+    map_screenshot: bytes | str | None = None,
+) -> bytes:
+    """Render a compact site wind assessment PDF in memory.
 
+    ``map_screenshot`` may be raw PNG/JPEG bytes or a strict ``data:image/...;base64,``
+    URI. It is optional so existing report callers remain compatible.
+    """
+
+    validated_map_screenshot = _validate_wind_pdf_map_screenshot(map_screenshot)
     output = BytesIO()
     doc = SimpleDocTemplate(
         output,
@@ -1747,12 +2094,7 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     )
     story = [
         Paragraph("OpenWind-AU Site Wind Assessment", title_style),
-        Paragraph("<b>PRELIMINARY - NOT FOR CERTIFICATION</b>", body_style),
-        Paragraph(
-            "Compact engineering review summary through cardinal Vsit,b and "
-            "building-orthogonal Vdes,theta. This is not a certified design-pressure report.",
-            muted_style,
-        ),
+        Paragraph(WIND_WORKFLOW_REPORT_SUBTITLE, muted_style),
         Paragraph("Project and outcome", section_style),
     ]
     region = result.wind_region_assessment
@@ -1793,30 +2135,23 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
     ]
     if result.governing_vdes_mps is not None:
         summary_rows.append(["Governing Vdes,theta", _wind_report_vdes_summary(result)])
-    overview_table = Table(
-        [
-            [
-                _wind_pdf_table(summary_rows, [32 * mm, 81 * mm], header=False),
-                _wind_pdf_site_map(result),
-            ]
-        ],
-        colWidths=[116 * mm, 62 * mm],
-        hAlign="LEFT",
-    )
-    overview_table.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (0, 0), 0),
-                ("RIGHTPADDING", (0, 0), (0, 0), 3 * mm),
-                ("LEFTPADDING", (1, 0), (1, 0), 0),
-                ("RIGHTPADDING", (1, 0), (1, 0), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ]
+    story.append(_wind_pdf_table(summary_rows, [38 * mm, 140 * mm], header=False))
+    if validated_map_screenshot is not None:
+        story.append(
+            KeepTogether(
+                [
+                    Paragraph("Site map", section_style),
+                    _wind_pdf_map_screenshot_flowable(validated_map_screenshot),
+                    Paragraph(
+                        "Browser-captured map centred on the signed workflow location "
+                        f"{result.site.latitude:+.6f}, {result.site.longitude:+.6f}. "
+                        "Map imagery and displayed layers are contextual; the numerical "
+                        "coordinates and report inputs govern.",
+                        muted_style,
+                    ),
+                ]
+            )
         )
-    )
-    story.append(overview_table)
     story.extend(
         [
             Paragraph("Directional site wind speeds", section_style),
@@ -1962,17 +2297,218 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         [
             Paragraph("Basis and limitations", section_style),
             Paragraph(escape(_wind_report_basis(result)), body_style),
-            Paragraph(
-                "No final design pressures, pressure coefficients, cladding pressures or "
-                "certification are included. Terrain, shielding and topographic inputs require "
-                "competent engineering review.",
-                body_style,
-            ),
+            Paragraph(escape(WIND_WORKFLOW_REPORT_SCOPE), body_style),
         ]
     )
     story.append(Paragraph(_wind_pdf_lineage_reference(), lineage_style))
     doc.build(story, onFirstPage=_draw_wind_pdf_page, onLaterPages=_draw_wind_pdf_page)
     return output.getvalue()
+
+
+def _validate_wind_pdf_map_screenshot(
+    value: bytes | str | None,
+) -> _ValidatedWindMapScreenshot | None:
+    """Validate an in-memory browser map screenshot without accepting paths or URLs."""
+
+    if value is None:
+        return None
+
+    declared_media_type: str | None = None
+    if isinstance(value, bytes):
+        data = value
+    elif isinstance(value, str):
+        prefixes = {
+            "data:image/png;base64,": "image/png",
+            "data:image/jpeg;base64,": "image/jpeg",
+        }
+        matched_prefix = next((prefix for prefix in prefixes if value.startswith(prefix)), None)
+        if matched_prefix is None:
+            raise ValueError(
+                "Map screenshot data URI must use image/png or image/jpeg with base64 encoding."
+            )
+        declared_media_type = prefixes[matched_prefix]
+        encoded = value[len(matched_prefix) :]
+        maximum_encoded_length = ((MAX_WIND_PDF_MAP_SCREENSHOT_BYTES + 2) // 3) * 4
+        if not encoded or len(encoded) > maximum_encoded_length:
+            raise ValueError(
+                f"Map screenshot must be non-empty and no larger than "
+                f"{MAX_WIND_PDF_MAP_SCREENSHOT_BYTES // 1_000_000} MB."
+            )
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("Map screenshot data URI contains invalid base64 content.") from exc
+    else:
+        raise ValueError("Map screenshot must be PNG/JPEG bytes, a base64 data URI, or None.")
+
+    if not data:
+        raise ValueError("Map screenshot must not be empty.")
+    if len(data) > MAX_WIND_PDF_MAP_SCREENSHOT_BYTES:
+        raise ValueError(
+            f"Map screenshot exceeds the {MAX_WIND_PDF_MAP_SCREENSHOT_BYTES // 1_000_000} MB limit."
+        )
+
+    media_type, header_width, header_height = _wind_pdf_map_screenshot_header(data)
+    if declared_media_type is not None and declared_media_type != media_type:
+        raise ValueError("Map screenshot content does not match its declared MIME type.")
+
+    width_px = header_width
+    height_px = header_height
+    _validate_wind_pdf_map_screenshot_dimensions(width_px, height_px)
+    try:
+        reader = ImageReader(BytesIO(data))
+        decoded_width, decoded_height = (int(value) for value in reader.getSize())
+        if (decoded_width, decoded_height) != (width_px, height_px):
+            raise ValueError("Map screenshot dimensions are internally inconsistent.")
+        reader.getRGBData()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Map screenshot could not be decoded as a complete image.") from exc
+
+    return _ValidatedWindMapScreenshot(
+        data=data,
+        media_type=media_type,
+        width_px=width_px,
+        height_px=height_px,
+    )
+
+
+def _wind_pdf_map_screenshot_header(data: bytes) -> tuple[str, int, int]:
+    """Return strict PNG/JPEG media type and dimensions from trusted header structures."""
+
+    png_signature = b"\x89PNG\r\n\x1a\n"
+    if data.startswith(png_signature):
+        if (
+            len(data) < 45
+            or data[8:12] != b"\x00\x00\x00\r"
+            or data[12:16] != b"IHDR"
+            or data[-12:-8] != b"\x00\x00\x00\x00"
+            or data[-8:-4] != b"IEND"
+        ):
+            raise ValueError("Map screenshot is not a complete PNG image.")
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+        return "image/png", width, height
+
+    if data.startswith(b"\xff\xd8\xff") and data.endswith(b"\xff\xd9"):
+        width, height = _wind_pdf_jpeg_dimensions(data)
+        return "image/jpeg", width, height
+
+    raise ValueError("Map screenshot must contain a complete PNG or JPEG image.")
+
+
+def _wind_pdf_jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    """Read JPEG SOF dimensions while rejecting truncated segment structures."""
+
+    start_of_frame_markers = {
+        0xC0,
+        0xC1,
+        0xC2,
+        0xC3,
+        0xC5,
+        0xC6,
+        0xC7,
+        0xC9,
+        0xCA,
+        0xCB,
+        0xCD,
+        0xCE,
+        0xCF,
+    }
+    offset = 2
+    while offset < len(data) - 1:
+        if data[offset] != 0xFF:
+            offset += 1
+            continue
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            break
+        marker = data[offset]
+        offset += 1
+        if marker in {0x01, 0xD8, 0xD9, *range(0xD0, 0xD8)}:
+            continue
+        if offset + 2 > len(data):
+            break
+        segment_length = int.from_bytes(data[offset : offset + 2], "big")
+        if segment_length < 2 or offset + segment_length > len(data):
+            break
+        if marker in start_of_frame_markers:
+            if segment_length < 7:
+                break
+            height = int.from_bytes(data[offset + 3 : offset + 5], "big")
+            width = int.from_bytes(data[offset + 5 : offset + 7], "big")
+            return width, height
+        if marker == 0xDA:
+            break
+        offset += segment_length
+    raise ValueError("Map screenshot JPEG is missing a valid size header.")
+
+
+def _validate_wind_pdf_map_screenshot_dimensions(width_px: int, height_px: int) -> None:
+    if (
+        width_px < MIN_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX
+        or height_px < MIN_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX
+    ):
+        raise ValueError(
+            "Map screenshot dimensions must each be at least "
+            f"{MIN_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX} px."
+        )
+    if (
+        width_px > MAX_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX
+        or height_px > MAX_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX
+        or width_px * height_px > MAX_WIND_PDF_MAP_SCREENSHOT_PIXELS
+    ):
+        raise ValueError(
+            "Map screenshot exceeds the "
+            f"{MAX_WIND_PDF_MAP_SCREENSHOT_DIMENSION_PX} px per side or "
+            f"{MAX_WIND_PDF_MAP_SCREENSHOT_PIXELS / 1_000_000:g} megapixel limit."
+        )
+    aspect_ratio = max(width_px / height_px, height_px / width_px)
+    if aspect_ratio > MAX_WIND_PDF_MAP_SCREENSHOT_ASPECT_RATIO:
+        raise ValueError(
+            f"Map screenshot aspect ratio must not exceed "
+            f"{MAX_WIND_PDF_MAP_SCREENSHOT_ASPECT_RATIO:g}:1."
+        )
+
+
+def _wind_pdf_map_screenshot_flowable(screenshot: _ValidatedWindMapScreenshot) -> Table:
+    """Fit a validated screenshot into a bordered, full-width report frame."""
+
+    frame_width = 178 * mm
+    horizontal_padding = 2 * mm
+    vertical_padding = 2 * mm
+    maximum_image_width = frame_width - 2 * horizontal_padding
+    maximum_image_height = 85 * mm
+    scale = min(
+        maximum_image_width / screenshot.width_px,
+        maximum_image_height / screenshot.height_px,
+    )
+    rendered_width = screenshot.width_px * scale
+    rendered_height = screenshot.height_px * scale
+    image = Image(
+        BytesIO(screenshot.data),
+        width=rendered_width,
+        height=rendered_height,
+    )
+    image.hAlign = "CENTER"
+    frame = Table([[image]], colWidths=[frame_width], hAlign="LEFT")
+    frame.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), horizontal_padding),
+                ("RIGHTPADDING", (0, 0), (-1, -1), horizontal_padding),
+                ("TOPPADDING", (0, 0), (-1, -1), vertical_padding),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), vertical_padding),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#d0d5dd")),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+            ]
+        )
+    )
+    return frame
 
 
 def _wind_pdf_site_map(result: WindWorkflowResult) -> Drawing:
@@ -2513,7 +3049,6 @@ def _draw_wind_pdf_page(canvas, doc) -> None:
     canvas.setFillColor(colors.HexColor("#667085"))
     canvas.drawString(14 * mm, height - 10 * mm, "OpenWind-AU | Site Wind Assessment")
     canvas.drawRightString(width - 14 * mm, 9 * mm, f"Page {doc.page}")
-    canvas.drawString(14 * mm, 9 * mm, "PRELIMINARY - NOT FOR CERTIFICATION")
     canvas.restoreState()
 
 
@@ -3754,15 +4289,6 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     .note { color: #667085; }
     .warning { border-left: 4px solid #b54708; padding-left: 12px; }
     .limitation { border-left: 4px solid #b42318; background: #fffbfa; }
-    .preliminary-banner {
-      padding: 9px 28px;
-      background: #fef3f2;
-      border-bottom: 2px solid #b42318;
-      color: #912018;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      text-align: center;
-    }
     ul { margin: 7px 0 0; padding-left: 20px; }
     @media print {
       body { background: #fff; }
@@ -3781,9 +4307,8 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
 <body>
   <header>
     <h1>OpenWind-AU Site Wind Assessment</h1>
-    <p>Compact engineering review summary through Vsit,b and Vdes,theta</p>
+    <p>{{ report_subtitle|e }}</p>
   </header>
-  <div class="preliminary-banner">PRELIMINARY - NOT FOR CERTIFICATION</div>
   <main>
     <section>
       <h2>Project and outcome</h2>
@@ -3984,10 +4509,7 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
     <section class="limitation">
       <h2>Basis and limitations</h2>
       <p>{{ basis_summary|e }}</p>
-      <p>
-        No final design pressures, pressure coefficients, cladding pressures or certification are
-        included. Terrain, shielding and topographic inputs require competent engineering review.
-      </p>
+      <p>{{ report_scope|e }}</p>
       {% if calculation_basis_reference %}
       <p class="note">{{ calculation_basis_reference|e }}</p>
       {% endif %}
