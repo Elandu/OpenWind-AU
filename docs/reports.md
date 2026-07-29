@@ -68,8 +68,8 @@ statistics, obstruction density, vegetation density, fetch distance, shielding c
 suggested category range, confidence, warnings, indicative Mz,cat ranges, and separate evidence
 score components.
 
-The report does not assign a final terrain category and does not calculate final `Mz,cat` design
-values.
+This aggregate terrain-evidence report does not assign a final terrain category or by itself select
+the workflow `Mz,cat`; reviewed single-category or mixed-terrain inputs drive that calculation.
 
 ## Site Wind Assessment Report
 
@@ -97,6 +97,8 @@ The HTML and PDF outputs use the same compact report structure:
   `Vsit,b` when a reviewed direct override applies;
 - one four-face Clause 2.3 table for the relative `theta`, absolute `beta`, design sector, raw
   maximum and ultimate `Vdes,theta`;
+- Clause 4.2.3 averaging geometry and per-segment Table 4.1 weighted contributions for supplied
+  non-A0 `mixed_terrain_profiles`, or the signed input intervals as unweighted evidence for A0;
 - deduplicated decision-relevant warnings, overrides, and engineer notes when present; and
 - a short calculation-basis and limitations statement.
 
@@ -112,3 +114,16 @@ final reviewed value instead of being presented as the multiplier product.
 
 The site wind assessment report includes cardinal `Vsit,b` and building-orthogonal ultimate
 `Vdes,theta`. It does not include pressure calculations, `Cpe`, `Cpi`, or final design pressures.
+The workflow reports intentionally omit certification/compliance wording, issue-status banners,
+and reviewer labels. The legacy/API-compatibility `assessment_status` and `reviewed_by` fields do
+not control report presentation; API-supplied `engineer_notes` may appear only as a review note.
+For A0, any supplied mixed-terrain profile is reported as evidence against the workflow reference
+height; it may be incomplete and does not weight or replace the mandatory terrain-independent
+`Mz,cat`.
+
+The browser-generated PDF also includes a screenshot of the current interactive map, captured
+against the signed workflow location immediately before report generation. Direct API clients may
+send an optional PNG or JPEG data URI as `map_screenshot` with `result` to
+`POST /api/wind-workflow/result/report/pdf`; remote image URLs and file paths are not accepted.
+The screenshot is context only. The signed coordinates and numeric assessment remain the source
+of truth.

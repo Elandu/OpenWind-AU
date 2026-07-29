@@ -40,6 +40,9 @@ const defaultStoreyHeightControl = document.getElementById("default_storey_heigh
 const roofPitchControl = document.getElementById("roof_pitch_deg");
 const averageRoofHeightControl = document.getElementById("average_roof_height_m");
 const baseRlControl = document.getElementById("base_rl_m");
+const mixedTerrainSegmentsBody = document.getElementById("mixed-terrain-segments");
+const mixedTerrainAdd = document.getElementById("mixed-terrain-add");
+const mixedTerrainStatus = document.getElementById("mixed-terrain-status");
 const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
 const windDirectionMultiplierCaseControl = document.getElementById("wind_direction_multiplier_case");
 const DESIGN_LOCATION_STORAGE_KEY = "openwindDesignBuildingLocation";
@@ -105,6 +108,7 @@ let designBuildingState = null;
 let coordinateOverride = null;
 let designLocationProjectNumber = "";
 let locationMode = "address";
+let mixedTerrainRowId = 0;
 let currentMapSite = {
   latitude: -33.8688,
   longitude: 151.2093,
@@ -244,6 +248,18 @@ workflowForm.addEventListener("input", () => {
 });
 
 workflowForm.addEventListener("change", () => {
+  validateWorkflowInputs();
+  cancelActiveWorkflow();
+  updateReportAvailability();
+});
+
+mixedTerrainAdd?.addEventListener("click", () => addMixedTerrainSegmentRow());
+mixedTerrainSegmentsBody?.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const removeButton = event.target.closest("[data-mixed-remove]");
+  if (!removeButton) return;
+  removeButton.closest("[data-mixed-row]")?.remove();
+  renderMixedTerrainEmptyState();
   validateWorkflowInputs();
   cancelActiveWorkflow();
   updateReportAvailability();
@@ -508,6 +524,164 @@ function numberControlError(control, label, constraints = {}) {
   return "";
 }
 
+function mixedTerrainRows() {
+  return Array.from(mixedTerrainSegmentsBody?.querySelectorAll("[data-mixed-row]") || []);
+}
+
+function renderMixedTerrainEmptyState() {
+  if (!mixedTerrainSegmentsBody) return;
+  const empty = mixedTerrainSegmentsBody.querySelector(".mixed-terrain-empty");
+  if (mixedTerrainRows().length) {
+    empty?.remove();
+  } else if (!empty) {
+    mixedTerrainSegmentsBody.innerHTML = `
+      <tr class="mixed-terrain-empty">
+        <td colspan="6">No ordered mixed-terrain intervals supplied.</td>
+      </tr>
+    `;
+  }
+}
+
+function addMixedTerrainSegmentRow(initial = {}) {
+  if (!mixedTerrainSegmentsBody) return;
+  mixedTerrainSegmentsBody.querySelector(".mixed-terrain-empty")?.remove();
+  const referenceHeight = parseOptionalNumber(averageRoofHeightControl?.value)
+    ?? parseOptionalNumber(buildingHeightControl?.value)
+    ?? 10;
+  const lagDistance = 20 * referenceHeight;
+  const averagingDistance = Math.max(500, 40 * referenceHeight);
+  const rowId = ++mixedTerrainRowId;
+  const direction = directionOrder.includes(initial.direction) ? initial.direction : "N";
+  const category = ["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
+    .includes(initial.terrain_category)
+    ? initial.terrain_category
+    : "TC2";
+  mixedTerrainSegmentsBody.insertAdjacentHTML("beforeend", `
+    <tr data-mixed-row="${rowId}">
+      <td>
+        <select data-mixed-direction aria-label="Mixed-terrain direction">
+          ${directionOrder.map((item) => `
+            <option value="${item}" ${item === direction ? "selected" : ""}>${item}</option>
+          `).join("")}
+        </select>
+      </td>
+      <td>
+        <input data-mixed-start type="number" min="0" max="100000" step="any" required
+          value="${escapeHtml(initial.start_distance_m ?? lagDistance)}"
+          aria-label="Terrain interval start distance" />
+      </td>
+      <td>
+        <input data-mixed-end type="number" min="0.001" max="100000" step="any" required
+          value="${escapeHtml(initial.end_distance_m ?? lagDistance + averagingDistance)}"
+          aria-label="Terrain interval end distance" />
+      </td>
+      <td>
+        <select data-mixed-category aria-label="Terrain interval category">
+          ${["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"].map((item) => `
+            <option value="${item}" ${item === category ? "selected" : ""}>${item}</option>
+          `).join("")}
+        </select>
+      </td>
+      <td>
+        <input data-mixed-source maxlength="1000" required
+          value="${escapeHtml(initial.source_reference || "")}"
+          placeholder="survey, drawing or GIS review reference"
+          aria-label="Terrain interval source reference" />
+      </td>
+      <td><button type="button" class="mixed-terrain-remove" data-mixed-remove>Remove</button></td>
+    </tr>
+  `);
+  validateWorkflowInputs();
+  cancelActiveWorkflow();
+  updateReportAvailability();
+}
+
+function mixedTerrainProfilesFromEditor() {
+  const grouped = new Map();
+  mixedTerrainRows().forEach((row) => {
+    const direction = row.querySelector("[data-mixed-direction]")?.value || "N";
+    const segment = {
+      start_distance_m: mixedTerrainDistanceValue(row.querySelector("[data-mixed-start]")),
+      end_distance_m: mixedTerrainDistanceValue(row.querySelector("[data-mixed-end]")),
+      terrain_category: row.querySelector("[data-mixed-category]")?.value || "TC2",
+      source_reference: row.querySelector("[data-mixed-source]")?.value.trim() || "",
+    };
+    if (!grouped.has(direction)) grouped.set(direction, []);
+    grouped.get(direction).push(segment);
+  });
+  return directionOrder
+    .filter((direction) => grouped.has(direction))
+    .map((direction) => ({
+      direction,
+      segments: grouped
+        .get(direction)
+        .sort((first, second) => first.start_distance_m - second.start_distance_m),
+    }));
+}
+
+function mixedTerrainDistanceValue(control) {
+  const raw = String(control?.value ?? "").trim();
+  return raw === "" ? null : Number(raw);
+}
+
+function validateMixedTerrainInputs() {
+  const rows = mixedTerrainRows();
+  if (!rows.length) {
+    if (mixedTerrainStatus) mixedTerrainStatus.textContent = "";
+    return [];
+  }
+  const messages = [];
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const direction = row.querySelector("[data-mixed-direction]")?.value || "N";
+    const startControl = row.querySelector("[data-mixed-start]");
+    const endControl = row.querySelector("[data-mixed-end]");
+    const sourceControl = row.querySelector("[data-mixed-source]");
+    [startControl, endControl, sourceControl].forEach((control) => control?.setCustomValidity(""));
+    const start = mixedTerrainDistanceValue(startControl);
+    const end = mixedTerrainDistanceValue(endControl);
+    let message = "";
+    if (start === null) {
+      message = `${direction} terrain interval start is required.`;
+      startControl?.setCustomValidity(message);
+    } else if (!Number.isFinite(start) || start < 0) {
+      message = `${direction} terrain interval start must be a non-negative finite distance.`;
+      startControl?.setCustomValidity(message);
+    } else if (end === null) {
+      message = `${direction} terrain interval end is required.`;
+      endControl?.setCustomValidity(message);
+    } else if (!Number.isFinite(end) || end <= start) {
+      message = `${direction} terrain interval end must be greater than its start.`;
+      endControl?.setCustomValidity(message);
+    } else if (!sourceControl?.value.trim()) {
+      message = `${direction} terrain interval needs a source reference.`;
+      sourceControl?.setCustomValidity(message);
+    }
+    if (message) messages.push(message);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      if (!grouped.has(direction)) grouped.set(direction, []);
+      grouped.get(direction).push({ row, start, end });
+    }
+  });
+  grouped.forEach((segments, direction) => {
+    const ordered = segments.sort((first, second) => first.start - second.start);
+    for (let index = 1; index < ordered.length; index += 1) {
+      if (Math.abs(ordered[index].start - ordered[index - 1].end) > 1e-6) {
+        const message = `${direction} terrain intervals must be contiguous without gaps or overlaps.`;
+        ordered[index].row.querySelector("[data-mixed-start]")?.setCustomValidity(message);
+        messages.push(message);
+        break;
+      }
+    }
+  });
+  const uniqueMessages = [...new Set(messages)];
+  if (mixedTerrainStatus) {
+    mixedTerrainStatus.textContent = uniqueMessages[0]
+      || `${rows.length} ordered terrain interval(s) ready for calculation.`;
+  }
+  return uniqueMessages;
+}
+
 function validateWorkflowInputs() {
   const controls = [
     [
@@ -629,7 +803,8 @@ function validateWorkflowInputs() {
   for (const [control] of controls) {
     control?.setCustomValidity(errorByControl.get(control) || "");
   }
-  return [...new Set([...errorByControl.values()].filter(Boolean))];
+  const mixedTerrainErrors = validateMixedTerrainInputs();
+  return [...new Set([...errorByControl.values()].filter(Boolean).concat(mixedTerrainErrors))];
 }
 
 async function runWorkflowStream(requestPayload, runId, signal) {
@@ -709,6 +884,7 @@ function handleWorkflowStreamEvent(event, runId, requestPayload, signal) {
     renderWorkflow(currentWorkflow);
     currentWorkflowFingerprint = acceptedWorkflowFingerprint(requestPayload, currentWorkflow);
     activeWorkflowPayload = resolvedSiteRequestPayload(requestPayload, currentWorkflow);
+    if (reportStatus) reportStatus.textContent = "";
     updateReportAvailability();
   }
   if (event.data?.map_html && workflowMapFrame) {
@@ -740,6 +916,7 @@ async function runWorkflowFallback(originalError, requestPayload, runId, signal)
     renderWorkflow(currentWorkflow);
     currentWorkflowFingerprint = acceptedWorkflowFingerprint(requestPayload, currentWorkflow);
     activeWorkflowPayload = resolvedSiteRequestPayload(requestPayload, currentWorkflow);
+    if (reportStatus) reportStatus.textContent = "";
     updateReportAvailability();
     setWorkflowProgress(78, "Rendering combined map layers", "running");
     const mapRendered = await renderWorkflowMap(activeWorkflowPayload, { runId, signal });
@@ -789,8 +966,8 @@ function workflowPayload(overrides = workflowOverrides) {
     roof_pitch_deg: optionalNumber("roof_pitch_deg"),
     average_roof_height_m: optionalNumber("average_roof_height_m"),
     base_rl_m: optionalNumber("base_rl_m"),
-    assessment_status: "draft",
     mzcat_recommendation_mode: "conservative",
+    mixed_terrain_profiles: mixedTerrainProfilesFromEditor(),
     workflow_overrides: overrides,
   };
   if (locationMode === "coordinates" && coordinateOverride) {
@@ -1120,7 +1297,12 @@ function renderWorkflow(workflow) {
   });
   renderVsitbTable(workflow.directional_vsitb || [], grouped);
   renderVdesTable(workflow.design_wind_speeds || []);
-  renderRawProvenance(workflow.variables || [], workflow.warnings || []);
+  renderRawProvenance(
+    workflow.variables || [],
+    workflow.warnings || [],
+    workflow.mixed_terrain_assessments || [],
+    workflow.input?.mixed_terrain_profiles || [],
+  );
   setRawDataEditorAvailability(
     true,
     workflowOverrides.length
@@ -2908,7 +3090,12 @@ function renderVdesTable(rows) {
   `).join("");
 }
 
-function renderRawProvenance(variables, workflowWarnings = []) {
+function renderRawProvenance(
+  variables,
+  workflowWarnings = [],
+  mixedTerrainAssessments = [],
+  mixedTerrainProfiles = [],
+) {
   if (!rawProvenance) return;
   const uniqueWarnings = [...new Set(
     [
@@ -2943,7 +3130,134 @@ function renderRawProvenance(variables, workflowWarnings = []) {
         </tbody>
       </table>
     </div>
+    ${renderMixedTerrainRawData(mixedTerrainAssessments, mixedTerrainProfiles)}
     ${warningListHtml(uniqueWarnings)}
+  `;
+}
+
+function renderMixedTerrainRawData(assessments, profiles = []) {
+  if (!assessments?.length) return "";
+  const weightedAssessments = assessments.filter(
+    (assessment) => assessment.mode !== "a0_mandatory",
+  );
+  const a0Assessments = assessments.filter(
+    (assessment) => assessment.mode === "a0_mandatory",
+  );
+  return [
+    renderWeightedMixedTerrainRawData(weightedAssessments),
+    renderA0TerrainEvidenceRawData(a0Assessments, profiles),
+  ].join("");
+}
+
+function renderWeightedMixedTerrainRawData(assessments) {
+  if (!assessments.length) return "";
+  return `
+    <h3>Clause 4.2.3 mixed-terrain calculations</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Direction</th><th>z</th><th>xi</th><th>xa</th>
+            <th>Window</th><th>Weighted Mz,cat</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${assessments.map((assessment) => `
+            <tr>
+              <th>${escapeHtml(assessment.direction)}</th>
+              <td>${Number(assessment.assessment_height_z_m).toFixed(3)} m</td>
+              <td>${Number(assessment.lag_distance_xi_m).toFixed(3)} m</td>
+              <td>${Number(assessment.averaging_distance_xa_m).toFixed(3)} m</td>
+              <td>${Number(assessment.window_start_distance_m).toFixed(3)}-${Number(assessment.window_end_distance_m).toFixed(3)} m</td>
+              <td>${Number(assessment.weighted_mzcat).toFixed(6)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+    ${assessments.map((assessment) => `
+      <details class="diagnostic-details">
+        <summary>${escapeHtml(assessment.direction)} segment contributions</summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Input interval</th><th>Included interval</th><th>Length</th>
+                <th>Weight</th><th>TC</th><th>Table Mz,cat</th><th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(assessment.contributions || []).map((item) => `
+                <tr>
+                  <td>${Number(item.start_distance_m).toFixed(3)}-${Number(item.end_distance_m).toFixed(3)} m</td>
+                  <td>${Number(item.clipped_start_distance_m).toFixed(3)}-${Number(item.clipped_end_distance_m).toFixed(3)} m</td>
+                  <td>${Number(item.included_length_m).toFixed(3)} m</td>
+                  <td>${(100 * Number(item.weight_fraction)).toFixed(3)}%</td>
+                  <td>${escapeHtml(item.terrain_category)}</td>
+                  <td>${Number(item.table_mzcat).toFixed(6)}</td>
+                  <td>${escapeHtml(item.source_reference)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `).join("")}
+  `;
+}
+
+function renderA0TerrainEvidenceRawData(assessments, profiles) {
+  if (!assessments.length) return "";
+  const profileByDirection = new Map(
+    profiles.map((profile) => [profile.direction, profile]),
+  );
+  return `
+    <h3>Region A0 mandatory Mz,cat</h3>
+    <p class="note">
+      Supplied terrain intervals are retained as signed evidence only. Region A0 uses the
+      mandatory terrain-independent Table 4.1 value; Clause 4.2.3 weighting is not applied.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Direction</th><th>Workflow reference height</th><th>Mandatory Mz,cat</th><th>Profile source</th></tr>
+        </thead>
+        <tbody>
+          ${assessments.map((assessment) => `
+            <tr>
+              <th>${escapeHtml(assessment.direction)}</th>
+              <td>${Number(assessment.assessment_height_z_m).toFixed(3)} m</td>
+              <td>${Number(assessment.weighted_mzcat).toFixed(6)}</td>
+              <td>${escapeHtml(assessment.profile_source_reference || "See signed workflow input")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+    ${assessments.map((assessment) => {
+    const profile = profileByDirection.get(assessment.direction);
+    const segments = profile?.segments || [];
+    if (!segments.length) return "";
+    return `
+        <details class="diagnostic-details">
+          <summary>${escapeHtml(assessment.direction)} signed evidence intervals</summary>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Input interval</th><th>TC</th><th>Source</th></tr></thead>
+              <tbody>
+                ${segments.map((item) => `
+                  <tr>
+                    <td>${Number(item.start_distance_m).toFixed(3)}-${Number(item.end_distance_m).toFixed(3)} m</td>
+                    <td>${escapeHtml(item.terrain_category)}</td>
+                    <td>${escapeHtml(item.source_reference)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+  }).join("")}
   `;
 }
 

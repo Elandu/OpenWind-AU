@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260729-simplified-controls-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260729-clause423-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -292,6 +292,38 @@
               />
             </label>
             </div>
+            <section class="mixed-terrain-editor" aria-labelledby="mixed-terrain-heading">
+              <div class="mixed-terrain-editor-heading">
+                <div>
+                  <h3 id="mixed-terrain-heading">Clause 4.2.3 terrain transitions</h3>
+                  <p class="note">
+                    Optional. Add ordered distance intervals measured upwind from the site.
+                    The calculation ignores xi = 20z, then weights the following
+                    xa = max(500 m, 40z). Average roof height h may be used as z only when
+                    h &le; 25 m.
+                  </p>
+                </div>
+                <button id="mixed-terrain-add" type="button" class="secondary-action">
+                  Add terrain interval
+                </button>
+              </div>
+              <div class="table-wrap">
+                <table class="mixed-terrain-input-table">
+                  <thead>
+                    <tr>
+                      <th>Direction</th><th>Start (m)</th><th>End (m)</th>
+                      <th>Terrain category</th><th>Source</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="mixed-terrain-segments">
+                    <tr class="mixed-terrain-empty">
+                      <td colspan="6">No ordered mixed-terrain intervals supplied.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p id="mixed-terrain-status" class="note" role="status" aria-live="polite"></p>
+            </section>
           </details>
           <button class="assessment-submit" type="submit">Run assessment</button>
             </form>
@@ -488,6 +520,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260729-simplified-controls-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-clause423-1"></script>
   </body>
 </html>

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
 from openwind_au.models import (
     BuildingPlanFace,
     DesignWindSpeedCandidate,
     DesignWindSpeedRow,
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
+    MixedTerrainAssessment,
     ObstructionInventoryResult,
     RegionalWindSpeedAssessment,
     SiteAnalysisResult,
@@ -46,9 +48,9 @@ from openwind_au.wind_inputs import direction_multiplier_assessment, regional_wi
 from openwind_au.wind_region import assess_wind_region
 
 DIRECTIONS: list[WindDirection] = [direction for direction, _azimuth in DIRECTION_AZIMUTHS]
-MIXED_TERRAIN_REVIEW_WARNING = (
-    "Clause 4.2.3 mixed-terrain weighted averaging is not automated; Mz,cat assumes "
-    "one reviewed or recommended category at the common reference height."
+MIXED_TERRAIN_INPUT_WARNING = (
+    "Clause 4.2.3 weighted averaging needs ordered terrain-transition distances; aggregate "
+    "sector percentages cannot establish those distances."
 )
 TOPOGRAPHIC_SECTION_REVIEW_WARNING = (
     "Clause 4.4.2 most-adverse topographic cross-section within +/-22.5 degrees and "
@@ -96,6 +98,11 @@ def run_wind_workflow(
             "site is in B1 or B2."
         )
     reject_mandatory_a0_mzcat_overrides(request, wind_region)
+    mixed_terrain = mixed_terrain_assessment_rows(
+        request,
+        wind_region,
+        mzcat_lookup,
+    )
     regional_speed = regional_speed or regional_wind_speed_assessment(
         wind_region,
         importance_level=request.importance_level,
@@ -118,6 +125,7 @@ def run_wind_workflow(
             overrides,
             class_overrides,
             mzcat_lookup,
+            mixed_terrain,
         )
     )
     variables.extend(ms_assessments(obstruction_result, overrides, class_overrides))
@@ -155,9 +163,9 @@ def run_wind_workflow(
             "engineering review."
         ),
         "Pressure calculations are not included.",
-        MIXED_TERRAIN_REVIEW_WARNING,
         TOPOGRAPHIC_SECTION_REVIEW_WARNING,
     ]
+    warnings.extend(mixed_terrain_workflow_warnings(request, wind_region, mixed_terrain))
     warnings.extend(wind_region.warnings)
     warnings.extend(regional_speed.warnings)
     warnings.extend(direction_multipliers.warnings)
@@ -185,6 +193,7 @@ def run_wind_workflow(
         direction_multiplier_assessment=direction_multipliers,
         variables=variables,
         directional_vsitb=vsitb_rows,
+        mixed_terrain_assessments=mixed_terrain,
         design_wind_speeds=design_wind_speeds,
         governing_directions=[row.direction for row in vsitb_rows if row.is_governing],
         governing_direction=exact_governing_row.direction if exact_governing_row else None,
@@ -550,6 +559,85 @@ def mc_assessment(
     return apply_override(assessment, overrides)
 
 
+def mixed_terrain_assessment_rows(
+    request: WindWorkflowRequest,
+    wind_region: WindRegionAssessment,
+    lookup_data: dict,
+) -> list[MixedTerrainAssessment]:
+    """Calculate supplied Clause 4.2.3 directional profiles in standard direction order."""
+
+    if not request.mixed_terrain_profiles:
+        return []
+    mandatory_a0 = wind_region.wind_region == "A0"
+    if not mandatory_a0:
+        if request.average_roof_height_m is None:
+            raise ValueError(
+                "average_roof_height_m is required when mixed_terrain_profiles are supplied; "
+                "Clause 4.2.3 permits average roof height h to be used as z only when h is "
+                "25 m or less."
+            )
+        if request.average_roof_height_m > 25.0:
+            raise ValueError(
+                "The workflow cannot use average roof height h as the Clause 4.2.3 assessment "
+                "height z when h exceeds 25 m. Supply height-specific mixed-terrain "
+                "calculations outside this single-height building workflow."
+            )
+        assessment_height = float(request.average_roof_height_m)
+        height_basis = "average_roof_height_h"
+    else:
+        assessment_height = request.reference_height_m
+        height_basis = "a0_workflow_reference_height"
+    profiles = {profile.direction: profile for profile in request.mixed_terrain_profiles}
+    return [
+        calculate_mixed_terrain_assessment(
+            profile=profiles[direction],
+            assessment_height_z_m=assessment_height,
+            reference_height_h_m=request.average_roof_height_m,
+            assessment_height_basis=height_basis,  # type: ignore[arg-type]
+            wind_region=wind_region.wind_region,
+            lookup_data=lookup_data,
+        )
+        for direction in DIRECTIONS
+        if direction in profiles
+    ]
+
+
+def mixed_terrain_workflow_warnings(
+    request: WindWorkflowRequest,
+    wind_region: WindRegionAssessment,
+    assessments: list[MixedTerrainAssessment],
+) -> list[str]:
+    """Describe exactly where Clause 4.2.3 was or was not applied."""
+
+    if wind_region.wind_region == "A0":
+        return []
+    assessed = {item.direction for item in assessments}
+    if not assessed:
+        return [
+            (
+                MIXED_TERRAIN_INPUT_WARNING
+                + " No ordered profiles were supplied, so all directions use one reviewed "
+                "or recommended terrain category."
+            ),
+        ]
+    missing = [direction for direction in DIRECTIONS if direction not in assessed]
+    if missing:
+        return [
+            (
+                "Clause 4.2.3 weighted averaging was applied for "
+                + ", ".join(direction for direction in DIRECTIONS if direction in assessed)
+                + "."
+            ),
+            (
+                MIXED_TERRAIN_INPUT_WARNING
+                + " Directions still using one reviewed or recommended terrain category: "
+                + ", ".join(missing)
+                + "."
+            ),
+        ]
+    return ["Clause 4.2.3 weighted averaging was applied for all eight wind directions."]
+
+
 def mzcat_assessments(
     request: WindWorkflowRequest,
     terrain_result: TerrainCategoryEvidenceResult,
@@ -557,11 +645,14 @@ def mzcat_assessments(
     overrides: dict[tuple[WindWorkflowVariable, WindDirection | None], WindVariableOverride],
     class_overrides: dict[WindDirection, WindClassMultiplierOverride],
     lookup_data: dict | None = None,
+    mixed_terrain: list[MixedTerrainAssessment] | None = None,
 ) -> list[WindVariableAssessment]:
     lookup = lookup_data if lookup_data is not None else load_mzcat_table()
+    mixed_by_direction = {assessment.direction: assessment for assessment in (mixed_terrain or [])}
     assessments = []
     for item in terrain_result.mzcat_assessment:
         class_override = class_overrides.get(item.direction)
+        mixed_assessment = mixed_by_direction.get(item.direction)
         mandatory_a0 = wind_region.wind_region == "A0"
         if mandatory_a0 and (
             overrides.get(("Mzcat", item.direction)) is not None
@@ -573,19 +664,25 @@ def mzcat_assessments(
             )
         warnings = list(item.warnings)
         calculated_value = (
-            indicative_mzcat(
-                item.recommended_terrain_category or "TC1",
-                request.reference_height_m,
-                wind_region=wind_region.wind_region,
-                lookup_data=lookup,
+            mixed_assessment.weighted_mzcat
+            if mixed_assessment is not None
+            else (
+                indicative_mzcat(
+                    item.recommended_terrain_category or "TC1",
+                    request.reference_height_m,
+                    wind_region=wind_region.wind_region,
+                    lookup_data=lookup,
+                )
+                if mandatory_a0 or item.recommended_terrain_category
+                else None
             )
-            if mandatory_a0 or item.recommended_terrain_category
-            else None
         )
         value = calculated_value
         final_label = (
             "Mandatory Region A0 Mz,cat"
             if mandatory_a0
+            else "Clause 4.2.3 weighted Mz,cat"
+            if mixed_assessment is not None
             else f"Calculated TC {item.recommended_terrain_category}"
             if calculated_value is not None
             else None
@@ -594,6 +691,19 @@ def mzcat_assessments(
         class_details: list[str] = []
         source_reference = mzcat_source_reference(lookup)
         confidence = item.recommendation_confidence
+        mixed_inputs: list[str] = []
+        if mixed_assessment is not None:
+            source_reference = mixed_assessment.lookup_source_reference
+            confidence = "medium"
+            mixed_inputs = [
+                (
+                    "Canonical Region A0 terrain evidence and mandatory Table 4.1 result: "
+                    f"mixed_terrain_assessments entry for direction {item.direction}."
+                    if mixed_assessment.mode == "a0_mandatory"
+                    else "Canonical Clause 4.2.3 geometry and contribution detail: "
+                    f"mixed_terrain_assessments entry for direction {item.direction}."
+                )
+            ]
         if class_override and class_override.terrain_category:
             class_inputs = [
                 f"Reviewed terrain category: {class_override.terrain_category}",
@@ -645,6 +755,8 @@ def mzcat_assessments(
                 else f"Mandatory Region A0 Mz,cat {value:.3f}; terrain category does not "
                 "change this value"
                 if mandatory_a0 and value is not None
+                else f"Clause 4.2.3 weighted Mz,cat {value:.3f}"
+                if mixed_assessment is not None and value is not None
                 else f"Reviewed TC {class_override.terrain_category}; Mz,cat {value:.3f}"
                 if class_override and class_override.terrain_category and value is not None
                 else (
@@ -661,43 +773,65 @@ def mzcat_assessments(
             warnings=warnings,
             evidence_link="#terrain-category-mzcat",
             source_reference=source_reference,
-            detail_label="Show details",
-            formula_basis="Mz,cat selected from terrain category inputs and height.",
-            calculation_inputs=[
-                *class_inputs,
-                f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
-                f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
-                f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
-                f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
-                f"Confidence: {item.confidence}",
-                f"Suggested terrain category range: {item.suggested_terrain_category_range}",
-                f"Assessment height: {item.assessment_height_m:.3f} m",
-                f"Wind region: {wind_region.wind_region}",
-                (
-                    "Interpolation details: "
-                    f"{item.lower_category_bound}-{item.upper_category_bound} at "
-                    f"{item.assessment_height_m:.3f} m gives indicative Mz,cat range "
-                    f"{item.lower_indicative_mzcat:.3f}-{item.upper_indicative_mzcat:.3f}"
-                ),
-            ],
-            detail_items=[
-                *class_details,
-                f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
-                f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
-                f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
-                f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
-                f"Confidence: {item.confidence}",
-                (
-                    "Interpolation details: "
-                    f"{item.lower_category_bound}-{item.upper_category_bound} at "
-                    f"{item.assessment_height_m:.3f} m gives indicative Mz,cat range "
-                    f"{item.lower_indicative_mzcat:.3f}-{item.upper_indicative_mzcat:.3f}"
-                ),
-                *item.recommendation_reasoning,
-                *item.reasoning,
-            ],
+            detail_label=(
+                "See mixed-terrain assessment" if mixed_assessment is not None else "Show details"
+            ),
+            formula_basis=(
+                "Region A0 uses the mandatory terrain-independent Table 4.1 Mz,cat at the "
+                "workflow reference height; supplied terrain segments are evidence only."
+                if mandatory_a0
+                else (
+                    "Mz,cat = sum(Mz,cat,i x xt,i) / sum(xt,i), with xi = 20z and "
+                    "xa = max(500 m, 40z), per Clause 4.2.3."
+                    if mixed_assessment is not None
+                    else "Mz,cat selected from terrain category inputs and height."
+                )
+            ),
+            calculation_inputs=(
+                mixed_inputs
+                if mixed_assessment is not None
+                else [
+                    *class_inputs,
+                    f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
+                    f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
+                    f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
+                    f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
+                    f"Confidence: {item.confidence}",
+                    f"Suggested terrain category range: {item.suggested_terrain_category_range}",
+                    f"Assessment height: {item.assessment_height_m:.3f} m",
+                    f"Wind region: {wind_region.wind_region}",
+                    (
+                        "Interpolation details: "
+                        f"{item.lower_category_bound}-{item.upper_category_bound} at "
+                        f"{item.assessment_height_m:.3f} m gives indicative Mz,cat range "
+                        f"{item.lower_indicative_mzcat:.3f}-{item.upper_indicative_mzcat:.3f}"
+                    ),
+                ]
+            ),
+            detail_items=(
+                []
+                if mixed_assessment is not None
+                else [
+                    *class_details,
+                    f"Built-up coverage: {item.built_up_area_percentage:.1f}%",
+                    f"Vegetation coverage: {item.vegetation_area_percentage:.1f}%",
+                    f"Obstruction density: {item.obstruction_density_per_km2:.1f}/km2",
+                    f"Fetch distance: {item.directional_fetch_distance_m:.1f} m",
+                    f"Confidence: {item.confidence}",
+                    (
+                        "Interpolation details: "
+                        f"{item.lower_category_bound}-{item.upper_category_bound} at "
+                        f"{item.assessment_height_m:.3f} m gives indicative Mz,cat range "
+                        f"{item.lower_indicative_mzcat:.3f}-{item.upper_indicative_mzcat:.3f}"
+                    ),
+                    *item.recommendation_reasoning,
+                    *item.reasoning,
+                ]
+            ),
             calculation_result=(
-                f"Mz,cat = {value:.3f}"
+                f"Clause 4.2.3 weighted Mz,cat = {value:.6f}"
+                if mixed_assessment is not None and not mandatory_a0 and value is not None
+                else f"Mz,cat = {value:.3f}"
                 if value is not None
                 else "Mz,cat recommendation requires review."
             ),

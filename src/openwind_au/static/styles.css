@@ -958,6 +958,64 @@ main {
   margin-top: 14px;
 }
 
+.mixed-terrain-editor {
+  margin-top: 16px;
+  border-top: 1px solid var(--panel-border);
+  padding-top: 14px;
+}
+
+.mixed-terrain-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.mixed-terrain-editor-heading h3 {
+  margin: 0 0 4px;
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.mixed-terrain-editor-heading p {
+  margin: 0;
+  max-width: 760px;
+}
+
+.mixed-terrain-editor .secondary-action,
+.mixed-terrain-remove {
+  margin-top: 0;
+  border: 1px solid var(--engineering-blue);
+  background: #ffffff;
+  color: var(--engineering-blue);
+  white-space: nowrap;
+}
+
+.mixed-terrain-editor .secondary-action:hover,
+.mixed-terrain-remove:hover {
+  background: #eff4ff;
+}
+
+.mixed-terrain-input-table input,
+.mixed-terrain-input-table select {
+  width: 100%;
+  min-width: 90px;
+  padding: 7px 8px;
+}
+
+.mixed-terrain-input-table input[data-mixed-source] {
+  min-width: 180px;
+}
+
+.mixed-terrain-remove {
+  padding: 7px 9px;
+}
+
+.mixed-terrain-empty td {
+  color: var(--muted-ink);
+  text-align: center;
+}
+
 .form-details summary,
 .diagnostic-details summary,
 .panel > details > summary {

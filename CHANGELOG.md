@@ -2,7 +2,7 @@
 
 All notable project milestones are documented here.
 
-## v0.8.0 (unreleased) - Standards Provenance And Preliminary-Issue Guardrails
+## v0.8.0 (unreleased) - Standards Provenance And Workflow Guardrails
 
 - Corrected the mandatory Clause 2.2 site-wind product to include the Clause 3.4/Table 3.3
   climate-change multiplier `Mc`. B2, C and D now receive the required 1.05 multiplier, generic
@@ -14,6 +14,12 @@ All notable project milestones are documented here.
   combined MCP tool now distinguishes average roof height from overall building height.
 - Moved Table 4.1 `Mz,cat` and Table 4.2 `Ms` values into structured, digest-protected packaged
   lookup assets with deployment overrides, explicit pending-review status, and readiness checks.
+- Added Clause 4.2.3 distance-weighted `Mz,cat` for complete ordered, contiguous,
+  source-referenced non-A0 terrain-transition profiles, including signed workflow results, REST
+  and MCP entry points, report contribution tables, and fail-closed coverage validation. A0 keeps
+  its mandatory terrain-independent value; supplied A0 profiles are evidence-only, may be
+  incomplete, use the workflow reference height, and are not distance-weighted. Aggregate GIS
+  sector evidence is not used to infer transition distances.
 - Centralised `Vsit,b` multiplication across the web workflow and MCP tools, preserving full
   multiplier and product precision for governing-direction selection, retaining every tied
   governing direction, and formatting reports to three decimal places.
@@ -24,15 +30,17 @@ All notable project milestones are documented here.
   when the upwind building top exceeds the subject building, with an explicit review warning.
 - Rejected unknown wind regions in direct `Mz,cat` and `Mt` calculations instead of silently
   applying the ordinary Australian-region path.
-- Restricted workflow issue states to draft or reviewed preliminary output. Reviewed output now
-  requires a reviewer and notes; final/certified status is rejected on calculation and report
-  routes.
-- Added prominent preliminary/not-for-certification markings to HTML and PDF reports and removed
-  duplicated status, notes, and override collections from workflow result payloads. Reports now
-  distinguish calculated `Vsit,b` from a reviewed direct override, show effective `VR`, disclose
-  numeric class-multiplier overrides, and state the common reference height and reviewed base RL.
-- Added browser reviewer/notes controls and server-issued integrity tokens for completed-result
-  report routes, preventing modified workflow payloads from being rendered as authentic results.
+- Retained optional `assessment_status`, `reviewed_by`, and `engineer_notes` as
+  legacy/API-compatibility request metadata. The browser has no review or issue-status controls and
+  omits these fields; the server defaults `assessment_status` to `draft`. `reviewed` API input still
+  requires a reviewer and notes, while `final` is rejected by request validation. These fields do
+  not create a report issue status or certification label.
+- Removed certification and issue-status wording from HTML and PDF reports and removed duplicated
+  status, notes, and override collections from workflow result payloads. Reports distinguish
+  calculated `Vsit,b` from a reviewed direct override, show effective `VR`, disclose numeric
+  class-multiplier overrides, and state the common reference height and reviewed base RL.
+- Added server-issued integrity tokens for completed-result report routes, preventing modified
+  browser/API payloads from being rendered as authentic results.
 - Removed the unused legacy workflow report renderer and documented the breaking completed-result
   payload transition from `0.7.x`; clients must rerun workflows before using `0.8.0` report routes.
 - Hid all wind-region and obstruction diagnostic routes by default, removed local GIS paths and

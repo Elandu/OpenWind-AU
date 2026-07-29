@@ -254,3 +254,138 @@ def test_wind_workflow_retains_legacy_building_dimensions_when_structured_absent
     )
 
     assert request.building_dimensions == "12 m x 8 m"
+
+
+def test_wind_workflow_accepts_ordered_mixed_terrain_profiles() -> None:
+    request = WindWorkflowRequest.model_validate(
+        {
+            "latitude": -34.550445,
+            "longitude": 150.848728,
+            "building_height_m": 10.0,
+            "average_roof_height_m": 10.0,
+            "mixed_terrain_profiles": [
+                {
+                    "direction": "N",
+                    "source_reference": "Reviewed transition schedule",
+                    "segments": [
+                        {
+                            "start_distance_m": 200.0,
+                            "end_distance_m": 450.0,
+                            "terrain_category": "TC2",
+                            "source_reference": "Survey A",
+                        },
+                        {
+                            "start_distance_m": 450.0,
+                            "end_distance_m": 700.0,
+                            "terrain_category": "TC3",
+                            "source_reference": "Survey B",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert request.mixed_terrain_profiles[0].direction == "N"
+    assert [segment.terrain_category for segment in request.mixed_terrain_profiles[0].segments] == [
+        "TC2",
+        "TC3",
+    ]
+
+
+@pytest.mark.parametrize("second_start", [449.0, 451.0])
+def test_mixed_terrain_profile_rejects_overlaps_and_gaps(second_start: float) -> None:
+    with pytest.raises(ValidationError, match="ordered and contiguous"):
+        WindWorkflowRequest.model_validate(
+            {
+                "latitude": -34.550445,
+                "longitude": 150.848728,
+                "building_height_m": 10.0,
+                "mixed_terrain_profiles": [
+                    {
+                        "direction": "N",
+                        "segments": [
+                            {
+                                "start_distance_m": 200.0,
+                                "end_distance_m": 450.0,
+                                "terrain_category": "TC2",
+                                "source_reference": "Survey A",
+                            },
+                            {
+                                "start_distance_m": second_start,
+                                "end_distance_m": 700.0,
+                                "terrain_category": "TC3",
+                                "source_reference": "Survey B",
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "class_override",
+    [
+        {"terrain_category": "TC3", "reason": "Conflicting terrain input"},
+        {
+            "terrain_category": "TC3",
+            "mzcat": 0.9,
+            "reason": "Conflicting class multiplier input",
+        },
+    ],
+)
+def test_mixed_terrain_profile_rejects_same_direction_terrain_class_override(
+    class_override: dict,
+) -> None:
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        WindWorkflowRequest.model_validate(
+            {
+                "latitude": -34.550445,
+                "longitude": 150.848728,
+                "building_height_m": 10.0,
+                "mixed_terrain_profiles": [
+                    {
+                        "direction": "N",
+                        "segments": [
+                            {
+                                "start_distance_m": 200.0,
+                                "end_distance_m": 700.0,
+                                "terrain_category": "TC2",
+                                "source_reference": "Survey A",
+                            }
+                        ],
+                    }
+                ],
+                "class_multiplier_overrides": [
+                    {
+                        "direction": "N",
+                        **class_override,
+                    }
+                ],
+            }
+        )
+
+
+def test_mixed_terrain_profiles_reject_duplicate_directions() -> None:
+    profile = {
+        "direction": "N",
+        "segments": [
+            {
+                "start_distance_m": 200.0,
+                "end_distance_m": 700.0,
+                "terrain_category": "TC2",
+                "source_reference": "Reviewed survey segment",
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="duplicate directions"):
+        WindWorkflowRequest.model_validate(
+            {
+                "latitude": -34.550445,
+                "longitude": 150.848728,
+                "building_height_m": 10.0,
+                "mixed_terrain_profiles": [profile, profile],
+            }
+        )

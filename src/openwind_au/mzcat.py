@@ -13,6 +13,7 @@ from openwind_au.models import (
     SiteAnalysisRequest,
     SiteLocation,
     TerrainCategoryDirectionEvidence,
+    WindRegionAssessment,
 )
 from openwind_au.standard_calculations import SUPPORTED_AU_WIND_REGIONS
 from openwind_au.standard_lookup_tables import (
@@ -29,7 +30,6 @@ from openwind_au.standard_lookup_tables import (
     source_reference,
     trusted_values_sha256,
 )
-from openwind_au.wind_region import assess_wind_region
 
 SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = (
     "TC1",
@@ -40,6 +40,16 @@ SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = (
     "TC3.5",
     "TC4",
 )
+
+
+def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
+    """Resolve a site's wind region without importing GIS dependencies at module load."""
+
+    from openwind_au.wind_region import assess_wind_region as resolve_wind_region
+
+    return resolve_wind_region(site)
+
+
 TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
 TABLE_HEIGHTS_M: tuple[float, ...] = (
     3.0,

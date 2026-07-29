@@ -8,16 +8,19 @@ It does not:
 
 - calculate serviceability `Vdes,theta` from a separate full set of directional serviceability
   site speeds;
-- automate the Clause 4.2.3 weighted average across mixed-terrain fetches; the workflow evaluates
-  one reviewed or recommended terrain category at the common reference height;
+- infer Clause 4.2.3 terrain-transition distances from aggregate sector evidence; for non-A0
+  regions, the distance-weighted calculation is automated when complete ordered, contiguous,
+  source-referenced `mixed_terrain_profiles` are supplied, while directions without profiles use
+  one reviewed or recommended terrain category; A0 profiles are evidence-only and do not replace
+  or weight its mandatory terrain-independent value;
 - interpolate Region C or D regional wind speed between a smooth coastline and the inland boundary;
   it uses the applicable tabulated-region maximum and emits a review warning;
 - automate selection of the most adverse Clause 4.4.2 topographic cross-section within +/-22.5
   degrees or confirm the downwind-slope eligibility criterion for an escarpment;
 - certify its preliminary Clause 4.4 `Mt` calculations without engineer review of the
   DEM-derived `H`, `Lu`, `x`, feature type, and reference height;
-- assign a final terrain category;
-- calculate final `Mz,cat` design values;
+- assign a final terrain category from aggregate map evidence alone; reviewed single-category
+  inputs or complete non-A0 Clause 4.2.3 transition profiles drive the workflow `Mz,cat` value;
 - calculate certified shielding multipliers;
 - calculate design wind pressures;
 - produce AS 4055 wind classifications;
@@ -59,6 +62,8 @@ Outputs should be treated as screening information only. A competent engineer sh
   adjustment;
 - preliminary shielding sectors and any obstruction heights used for indicative `Ms`;
 - terrain category evidence ranges, scoring components, and confidence warnings;
+- every supplied Clause 4.2.3 transition distance, terrain category, and source reference, and
+  whether the complete averaging window is covered;
 - height-source summaries, confidence flags, and review-required obstruction records;
 - DSM-DTM warnings such as missing datasets, negative estimates, extreme estimates, or low
   confidence estimates;

@@ -16,9 +16,12 @@ from pydantic import Field
 from typing_extensions import TypedDict
 
 from openwind_au import __version__
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
 from openwind_au.models import (
     ClimateChangeWindRegionLabel,
     ExposureWindRegionLabel,
+    MixedTerrainProfile,
+    MixedTerrainSegment,
     SpecificWindRegionLabel,
     TerrainCategoryLabel,
     WindDirection,
@@ -107,6 +110,11 @@ ShieldingMultiplierValue = Annotated[
     Field(strict=True, gt=0, le=1, allow_inf_nan=False),
 ]
 StrictBoolean = Annotated[bool, Field(strict=True)]
+MixedTerrainSegments = Annotated[
+    list[MixedTerrainSegment],
+    Field(min_length=1, max_length=256),
+]
+ProfileSourceReference = Annotated[str | None, Field(max_length=1_000)]
 
 
 class CalculationResult(TypedDict):
@@ -292,10 +300,59 @@ def calculate_terrain_height_multiplier(
             "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
         },
         warnings=[
-            "The terrain category and any mixed-fetch weighted averaging must be "
-            "reviewed separately.",
+            "This single-category tool does not perform Clause 4.2.3 weighting; use "
+            "calculate_mixed_terrain_height_multiplier when a complete reviewed transition "
+            "schedule is available.",
             *mzcat_lookup_warnings(lookup),
         ],
+    )
+
+
+@mcp.tool()
+def calculate_mixed_terrain_height_multiplier(
+    direction: WindDirection,
+    assessment_height_z_m: PositiveHeight,
+    wind_region: ExposureWindRegionLabel,
+    segments: MixedTerrainSegments,
+    profile_source_reference: ProfileSourceReference = None,
+) -> CalculationResult:
+    """Calculate Clause 4.2.3 Mz,cat from ordered upwind terrain transitions."""
+
+    height = _finite_value(
+        "Assessment height z",
+        assessment_height_z_m,
+        minimum=0,
+        maximum=200,
+        minimum_inclusive=False,
+    )
+    profile = MixedTerrainProfile(
+        direction=direction,
+        segments=segments,
+        source_reference=profile_source_reference,
+    )
+    lookup = load_mzcat_table()
+    assessment = calculate_mixed_terrain_assessment(
+        profile=profile,
+        assessment_height_z_m=height,
+        assessment_height_basis="explicit_height_z",
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
+    return _result(
+        clause="Clause 4.2.3; Table 4.1",
+        inputs={
+            "direction": direction,
+            "assessment_height_z_m": height,
+            "wind_region": wind_region,
+            "segments": [segment.model_dump(mode="json") for segment in segments],
+            "profile_source_reference": profile.source_reference,
+        },
+        outputs={
+            "mzcat": assessment.weighted_mzcat,
+            "mixed_terrain_assessment": assessment.model_dump(mode="json"),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
+        warnings=[*assessment.warnings, *mzcat_lookup_warnings(lookup)],
     )
 
 

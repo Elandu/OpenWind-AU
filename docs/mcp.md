@@ -79,6 +79,9 @@ directly in that case:
 - `calculate_climate_change_multiplier`: Clause 3.4/Table 3.3 `Mc` for a reviewed region.
 - `get_direction_multipliers`: Table 3.2(A) multipliers for all eight directions.
 - `calculate_terrain_height_multiplier`: Table 4.1 height/category interpolation and A0 rules.
+- `calculate_mixed_terrain_height_multiplier`: Clause 4.2.3 assessment for one ordered,
+  source-referenced upwind terrain-transition profile, with complete coverage required for
+  non-A0 weighting and evidence-only handling for A0.
 - `calculate_shielding_multiplier`: Table 4.2 interpolation, with `Ms = 1.0` for `h > 25 m`.
 - `calculate_topographic_wind_multiplier`: Clause 4.4 calculation with intermediate values.
 - `calculate_site_wind_speed`: reviewed-input Clause 2.2
@@ -87,6 +90,56 @@ directly in that case:
   `Vdes,theta` results from a front `beta` and the eight cardinal `Vsit,b` values, including
   circular linear interpolation and the 30 m/s ultimate minimum.
 - `calculate_all_wind_variables`: a traceable combined result for one direction.
+
+The mixed-terrain tool accepts one `direction`, an explicit `assessment_height_z_m`, a reviewed
+`wind_region`, and ordered `segments`. For non-A0 regions at height `z`, the segments must
+continuously cover `[20z, 20z + max(500 m, 40z))`; distances are measured from the site and every
+segment requires a source reference. For A0, the explicit `z` selects the mandatory
+terrain-independent Table 4.1 value; supplied segments are unweighted evidence and may cover less
+than that window, but must still be ordered, contiguous, and source-referenced. The standalone
+tool uses an explicit height-specific `z`, so the web workflow's `h <= 25 m` restriction on using
+average roof height does not apply to this tool. It supports the Table 4.1 height range through
+200 m.
+
+For `z = 10 m`, the complete averaging window is 200-700 m. A JSON-RPC MCP `tools/call` request
+uses:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "calculate_mixed_terrain_height_multiplier",
+    "arguments": {
+      "direction": "N",
+      "assessment_height_z_m": 10,
+      "wind_region": "A2",
+      "profile_source_reference": "Reviewed transition schedule W-04 rev C",
+      "segments": [
+        {
+          "start_distance_m": 200,
+          "end_distance_m": 450,
+          "terrain_category": "TC2",
+          "source_reference": "W-04 rev C, N segment 1"
+        },
+        {
+          "start_distance_m": 450,
+          "end_distance_m": 700,
+          "terrain_category": "TC3",
+          "source_reference": "W-04 rev C, N segment 2"
+        }
+      ]
+    }
+  }
+}
+```
+
+This example returns a weighted `Mz,cat` of `0.915` with clipped distances, weight fractions,
+Table 4.1 values, weighted contributions, lookup provenance, and the supplied source references.
+Call the tool once per direction. The MCP tool intentionally accepts `segments` directly rather
+than the REST workflow's `mixed_terrain_profiles` wrapper. Neither entry point detects terrain
+transitions from aggregate GIS sector evidence.
 
 The combined tool requires a `wind_direction_multiplier_case`. It also accepts the optional
 `structure_class` value `building`, `house`, `monopole`, `tower`, or `other`. It enforces

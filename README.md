@@ -50,6 +50,10 @@ certified design tool. Suitable for exploration, review, contribution, and regre
   AS/NZS 1170.2:2021 Clause 4.4 equations, including Australian A0 and A4 adjustments.
 - Generates directional terrain category evidence for engineer review, including built-up,
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
+- Calculates Clause 4.2.3 distance-weighted `Mz,cat` for supplied complete, ordered,
+  source-referenced non-A0 terrain-transition profiles. Region A0 keeps its mandatory
+  terrain-independent value and treats supplied profiles as evidence only; aggregate GIS sector
+  evidence does not infer transition distances.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
 - Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, `Vsit,b`, and Clause 2.3
@@ -61,7 +65,8 @@ OpenWind-AU does not produce:
 
 - certified topographic multipliers without review of the DEM-derived feature geometry;
 - final terrain category assignments;
-- final `Mz,cat` design values;
+- automatic terrain-transition detection from aggregate built-up, vegetation, or open-terrain
+  sector percentages;
 - design wind pressures;
 - AS 4055 wind classifications;
 - certified shielding multiplier `Ms`;
@@ -218,7 +223,7 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
-- [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-preliminary-issue-guardrails)
+- [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-workflow-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
 ## API Overview

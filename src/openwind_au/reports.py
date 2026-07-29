@@ -2030,7 +2030,7 @@ def _workflow_warning_priority(warning: str) -> int:
     normalized = warning.lower()
     if "coastal vr interpolation" in normalized or "smoothed coastline" in normalized:
         return 0
-    if "clause 4.2.3 mixed-terrain" in normalized:
+    if "clause 4.2.3" in normalized:
         return 1
     if "clause 4.4.2 most-adverse" in normalized:
         return 2
@@ -2229,6 +2229,148 @@ def render_wind_workflow_pdf_report(
             },
         )
     )
+    if result.mixed_terrain_assessments:
+        weighted_assessments = [
+            assessment
+            for assessment in result.mixed_terrain_assessments
+            if assessment.mode != "a0_mandatory"
+        ]
+        a0_assessments = [
+            assessment
+            for assessment in result.mixed_terrain_assessments
+            if assessment.mode == "a0_mandatory"
+        ]
+        if weighted_assessments:
+            mixed_summary_rows = [["Dir.", "z", "xi", "xa", "Averaging window", "Mz,cat"]]
+            mixed_summary_rows.extend(
+                [
+                    assessment.direction,
+                    f"{assessment.assessment_height_z_m:.2f} m",
+                    f"{assessment.lag_distance_xi_m:.1f} m",
+                    f"{assessment.averaging_distance_xa_m:.1f} m",
+                    (
+                        f"{assessment.window_start_distance_m:.1f}-"
+                        f"{assessment.window_end_distance_m:.1f} m"
+                    ),
+                    f"{assessment.weighted_mzcat:.6f}",
+                ]
+                for assessment in weighted_assessments
+            )
+            story.append(
+                KeepTogether(
+                    [
+                        Paragraph("Clause 4.2.3 mixed-terrain Mz,cat", section_style),
+                        Paragraph(
+                            "Terrain inside xi = 20z is ignored. Table 4.1 values are weighted "
+                            "over xa = max(500 m, 40z).",
+                            muted_style,
+                        ),
+                        _wind_pdf_table(
+                            mixed_summary_rows,
+                            [14 * mm, 22 * mm, 24 * mm, 26 * mm, 55 * mm, 37 * mm],
+                            header=True,
+                        ),
+                    ]
+                )
+            )
+            contribution_rows = [
+                [
+                    "Dir.",
+                    "Input interval",
+                    "Included interval",
+                    "Length",
+                    "Weight",
+                    "TC",
+                    "Table Mz,cat",
+                    "Source",
+                ]
+            ]
+            for assessment in weighted_assessments:
+                contribution_rows.extend(
+                    [
+                        assessment.direction,
+                        f"{item.start_distance_m:.1f}-{item.end_distance_m:.1f} m",
+                        (
+                            f"{item.clipped_start_distance_m:.1f}-"
+                            f"{item.clipped_end_distance_m:.1f} m"
+                        ),
+                        f"{item.included_length_m:.1f} m",
+                        f"{100 * item.weight_fraction:.2f}%",
+                        item.terrain_category,
+                        f"{item.table_mzcat:.6f}",
+                        item.source_reference,
+                    ]
+                    for item in assessment.contributions
+                )
+            story.append(
+                _wind_pdf_table(
+                    contribution_rows,
+                    [
+                        10 * mm,
+                        24 * mm,
+                        27 * mm,
+                        18 * mm,
+                        16 * mm,
+                        13 * mm,
+                        23 * mm,
+                        47 * mm,
+                    ],
+                    header=True,
+                )
+            )
+        if a0_assessments:
+            a0_summary_rows = [
+                ["Dir.", "Workflow reference height", "Mandatory Mz,cat", "Profile source"]
+            ]
+            a0_summary_rows.extend(
+                [
+                    assessment.direction,
+                    f"{assessment.assessment_height_z_m:.2f} m",
+                    f"{assessment.weighted_mzcat:.6f}",
+                    assessment.profile_source_reference or "See signed workflow input",
+                ]
+                for assessment in a0_assessments
+            )
+            story.append(
+                KeepTogether(
+                    [
+                        Paragraph("Region A0 mandatory Mz,cat", section_style),
+                        Paragraph(
+                            "Supplied terrain intervals are retained as signed evidence only. "
+                            "Region A0 uses the mandatory terrain-independent Table 4.1 value; "
+                            "Clause 4.2.3 weighting is not applied.",
+                            muted_style,
+                        ),
+                        _wind_pdf_table(
+                            a0_summary_rows,
+                            [14 * mm, 42 * mm, 35 * mm, 87 * mm],
+                            header=True,
+                        ),
+                    ]
+                )
+            )
+            profile_by_direction = {
+                profile.direction: profile for profile in result.input.mixed_terrain_profiles
+            }
+            evidence_rows = [["Dir.", "Input interval", "TC", "Source"]]
+            for assessment in a0_assessments:
+                profile = profile_by_direction[assessment.direction]
+                evidence_rows.extend(
+                    [
+                        assessment.direction,
+                        f"{segment.start_distance_m:.1f}-{segment.end_distance_m:.1f} m",
+                        segment.terrain_category,
+                        segment.source_reference,
+                    ]
+                    for segment in profile.segments
+                )
+            story.append(
+                _wind_pdf_table(
+                    evidence_rows,
+                    [14 * mm, 38 * mm, 22 * mm, 104 * mm],
+                    header=True,
+                )
+            )
     if result.design_wind_speeds:
         story.extend(
             [
@@ -4433,6 +4575,109 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
         {% endfor %}
       </table>
     </section>
+    {% endif %}
+
+    {% if result.mixed_terrain_assessments %}
+    {% if result.mixed_terrain_assessments[0].mode == "a0_mandatory" %}
+    <section>
+      <h2>Region A0 mandatory Mz,cat</h2>
+      <p class="note">
+        Supplied terrain intervals are retained as signed evidence only. Region A0 uses the
+        mandatory terrain-independent Table 4.1 value; Clause 4.2.3 weighting is not applied.
+      </p>
+      <table>
+        <tr>
+          <th>Direction</th><th>Workflow reference height</th>
+          <th>Mandatory Mz,cat</th><th>Profile source</th>
+        </tr>
+        {% for assessment in result.mixed_terrain_assessments %}
+        <tr>
+          <td>{{ assessment.direction }}</td>
+          <td>{{ "%.3f"|format(assessment.assessment_height_z_m) }} m</td>
+          <td>{{ "%.6f"|format(assessment.weighted_mzcat) }}</td>
+          <td>{{ (assessment.profile_source_reference or "See signed workflow input")|e }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% for assessment in result.mixed_terrain_assessments %}
+      <details>
+        <summary>{{ assessment.direction }} signed evidence intervals</summary>
+        <table>
+          <tr><th>Input interval</th><th>Terrain category</th><th>Source</th></tr>
+          {% for profile in result.input.mixed_terrain_profiles %}
+          {% if profile.direction == assessment.direction %}
+          {% for item in profile.segments %}
+          <tr>
+            <td>
+              {{ "%.3f"|format(item.start_distance_m) }} to
+              {{ "%.3f"|format(item.end_distance_m) }} m
+            </td>
+            <td>{{ item.terrain_category }}</td>
+            <td>{{ item.source_reference|e }}</td>
+          </tr>
+          {% endfor %}
+          {% endif %}
+          {% endfor %}
+        </table>
+      </details>
+      {% endfor %}
+    </section>
+    {% else %}
+    <section>
+      <h2>Clause 4.2.3 mixed-terrain Mz,cat</h2>
+      <p class="note">
+        Terrain inside xi = 20z is ignored. Table 4.1 values are distance-weighted over
+        xa = max(500 m, 40z).
+      </p>
+      <table>
+        <tr>
+          <th>Direction</th><th>z</th><th>xi</th><th>xa</th>
+          <th>Averaging window</th><th>Weighted Mz,cat</th>
+        </tr>
+        {% for assessment in result.mixed_terrain_assessments %}
+        <tr>
+          <td>{{ assessment.direction }}</td>
+          <td>{{ "%.3f"|format(assessment.assessment_height_z_m) }} m</td>
+          <td>{{ "%.3f"|format(assessment.lag_distance_xi_m) }} m</td>
+          <td>{{ "%.3f"|format(assessment.averaging_distance_xa_m) }} m</td>
+          <td>
+            {{ "%.3f"|format(assessment.window_start_distance_m) }} to
+            {{ "%.3f"|format(assessment.window_end_distance_m) }} m
+          </td>
+          <td>{{ "%.6f"|format(assessment.weighted_mzcat) }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% for assessment in result.mixed_terrain_assessments %}
+      <details>
+        <summary>{{ assessment.direction }} segment contributions</summary>
+        <table>
+          <tr>
+            <th>Input interval</th><th>Included interval</th><th>Included length</th>
+            <th>Weight</th><th>Terrain category</th><th>Table 4.1 Mz,cat</th><th>Source</th>
+          </tr>
+          {% for item in assessment.contributions %}
+          <tr>
+            <td>
+              {{ "%.3f"|format(item.start_distance_m) }} to
+              {{ "%.3f"|format(item.end_distance_m) }} m
+            </td>
+            <td>
+              {{ "%.3f"|format(item.clipped_start_distance_m) }} to
+              {{ "%.3f"|format(item.clipped_end_distance_m) }} m
+            </td>
+            <td>{{ "%.3f"|format(item.included_length_m) }} m</td>
+            <td>{{ "%.3f"|format(100 * item.weight_fraction) }}%</td>
+            <td>{{ item.terrain_category }}</td>
+            <td>{{ "%.6f"|format(item.table_mzcat) }}</td>
+            <td>{{ item.source_reference|e }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </details>
+      {% endfor %}
+    </section>
+    {% endif %}
     {% endif %}
 
     <section>

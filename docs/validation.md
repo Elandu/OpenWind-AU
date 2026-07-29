@@ -84,6 +84,8 @@ Overpass data. They validate covered implementation details such as:
 
 - indicative `Ms` interpolation thresholds;
 - Table 4.1 nodes, combined height/category interpolation, and Region A0 rules;
+- Clause 4.2.3 `xi`/`xa` geometry, complete-window validation, segment clipping, distance weights,
+  mixed and homogeneous profiles, A0 handling, REST/MCP results, and signed-result tamper checks;
 - a synthetic Region A2 serviceability regional wind speed check of 37 m/s;
 - Clause 4.4 `Mt` calculations including Region A0 and high-elevation Region A4 adjustments;
 - the Table 3.3 `Mc` mapping and a full-precision

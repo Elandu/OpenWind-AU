@@ -1026,12 +1026,12 @@ test("changing project identity clears coordinates and workflow overrides", () =
   assert.equal(harness.localStorage.getItem(PROJECT_NUMBER_KEY), "OW-202");
 });
 
-test("workflow stays draft without review controls or directional nudge UI", () => {
+test("workflow omits review compatibility fields and directional nudge UI", () => {
   const harness = createHarness();
   const payload = JSON.parse(harness.evaluate("JSON.stringify(workflowPayload())"));
   const mapHtml = harness.evaluate('initialMapHtml("Drag QA")');
 
-  assert.equal(payload.assessment_status, "draft");
+  assert.equal(Object.hasOwn(payload, "assessment_status"), false);
   assert.equal(Object.hasOwn(payload, "reviewed_by"), false);
   assert.equal(Object.hasOwn(payload, "engineer_notes"), false);
   assert.doesNotMatch(
@@ -1383,6 +1383,9 @@ test("address-only fallback adopts resolved coordinates before report fingerprin
 
   assert.equal(harness.evaluate("__requestPayload.latitude"), undefined);
   assert.equal(harness.evaluate("__requestPayload.longitude"), undefined);
+  harness.element("report-status").textContent = (
+    "Inputs changed. Run the assessment again before generating reports."
+  );
 
   await harness.evaluate(
     "runWorkflowFallback(new Error('stream unavailable'), __requestPayload, workflowRunId, new AbortController().signal)",
@@ -1426,6 +1429,9 @@ test("fallback map failure preserves the completed assessment and resolved profi
       ground_elevation_m: 12,
     },
   };
+  harness.element("report-status").textContent = (
+    "Inputs changed. Run the assessment again before generating reports."
+  );
   harness.evaluate(`
     globalThis.__presentationRequests = [];
     postJson = async function (url, payload) {
@@ -1511,6 +1517,10 @@ test("stream map failure preserves a completed assessment and report controls", 
     }, workflowRunId, __requestPayload, __streamSignal);
   `);
   assert.equal(harness.evaluate("assessmentIsCurrent()"), true);
+  assert.equal(
+    harness.element("report-status").textContent,
+    "Reports are ready for the current assessment.",
+  );
 
   harness.evaluate(`
     handleWorkflowStreamEvent({
@@ -1982,18 +1992,174 @@ test("raw provenance includes and deduplicates workflow-level standards warnings
     warnings: ["Variable-specific review warning."],
   }];
   harness.context.__workflowWarnings = [
-    "Clause 4.2.3 mixed-terrain weighted averaging is not automated.",
+    "Clause 4.2.3 weighted averaging needs ordered terrain-transition distances.",
     "Clause 4.4.2 most-adverse topographic cross-section is not automated.",
-    "Clause 4.2.3 mixed-terrain weighted averaging is not automated.",
+    "Clause 4.2.3 weighted averaging needs ordered terrain-transition distances.",
   ];
 
   harness.evaluate("renderRawProvenance(__variables, __workflowWarnings)");
 
   const html = harness.element("raw-provenance").innerHTML;
-  assert.match(html, /Clause 4\.2\.3 mixed-terrain weighted averaging is not automated/);
+  assert.match(html, /Clause 4\.2\.3 weighted averaging needs ordered terrain-transition distances/);
   assert.match(html, /Clause 4\.4\.2 most-adverse topographic cross-section is not automated/);
   assert.match(html, /Variable-specific review warning/);
   assert.equal((html.match(/Clause 4\.2\.3/g) || []).length, 1);
+});
+
+test("raw provenance shows one mixed-terrain summary and non-redundant contributions", () => {
+  const harness = createHarness();
+  harness.context.__mixedTerrain = [{
+    direction: "N",
+    mode: "mixed_weighted",
+    assessment_height_z_m: 10,
+    lag_distance_xi_m: 200,
+    averaging_distance_xa_m: 500,
+    window_start_distance_m: 200,
+    window_end_distance_m: 700,
+    weighted_mzcat: 0.915,
+    contributions: [
+      {
+        start_distance_m: 200,
+        end_distance_m: 450,
+        clipped_start_distance_m: 200,
+        clipped_end_distance_m: 450,
+        included_length_m: 250,
+        weight_fraction: 0.5,
+        terrain_category: "TC2",
+        table_mzcat: 1,
+        source_reference: "Survey A",
+      },
+      {
+        start_distance_m: 450,
+        end_distance_m: 700,
+        clipped_start_distance_m: 450,
+        clipped_end_distance_m: 700,
+        included_length_m: 250,
+        weight_fraction: 0.5,
+        terrain_category: "TC3",
+        table_mzcat: 0.83,
+        source_reference: "Survey B",
+      },
+    ],
+  }];
+
+  harness.evaluate("renderRawProvenance([], [], __mixedTerrain)");
+
+  const html = harness.element("raw-provenance").innerHTML;
+  assert.match(html, /Clause 4\.2\.3 mixed-terrain calculations/);
+  assert.match(html, /200\.000-700\.000 m/);
+  assert.match(html, /Survey A/);
+  assert.match(html, /Survey B/);
+  assert.equal((html.match(/0\.915000/g) || []).length, 1);
+});
+
+test("raw provenance presents Region A0 profiles as unweighted signed evidence", () => {
+  const harness = createHarness();
+  harness.context.__a0Terrain = [{
+    direction: "N",
+    mode: "a0_mandatory",
+    assessment_height_z_m: 10,
+    weighted_mzcat: 1.0,
+    profile_source_reference: "A0 evidence schedule",
+    contributions: [],
+  }];
+  harness.context.__a0Profiles = [{
+    direction: "N",
+    segments: [{
+      start_distance_m: 0,
+      end_distance_m: 100,
+      terrain_category: "TC4",
+      source_reference: "Survey evidence A",
+    }],
+  }];
+
+  harness.evaluate("renderRawProvenance([], [], __a0Terrain, __a0Profiles)");
+
+  const html = harness.element("raw-provenance").innerHTML;
+  assert.match(html, /Region A0 mandatory Mz,cat/);
+  assert.match(html, /signed evidence only/);
+  assert.match(html, /Clause 4\.2\.3 weighting is not applied/);
+  assert.match(html, /Survey evidence A/);
+  assert.doesNotMatch(html, /<th>xi<\/th>|<th>xa<\/th>|Weighted Mz,cat|50\.000%/);
+});
+
+test("mixed-terrain blank distances stay null and are required", () => {
+  const harness = createHarness();
+  harness.evaluate(`
+    globalThis.__mixedStart = document.getElementById("mixed-start-test");
+    globalThis.__mixedEnd = document.getElementById("mixed-end-test");
+    globalThis.__mixedDirection = document.getElementById("mixed-direction-test");
+    globalThis.__mixedCategory = document.getElementById("mixed-category-test");
+    globalThis.__mixedSource = document.getElementById("mixed-source-test");
+    __mixedStart.value = "";
+    __mixedEnd.value = "";
+    __mixedDirection.value = "N";
+    __mixedCategory.value = "TC2";
+    __mixedSource.value = "Survey evidence";
+    globalThis.__mixedRow = {
+      querySelector(selector) {
+        return ({
+          "[data-mixed-start]": __mixedStart,
+          "[data-mixed-end]": __mixedEnd,
+          "[data-mixed-direction]": __mixedDirection,
+          "[data-mixed-category]": __mixedCategory,
+          "[data-mixed-source]": __mixedSource,
+        })[selector] || null;
+      },
+    };
+    mixedTerrainRows = function () { return [__mixedRow]; };
+  `);
+
+  const messages = JSON.parse(
+    harness.evaluate("JSON.stringify(validateMixedTerrainInputs())"),
+  );
+  const profiles = JSON.parse(
+    harness.evaluate("JSON.stringify(mixedTerrainProfilesFromEditor())"),
+  );
+  assert.match(messages[0], /start is required/);
+  assert.equal(profiles[0].segments[0].start_distance_m, null);
+  assert.equal(profiles[0].segments[0].end_distance_m, null);
+  assert.match(SCRIPT_SOURCE, /data-mixed-start[^>]*required/);
+  assert.match(SCRIPT_SOURCE, /data-mixed-end[^>]*required/);
+});
+
+test("browser defers region-dependent mixed-terrain height and coverage rules to the server", () => {
+  const harness = createHarness();
+  harness.evaluate(`
+    globalThis.__mixedStart = document.getElementById("mixed-start-valid");
+    globalThis.__mixedEnd = document.getElementById("mixed-end-valid");
+    globalThis.__mixedDirection = document.getElementById("mixed-direction-valid");
+    globalThis.__mixedCategory = document.getElementById("mixed-category-valid");
+    globalThis.__mixedSource = document.getElementById("mixed-source-valid");
+    __mixedStart.value = "0";
+    __mixedEnd.value = "100";
+    __mixedDirection.value = "N";
+    __mixedCategory.value = "TC4";
+    __mixedSource.value = "A0 evidence schedule";
+    globalThis.__mixedRow = {
+      querySelector(selector) {
+        return ({
+          "[data-mixed-start]": __mixedStart,
+          "[data-mixed-end]": __mixedEnd,
+          "[data-mixed-direction]": __mixedDirection,
+          "[data-mixed-category]": __mixedCategory,
+          "[data-mixed-source]": __mixedSource,
+        })[selector] || null;
+      },
+    };
+    mixedTerrainRows = function () { return [__mixedRow]; };
+    document.getElementById("average_roof_height_m").value = "";
+  `);
+
+  assert.deepEqual(
+    JSON.parse(harness.evaluate("JSON.stringify(validateMixedTerrainInputs())")),
+    [],
+  );
+  harness.element("average_roof_height_m").value = "30";
+  assert.deepEqual(
+    JSON.parse(harness.evaluate("JSON.stringify(validateMixedTerrainInputs())")),
+    [],
+  );
 });
 
 test("directional Vsit,b rows omit constants and show VR and Mc once in Assessment Basis", () => {
@@ -2357,11 +2523,11 @@ test("dashboard shows every tied governing direction and serves the current UI a
   );
   assert.match(
     HTML_SOURCE,
-    /wind_workflow\.js\?v=20260729-simplified-controls-1/,
+    /wind_workflow\.js\?v=20260729-clause423-1/,
   );
   assert.match(
     HTML_SOURCE,
-    /styles\.css\?v=20260729-simplified-controls-1/,
+    /styles\.css\?v=20260729-clause423-1/,
   );
 });
 

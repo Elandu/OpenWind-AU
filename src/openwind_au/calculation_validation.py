@@ -10,7 +10,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from openwind_au.geo import EARTH_RADIUS_M
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
 from openwind_au.models import (
+    MixedTerrainProfile,
     ObstructionRecord,
     SiteLocation,
     TerrainPoint,
@@ -82,6 +84,7 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
     results = [
         _wind_region_a2_serviceability_case(),
         _terrain_height_multiplier_reference_case(),
+        _mixed_terrain_clause_423_case(),
         _shielding_ms_interpolation_case(),
         _topographic_multiplier_reference_case(),
         _site_wind_speed_precision_case(),
@@ -177,6 +180,99 @@ def _terrain_height_multiplier_reference_case() -> CalculationValidationCaseResu
         case_id="terrain-height-table-interpolation",
         calculation_area="wind_inputs",
         description="Validates Table 4.1 nodes, combined interpolation, and Region A0 rules.",
+        checks=checks,
+    )
+
+
+def _mixed_terrain_clause_423_case() -> CalculationValidationCaseResult:
+    mixed_profile = MixedTerrainProfile.model_validate(
+        {
+            "direction": "N",
+            "source_reference": "Synthetic Clause 4.2.3 transition schedule",
+            "segments": [
+                {
+                    "start_distance_m": 0.0,
+                    "end_distance_m": 200.0,
+                    "terrain_category": "TC4",
+                    "source_reference": "Ignored near-site segment",
+                },
+                {
+                    "start_distance_m": 200.0,
+                    "end_distance_m": 450.0,
+                    "terrain_category": "TC2",
+                    "source_reference": "Equal-weight segment A",
+                },
+                {
+                    "start_distance_m": 450.0,
+                    "end_distance_m": 700.0,
+                    "terrain_category": "TC3",
+                    "source_reference": "Equal-weight segment B",
+                },
+            ],
+        }
+    )
+    mixed = calculate_mixed_terrain_assessment(
+        profile=mixed_profile,
+        assessment_height_z_m=10.0,
+        reference_height_h_m=10.0,
+        assessment_height_basis="average_roof_height_h",
+        wind_region="A2",
+    )
+    a0_profile = MixedTerrainProfile.model_validate(
+        {
+            "direction": "N",
+            "source_reference": "Synthetic incomplete A0 evidence schedule",
+            "segments": [
+                {
+                    "start_distance_m": 0.0,
+                    "end_distance_m": 100.0,
+                    "terrain_category": "TC4",
+                    "source_reference": "A0 evidence-only segment",
+                }
+            ],
+        }
+    )
+    a0 = calculate_mixed_terrain_assessment(
+        profile=a0_profile,
+        assessment_height_z_m=10.0,
+        assessment_height_basis="a0_workflow_reference_height",
+        wind_region="A0",
+    )
+    checks = [
+        _check_close("lag distance xi", mixed.lag_distance_xi_m, 200.0),
+        _check_close("averaging distance xa", mixed.averaging_distance_xa_m, 500.0),
+        _check_equal(
+            "included terrain categories",
+            [item.terrain_category for item in mixed.contributions],
+            ["TC2", "TC3"],
+        ),
+        _check_equal(
+            "included lengths",
+            [item.included_length_m for item in mixed.contributions],
+            [250.0, 250.0],
+        ),
+        _check_equal(
+            "distance weights",
+            [item.weight_fraction for item in mixed.contributions],
+            [0.5, 0.5],
+        ),
+        _check_close("weighted Mz,cat", mixed.weighted_mzcat, 0.915),
+        _check_equal("A0 mode", a0.mode, "a0_mandatory"),
+        _check_equal("A0 contribution count", len(a0.contributions), 0),
+        _check_close("A0 covered distance", a0.covered_distance_m, 0.0),
+        _check_close(
+            "A0 mandatory Mz,cat",
+            a0.weighted_mzcat,
+            indicative_mzcat("TC2", 10.0, wind_region="A0"),
+        ),
+    ]
+    return _case_result(
+        case_id="mixed-terrain-clause-4-2-3-reference",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates xi and xa geometry, ignored near-site terrain, equal-length Table 4.1 "
+            "weighting, and the evidence-only mandatory Region A0 path."
+        ),
         checks=checks,
     )
 

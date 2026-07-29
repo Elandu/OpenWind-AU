@@ -121,11 +121,35 @@ The terrain category evidence engine summarises directional built-up coverage, v
 coverage, open terrain, obstruction height statistics, density, spacing, fetch, shielding
 confidence, evidence scores, and suggested category ranges.
 
-Suggested ranges are prompts for review only. OpenWind-AU does not assign a final terrain category
-and does not calculate final `Mz,cat` design values. It provides indicative Mz,cat ranges as
-supporting evidence for engineer review.
+Suggested ranges are prompts for review only. The aggregate terrain-evidence engine does not assign
+a final terrain category by itself; it provides indicative Mz,cat ranges as supporting evidence.
+The explicit single-category and Clause 4.2.3 paths described below do calculate the directional
+`Mz,cat` values used by the workflow.
 
-## 8. Engineer Review
+## 8. Clause 4.2.3 Mixed-Terrain Calculation
+
+When reviewed survey, mapping, or other source material identifies terrain transition distances,
+add an ordered profile for each affected wind direction. Distances are measured upwind from the
+site. Every segment needs its own source reference. For non-A0 weighting, the segments must
+continuously cover the complete Clause 4.2.3 averaging window: from `xi = 20z` to `xi + xa`, where
+`xa = max(500 m, 40z)`.
+
+For non-A0 wind-workflow requests, average roof height supplies `z` only when `h <= 25 m`. Missing
+average roof height, heights above 25 m, gapped or overlapping segments, and incomplete coverage
+are blocked. Region A0 instead retains the mandatory terrain-independent Table 4.1 value at the
+workflow reference height (`average_roof_height_m`, falling back to `building_height_m`). Supplied
+A0 profiles may be incomplete and are retained as unweighted evidence only; their supplied
+segments must still be ordered, contiguous, and source-referenced. Aggregate sector percentages
+are useful classification evidence, but they do not establish transition locations and are not
+used to fabricate a profile.
+
+For non-A0 profiles, the calculated result records the averaging geometry, the clipped length and
+weight of every segment, its Table 4.1 value, weighted contribution, source reference, and final
+directional weighted `Mz,cat`. For A0, it records the mandatory terrain-independent value and keeps
+any supplied segment data as unweighted evidence. Non-A0 directions without supplied profiles
+continue to use one reviewed or recommended category and are identified in the warnings.
+
+## 9. Engineer Review
 
 Before using any output in project work, a competent engineer should confirm:
 
@@ -134,6 +158,7 @@ Before using any output in project work, a competent engineer should confirm:
 - obstruction heights and shielding relevance;
 - topographic effects;
 - terrain category;
+- supplied Clause 4.2.3 transition distances, categories, coverage, and source references;
 - all code calculations independently.
 
 The wind workflow API also accepts reviewed directional class inputs via

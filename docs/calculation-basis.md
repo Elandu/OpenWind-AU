@@ -199,9 +199,21 @@ such as TC1.5 and TC3.5 are derived between adjacent standard table columns rath
 separate table columns. The Region A0 rule uses TC2 for `z <= 100 m` and `Mz,cat = 1.24` above
 100 m to 200 m.
 
-The Clause 4.2.3 mixed-terrain weighted-average workflow is not automated. A mixed directional
-fetch still requires an engineer-reviewed category/value rather than an inferred final design
-multiplier.
+For non-A0 regions, Clause 4.2.3 distance-weighted `Mz,cat` is calculated automatically for each
+direction whose `mixed_terrain_profiles` entry supplies ordered, contiguous terrain segments
+covering the complete `[xi, xi + xa)` averaging window, where `xi = 20z` and
+`xa = max(500 m, 40z)`. Segment distances are measured from the site, and every segment requires a
+source reference. `average_roof_height_m` supplies `z` only when `h <= 25 m`; a missing or greater
+height is rejected instead of silently selecting another basis.
+
+Region A0 always uses its mandatory terrain-independent Table 4.1 result at the workflow reference
+height (`average_roof_height_m`, falling back to `building_height_m`). Any supplied A0 profile is
+retained as evidence only, may cover less than the averaging window, and is not distance-weighted.
+Its supplied segments must still be ordered and contiguous with source references.
+
+The workflow does not infer terrain-transition distances from aggregate built-up, vegetation, or
+open-terrain sector percentages. For non-A0 calculations, missing, gapped, overlapping, or
+incomplete transition schedules are rejected rather than imputed.
 
 ### Output Fields
 
@@ -210,6 +222,8 @@ multiplier.
 - Obstruction density and spacing evidence.
 - Obstruction height statistics.
 - Suggested terrain category range.
+- Clause 4.2.3 mixed-terrain assessments and per-segment weighted contributions for complete
+  non-A0 profiles; A0 profiles are identified as unweighted evidence for the mandatory value.
 - Confidence and warnings.
 
 ### Review Requirements
@@ -414,7 +428,7 @@ The Clause 2.2 product used by the workflow is:
 | VR | Packaged `regional_wind_speeds.json` for AS/NZS 1170.2:2021 Table 3.1(A) | `OPENWIND_VR_TABLE_PATH` override JSON | Exact structure, independently pinned canonical `tables` digest, coverage, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Mc | Deterministic AS/NZS 1170.2:2021 Clause 3.4/Table 3.3 mapping | No override table; generic Region B is rejected | Wind-region subclassification requires engineer confirmation |
 | Md | Packaged `direction_multipliers.json` for AS/NZS 1170.2:2021 Table 3.2(A) | `OPENWIND_MD_TABLE_PATH` override JSON | Exact structure, independently pinned canonical `tables` digest, region coverage, and named reviewer/date metadata are checked; packaged named sign-off is pending |
-| Mz,cat | Packaged `terrain_height_multipliers.json` for Table 4.1 and A0 rules | `OPENWIND_MZCAT_TABLE_PATH` override JSON | Exact structure, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| Mz,cat | Packaged `terrain_height_multipliers.json` for Table 4.1 and A0 rules; supplied ordered Clause 4.2.3 terrain-transition profiles | `OPENWIND_MZCAT_TABLE_PATH` override JSON | Exact structure, independently pinned values digest, and named reviewer/date metadata are checked; non-A0 mixed-terrain weighting requires complete source-referenced transition coverage, A0 profiles are unweighted evidence, and transitions are not inferred from aggregate GIS evidence |
 | Ms | Packaged `shielding_multipliers.json` for Table 4.2 and the 25 m rule | `OPENWIND_MS_TABLE_PATH` override JSON | Exact normative points, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Obstruction Inventory | Reviewed footprint data, then Microsoft Building Footprints | OpenStreetMap building footprints | Review required for coverage, duplicates, and height sources |
 | Shielding Evidence | Obstruction inventory records with selected heights and footprints | None for certified design; incomplete data produces warnings | Indicative only, not certified `Ms` |

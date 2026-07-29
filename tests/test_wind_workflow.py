@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -79,6 +81,30 @@ def sample_overrides() -> list[dict]:
             "override_value": 0.8,
             "reason": "Project engineer selected a directional override after review.",
         }
+    ]
+
+
+def mixed_terrain_profiles(directions: tuple[str, ...] = ("N",)) -> list[dict]:
+    return [
+        {
+            "direction": direction,
+            "source_reference": "Reviewed directional transition schedule",
+            "segments": [
+                {
+                    "start_distance_m": 200.0,
+                    "end_distance_m": 450.0,
+                    "terrain_category": "TC2",
+                    "source_reference": f"{direction} survey segment 1",
+                },
+                {
+                    "start_distance_m": 450.0,
+                    "end_distance_m": 700.0,
+                    "terrain_category": "TC3",
+                    "source_reference": f"{direction} survey segment 2",
+                },
+            ],
+        }
+        for direction in directions
     ]
 
 
@@ -364,6 +390,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "data-raw-value" in script.text
     assert "Final editable values" not in script.text
     assert "renderRawProvenance" in script.text
+    assert 'id="mixed-terrain-add"' in body
+    assert 'id="mixed-terrain-segments"' in body
+    assert "mixedTerrainProfilesFromEditor" in script.text
+    assert "renderMixedTerrainRawData" in script.text
     assert "<th>Source Reference</th>" not in script.text
     assert "Calculation provenance and warnings" in body
     assert "Override Value" not in script.text
@@ -389,6 +419,7 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     assert request_properties["assessment_status"]["enum"] == ["draft", "reviewed"]
     assert "reviewed_by" in request_properties
     assert "average_roof_height_m" in request_properties
+    assert "mixed_terrain_profiles" in request_properties
     assert "average_height_m" not in request_properties
     assert request_properties["building_dimensions"]["deprecated"] is True
     assert "report metadata only" in request_properties["importance_level"]["description"]
@@ -396,12 +427,13 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     assert "assessment_status" not in result_properties
     assert "reviewed_by" not in result_properties
     assert "engineer_notes" not in result_properties
+    assert "mixed_terrain_assessments" in result_properties
     assert "overrides_applied" not in result_properties
     assert "dataset_path" not in wind_region_properties
     assert "region_polygon" not in wind_region_properties
 
 
-def test_browser_uses_draft_api_contract_without_review_or_nudge_controls(
+def test_browser_omits_review_compatibility_fields_and_nudge_controls(
     monkeypatch,
 ) -> None:
     test_client = client(monkeypatch)
@@ -425,14 +457,14 @@ def test_browser_uses_draft_api_contract_without_review_or_nudge_controls(
     assert 'name="average_roof_height_m"' in page.text
     assert "Average roof height (m)" in page.text
     assert "syncReviewControls" not in script.text
-    assert 'assessment_status: "draft"' in script.text
+    assert 'assessment_status: "draft"' not in script.text
     assert "payload.reviewed_by" not in script.text
     assert "payload.engineer_notes" not in script.text
     assert "mapNudgeButtons" not in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review" not in stylesheet.text
     assert ".map-nudge-control" not in stylesheet.text
-    assert "20260729-simplified-controls-1" in page.text
+    assert "20260729-clause423-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -469,7 +501,10 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Table 3.1(A)" in response.text
     assert "Table 3.3" in response.text
     assert "Table 3.2(A)" in response.text
-    assert "Clause 4.2.3 mixed-terrain weighted averaging is not automated" in response.text
+    assert (
+        "Clause 4.2.3 weighted averaging needs ordered terrain-transition distances"
+        in response.text
+    )
     assert "Clause 4.4.2 most-adverse topographic cross-section" in response.text
     assert "verified_against_standard" not in response.text
     assert "local path" not in response.text
@@ -1293,7 +1328,7 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
     assert all(variable["final_value"] is not None for variable in body["variables"])
     assert all("review_status" not in variable for variable in body["variables"])
     assert all("review_status" not in row for row in body["directional_vsitb"])
-    assert any("Clause 4.2.3 mixed-terrain" in warning for warning in body["warnings"])
+    assert any("Clause 4.2.3" in warning for warning in body["warnings"])
     assert any("Clause 4.4.2 most-adverse" in warning for warning in body["warnings"])
 
 
@@ -1613,6 +1648,98 @@ def test_region_a0_default_label_discloses_mandatory_terrain_independent_value(
         == "Mandatory Region A0 Mz,cat 1.000; terrain category does not change this value"
         for item in mzcat
     )
+
+
+def test_region_a0_mixed_profile_is_signed_unweighted_evidence_without_height_limit(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    monkeypatch.setattr(
+        workflow_module,
+        "assess_wind_region",
+        lambda _site: WindRegionAssessment(
+            latitude=-33.86,
+            longitude=151.21,
+            wind_region="A0",
+            source="test reviewed region",
+            confidence="high",
+        ),
+    )
+    payload = workflow_payload() | {
+        "building_height_m": 30.0,
+        "mixed_terrain_profiles": [
+            {
+                "direction": "N",
+                "source_reference": "Incomplete A0 evidence schedule",
+                "segments": [
+                    {
+                        "start_distance_m": 0.0,
+                        "end_distance_m": 100.0,
+                        "terrain_category": "TC4",
+                        "source_reference": "A0 survey evidence",
+                    }
+                ],
+            }
+        ],
+    }
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assessment = body["mixed_terrain_assessments"][0]
+    assert body["input"]["average_roof_height_m"] is None
+    assert assessment["assessment_height_z_m"] == 30.0
+    assert assessment["mode"] == "a0_mandatory"
+    assert assessment["covered_distance_m"] == 0.0
+    assert assessment["contributions"] == []
+    north_mzcat = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert north_mzcat["calculated_value"] == assessment["weighted_mzcat"]
+    assert north_mzcat["calculation_inputs"] == [
+        "Canonical Region A0 terrain evidence and mandatory Table 4.1 result: "
+        "mixed_terrain_assessments entry for direction N."
+    ]
+    assert north_mzcat["detail_items"] == []
+
+    html_report = test_client.post("/api/wind-workflow/result/report/html", json=body)
+    pdf_report = test_client.post("/api/wind-workflow/result/report/pdf", json=body)
+    assert html_report.status_code == 200, html_report.text
+    assert "Region A0 mandatory Mz,cat" in html_report.text
+    assert "signed evidence only" in html_report.text
+    assert "Clause 4.2.3 weighting is not applied" in html_report.text
+    assert "A0 survey evidence" in html_report.text
+    assert "Weighted Mz,cat" not in html_report.text
+    assert "<th>Weight</th>" not in html_report.text
+    assert pdf_report.status_code == 200, pdf_report.text
+    assert pdf_report.content.startswith(b"%PDF-")
+
+    mode_tampered = json.loads(json.dumps(body))
+    mode_tampered["mixed_terrain_assessments"][0]["mode"] = "mixed_weighted"
+    value_tampered = json.loads(json.dumps(body))
+    value_tampered["mixed_terrain_assessments"][0]["weighted_mzcat"] += 0.01
+    contribution_tampered = json.loads(json.dumps(body))
+    contribution_tampered["mixed_terrain_assessments"][0]["contributions"] = [
+        {
+            "start_distance_m": 0.0,
+            "end_distance_m": 100.0,
+            "clipped_start_distance_m": 0.0,
+            "clipped_end_distance_m": 100.0,
+            "included_length_m": 100.0,
+            "weight_fraction": 0.2,
+            "terrain_category": "TC4",
+            "table_mzcat": 1.0,
+            "weighted_contribution": 0.2,
+            "source_reference": "Tampered weighted evidence",
+        }
+    ]
+    for tampered in (mode_tampered, value_tampered, contribution_tampered):
+        rejected = test_client.post("/api/wind-workflow/result/report/html", json=tampered)
+        assert rejected.status_code == 422
+        assert "Region A0" in rejected.text
 
 
 def test_monopole_md_provenance_records_requested_and_effective_cases(monkeypatch) -> None:
@@ -2093,3 +2220,212 @@ def test_override_requires_reason(monkeypatch) -> None:
     response = test_client.post("/api/wind-workflow", json=payload)
 
     assert response.status_code == 422
+
+
+def test_clause_423_profile_drives_mzcat_and_vsitb_with_traceable_contributions(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "average_roof_height_m": 10.0,
+            "mixed_terrain_profiles": mixed_terrain_profiles(),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["mixed_terrain_assessments"]) == 1
+    assessment = body["mixed_terrain_assessments"][0]
+    assert assessment["direction"] == "N"
+    assert assessment["lag_distance_xi_m"] == 200
+    assert assessment["averaging_distance_xa_m"] == 500
+    assert assessment["window_start_distance_m"] == 200
+    assert assessment["window_end_distance_m"] == 700
+    assert [item["included_length_m"] for item in assessment["contributions"]] == [250, 250]
+    assert [item["weight_fraction"] for item in assessment["contributions"]] == [0.5, 0.5]
+    north_mzcat = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert north_mzcat["calculated_value"] == pytest.approx(assessment["weighted_mzcat"])
+    assert north_mzcat["final_value"] == pytest.approx(assessment["weighted_mzcat"])
+    assert "sum(Mz,cat,i x xt,i)" in north_mzcat["formula_basis"]
+    assert north_mzcat["calculation_inputs"] == [
+        "Canonical Clause 4.2.3 geometry and contribution detail: "
+        "mixed_terrain_assessments entry for direction N."
+    ]
+    assert north_mzcat["detail_items"] == []
+    north_vsitb = next(row for row in body["directional_vsitb"] if row["direction"] == "N")
+    assert north_vsitb["mzcat"] == pytest.approx(assessment["weighted_mzcat"])
+    assert any("weighted averaging was applied for N" in warning for warning in body["warnings"])
+    assert any("still using one" in warning for warning in body["warnings"])
+    html_report = test_client.post("/api/wind-workflow/result/report/html", json=body)
+    assert html_report.status_code == 200, html_report.text
+    assert "Clause 4.2.3 mixed-terrain Mz,cat" in html_report.text
+    assert "N segment contributions" in html_report.text
+    assert "N survey segment 1" in html_report.text
+    pdf_report = test_client.post("/api/wind-workflow/result/report/pdf", json=body)
+    assert pdf_report.status_code == 200, pdf_report.text
+    assert pdf_report.content.startswith(b"%PDF-")
+
+
+def test_clause_423_all_directions_remove_missing_profile_warning(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    directions = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "average_roof_height_m": 10.0,
+            "mixed_terrain_profiles": mixed_terrain_profiles(directions),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["direction"] for item in body["mixed_terrain_assessments"]] == list(directions)
+    assert any("all eight wind directions" in warning for warning in body["warnings"])
+    assert not any("still using one" in warning for warning in body["warnings"])
+    assert not any("aggregate sector percentages" in warning for warning in body["warnings"])
+
+
+def test_clause_423_numeric_raw_data_override_changes_only_final_value(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "average_roof_height_m": 10.0,
+            "mixed_terrain_profiles": mixed_terrain_profiles(),
+            "workflow_overrides": [
+                {
+                    "variable": "Mzcat",
+                    "direction": "N",
+                    "override_value": 0.9,
+                    "reason": "Reviewed Raw Data edit.",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assessment = body["mixed_terrain_assessments"][0]
+    north_mzcat = next(
+        item
+        for item in body["variables"]
+        if item["variable"] == "Mzcat" and item["direction"] == "N"
+    )
+    assert north_mzcat["calculated_value"] == pytest.approx(assessment["weighted_mzcat"])
+    assert north_mzcat["final_value"] == 0.9
+    assert north_mzcat["is_overridden"] is True
+
+
+def test_clause_423_accepts_exact_25_m_average_roof_height_boundary(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    response = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "building_height_m": 25.0,
+            "average_roof_height_m": 25.0,
+            "mixed_terrain_profiles": [
+                {
+                    "direction": "N",
+                    "source_reference": "Boundary-height transition schedule",
+                    "segments": [
+                        {
+                            "start_distance_m": 500.0,
+                            "end_distance_m": 1000.0,
+                            "terrain_category": "TC2",
+                            "source_reference": "Boundary-height segment A",
+                        },
+                        {
+                            "start_distance_m": 1000.0,
+                            "end_distance_m": 1500.0,
+                            "terrain_category": "TC3",
+                            "source_reference": "Boundary-height segment B",
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assessment = response.json()["mixed_terrain_assessments"][0]
+    assert assessment["assessment_height_z_m"] == 25.0
+    assert assessment["lag_distance_xi_m"] == 500.0
+    assert assessment["averaging_distance_xa_m"] == 1000.0
+    assert assessment["window_end_distance_m"] == 1500.0
+    assert assessment["covered_distance_m"] == 1000.0
+
+
+@pytest.mark.parametrize("average_height", [None, 25.01])
+def test_clause_423_workflow_requires_permitted_average_roof_height_basis(
+    monkeypatch,
+    average_height: float | None,
+) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {"mixed_terrain_profiles": mixed_terrain_profiles()}
+    if average_height is not None:
+        payload["building_height_m"] = 30.0
+        payload["average_roof_height_m"] = average_height
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 400
+    assert "Clause 4.2.3" in response.text
+
+
+def test_completed_result_accepts_pre_mixed_terrain_v1_signature(monkeypatch) -> None:
+    signing_key = "legacy-signing-key-that-is-at-least-thirty-two-bytes"
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", signing_key)
+    test_client = client(monkeypatch)
+    workflow = test_client.post("/api/wind-workflow", json=workflow_payload())
+    assert workflow.status_code == 200
+    legacy_result = workflow.json()
+    legacy_projection = json.loads(json.dumps(legacy_result))
+    legacy_projection.pop("integrity_token")
+    legacy_projection["input"].pop("mixed_terrain_profiles")
+    legacy_projection.pop("mixed_terrain_assessments")
+    canonical = json.dumps(
+        legacy_projection,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    legacy_result["integrity_token"] = (
+        "owau-hmac-sha256-v1:"
+        + hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    )
+    legacy_result["input"].pop("mixed_terrain_profiles")
+    legacy_result.pop("mixed_terrain_assessments")
+
+    report = test_client.post("/api/wind-workflow/result/report/html", json=legacy_result)
+
+    assert report.status_code == 200, report.text
+
+
+def test_completed_result_rejects_mixed_terrain_contribution_tampering(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    workflow = test_client.post(
+        "/api/wind-workflow",
+        json=workflow_payload()
+        | {
+            "average_roof_height_m": 10.0,
+            "mixed_terrain_profiles": mixed_terrain_profiles(),
+        },
+    )
+    assert workflow.status_code == 200, workflow.text
+    tampered = workflow.json()
+    tampered["mixed_terrain_assessments"][0]["contributions"][0]["table_mzcat"] += 0.01
+
+    report = test_client.post("/api/wind-workflow/result/report/html", json=tampered)
+
+    assert report.status_code == 422
+    assert "mixed-terrain contribution" in report.text.lower()

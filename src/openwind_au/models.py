@@ -25,6 +25,9 @@ MAX_TOTAL_REVIEWED_GEOMETRY_POSITIONS = 20_000
 MAX_MZCAT_REVIEWS = 8
 MAX_CLASS_MULTIPLIER_OVERRIDES = 8
 MAX_WORKFLOW_OVERRIDES = 64
+MAX_MIXED_TERRAIN_PROFILES = 8
+MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE = 256
+MAX_MIXED_TERRAIN_DISTANCE_M = 100_000.0
 
 
 class StrictRequestModel(BaseModel):
@@ -994,6 +997,64 @@ ClimateChangeWindRegionLabel = Literal[
 ]
 
 
+class MixedTerrainSegment(StrictRequestModel):
+    """One ordered upwind terrain-category interval measured from the site."""
+
+    start_distance_m: float = Field(ge=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    end_distance_m: float = Field(gt=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    terrain_category: TerrainCategoryLabel
+    source_reference: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_source_reference(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_distance_order(self) -> MixedTerrainSegment:
+        if self.end_distance_m <= self.start_distance_m:
+            raise ValueError("end_distance_m must be greater than start_distance_m.")
+        return self
+
+
+class MixedTerrainProfile(StrictRequestModel):
+    """Reviewed or user-supplied ordered terrain transitions for one wind direction."""
+
+    direction: WindDirection
+    segments: list[MixedTerrainSegment] = Field(
+        min_length=1,
+        max_length=MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE,
+    )
+    source_reference: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_profile_source_reference(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_ordered_contiguous_segments(self) -> MixedTerrainProfile:
+        previous_end: float | None = None
+        for index, segment in enumerate(self.segments):
+            if previous_end is not None and not math.isclose(
+                segment.start_distance_m,
+                previous_end,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                relation = "overlap" if segment.start_distance_m < previous_end else "gap"
+                raise ValueError(
+                    f"segments[{index}] has a {relation}; mixed-terrain segments must be "
+                    "ordered and contiguous."
+                )
+            previous_end = segment.end_distance_m
+        return self
+
+
 class PublicWindRegionAssessment(BaseModel):
     """Serializable wind-region evidence included in completed workflow results."""
 
@@ -1221,6 +1282,14 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     assessment_status: AssessmentStatus = "draft"
     reviewed_by: str | None = Field(default=None, max_length=200)
     engineer_notes: str | None = Field(default=None, max_length=5000)
+    mixed_terrain_profiles: list[MixedTerrainProfile] = Field(
+        default_factory=list,
+        max_length=MAX_MIXED_TERRAIN_PROFILES,
+        description=(
+            "Optional ordered upwind terrain-category transitions used for Clause 4.2.3 "
+            "distance-weighted Mz,cat calculations. Distances are measured from the site."
+        ),
+    )
     class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(
         default_factory=list,
         max_length=MAX_CLASS_MULTIPLIER_OVERRIDES,
@@ -1254,6 +1323,23 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         class_directions = [item.direction for item in self.class_multiplier_overrides]
         if len(class_directions) != len(set(class_directions)):
             raise ValueError("class_multiplier_overrides contains duplicate directions.")
+        profile_directions = [item.direction for item in self.mixed_terrain_profiles]
+        if len(profile_directions) != len(set(profile_directions)):
+            raise ValueError("mixed_terrain_profiles contains duplicate directions.")
+        terrain_override_directions = {
+            item.direction
+            for item in self.class_multiplier_overrides
+            if item.terrain_category is not None or item.mzcat is not None
+        }
+        conflicting_directions = sorted(
+            set(profile_directions) & terrain_override_directions,
+            key=("N", "NE", "E", "SE", "S", "SW", "W", "NW").index,
+        )
+        if conflicting_directions:
+            raise ValueError(
+                "mixed_terrain_profiles cannot be combined with a terrain-category or "
+                "Mz,cat class override for the same direction: " + ", ".join(conflicting_directions)
+            )
         if self.assessment_status == "reviewed" and not self.reviewed_by:
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
@@ -1275,6 +1361,49 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         ):
             raise ValueError("Average roof height must not exceed the overall building height.")
         return self
+
+
+class MixedTerrainSegmentContribution(BaseModel):
+    """One Table 4.1 contribution inside a Clause 4.2.3 averaging window."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start_distance_m: float
+    end_distance_m: float
+    clipped_start_distance_m: float
+    clipped_end_distance_m: float
+    included_length_m: float
+    weight_fraction: float
+    terrain_category: TerrainCategoryLabel
+    table_mzcat: float
+    weighted_contribution: float
+    source_reference: str
+
+
+class MixedTerrainAssessment(BaseModel):
+    """Traceable Clause 4.2.3 calculation for one wind direction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    direction: WindDirection
+    reference_height_h_m: float | None = None
+    assessment_height_z_m: float
+    assessment_height_basis: Literal[
+        "average_roof_height_h",
+        "explicit_height_z",
+        "a0_workflow_reference_height",
+    ]
+    lag_distance_xi_m: float
+    averaging_distance_xa_m: float
+    window_start_distance_m: float
+    window_end_distance_m: float
+    covered_distance_m: float
+    mode: Literal["homogeneous", "mixed_weighted", "a0_mandatory"]
+    contributions: list[MixedTerrainSegmentContribution] = Field(default_factory=list)
+    weighted_mzcat: float
+    profile_source_reference: str | None = None
+    lookup_source_reference: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WindVariableAssessment(BaseModel):
@@ -1362,6 +1491,7 @@ class WindWorkflowResult(BaseModel):
     direction_multiplier_assessment: DirectionMultiplierAssessment
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    mixed_terrain_assessments: list[MixedTerrainAssessment] = Field(default_factory=list)
     design_wind_speeds: list[DesignWindSpeedRow] = Field(default_factory=list)
     governing_directions: list[WindDirection] = Field(default_factory=list)
     governing_direction: WindDirection | None = None

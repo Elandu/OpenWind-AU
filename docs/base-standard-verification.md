@@ -21,7 +21,7 @@ and confirmation of the edition applicable to the project.
 | Direction multiplier, `Md` | Clause 3.3 and Table 3.2(A), printed pages 26-27 (PDF pages 34-35) | Eight regional rows plus mandatory `Md=1.0` cases | Packaged rows and mandatory cases match |
 | Climate-change multiplier, `Mc` | Clause 3.4 and Table 3.3, printed page 27 (PDF page 35) | A0-A5/B1 `1.0`; B2/C/D `1.05`; ambiguous B rejected | Mapping matches |
 | Terrain-height multiplier, `Mz,cat` | Clause 4.2.2 and Table 4.1, printed pages 30-31 (PDF pages 38-39) | Table nodes, height/category interpolation, A0 rule | Nodes and interpolation match; TC3.5 now interpolates instead of snapping to TC4 |
-| Mixed-terrain fetch | Clause 4.2.3, printed page 31 (PDF page 39) | Explicit warning and reviewed override path | Not automated; no runtime coverage claim |
+| Mixed-terrain fetch | Clause 4.2.3, printed page 31 (PDF page 39) | `xi = 20z`; `xa = max(500 m, 40z)`; complete ordered, contiguous, source-referenced segment coverage; Table 4.1 interpolation and distance weighting | Non-A0 weighted `Mz,cat` is automated when the complete transition schedule is supplied; A0 uses the mandatory terrain-independent value and retains any supplied, potentially incomplete profile as unweighted evidence; GIS transition detection from aggregate sector evidence is not implemented |
 | Shielding multiplier, `Ms` | Clauses 4.3.1-4.3.2 and Table 4.2, printed pages 32-33 (PDF pages 40-41) | 45-degree sectors, `20h` radius, height/breadth/spacing equations, table interpolation, `h>25 m` rule | Implemented equations/nodes match; request validation now prevents a truncated `20h` fetch |
 | Topographic multiplier, `Mt` | Clauses 4.4.1-4.4.2 and Figures 4.3-4.5, printed pages 33-35 (PDF pages 41-43) | A0/A4 rules, `H/(2Lu)`, `L1`, `L2`, Equations 4.4(3)-4.4(4), local-zone checks | Implemented equations match; the base-edition `H<10 m => Mh=1.0` rule is enforced |
 | Australian lee multiplier | Clause 4.4 and Table 4.3, printed pages 33 and 36 (PDF pages 41 and 44) | `Mlee=1.0` for the Australian workflow | Matches the base-edition evidence |
@@ -33,6 +33,10 @@ and confirmation of the edition applicable to the project.
   whenever `h <= 25 m`.
 - Added correct linear Table 4.1 support for TC3.5.
 - Removed the false claim that a single-category Table 4.1 lookup implements Clause 4.2.3.
+- Added traceable Clause 4.2.3 distance weighting for complete supplied non-A0
+  terrain-transition schedules, with A0 profiles retained only as evidence for its mandatory
+  terrain-independent value and without inferring transition distances from aggregate GIS
+  evidence.
 - Blocked wind-region calculation when the configured GIS has no polygon covering the site,
   instead of silently selecting the nearest polygon.
 - Made wind-region source attribution reflect the configured dataset.
@@ -50,7 +54,9 @@ The following paths are not claimed as implemented:
   are report metadata only;
 - design pressures, pressure coefficients, structural response, or certification;
 - Region C/D distance-based coastal interpolation;
-- Clause 4.2.3 mixed-terrain weighted averaging;
+- automatic GIS detection of Clause 4.2.3 terrain-transition distances from aggregate sector
+  evidence; non-A0 weighting requires complete ordered, contiguous, source-referenced segments,
+  while an A0 evidence profile may be incomplete because it cannot alter the mandatory value;
 - automatic selection of the most adverse Clause 4.4.2 section within plus or minus 22.5 degrees;
 - automatic confirmation of escarpment downwind-slope eligibility;
 - amendment-specific or NCC jurisdictional changes not present in the supplied base edition.

@@ -21,8 +21,10 @@ validation before non-expert users should rely on the output.
   metadata, canonical value digests, deployment overrides, deterministic snapshots, and readiness
   checks. Independent named reviewer/date sign-off is still required before a certified release.
 - `Mz,cat`, `Ms`, and `Mt` are still review workflows, not certified design outputs.
-- Workflow reports are always marked preliminary, reject a final/certified issue state, and require
-  reviewer identity plus notes before accepting `reviewed` status.
+- Workflow reports omit certification claims and do not display an issue status or reviewer label.
+  `assessment_status`, `reviewed_by`, and `engineer_notes` remain optional
+  legacy/API-compatibility request metadata; the browser has no review/status controls and omits
+  them, while the server defaults `assessment_status` to `draft`.
 - Completed-result report routes verify a server-issued HMAC token and deployment readiness
   requires a durable shared signing key, so a modified browser/API payload cannot be rendered as
   an authentic completed result.
@@ -74,14 +76,17 @@ third-party binary format.
    categories, shielding states, heights, and topographic classes.
 4. Promote `Mz,cat`, `Ms`, and `Mt` from indicative to reviewed/certified only after the lookup
    tables, class selection logic, and edge cases have independent engineering sign-off.
-5. Complete consumer-facing guardrails beyond the implemented review states and report watermark:
-   add project setup, explicit standard/version selection, and blocked export when critical inputs
-   are missing.
+5. Complete consumer-facing guardrails beyond signed-result integrity and strict request
+   validation: add project setup, explicit standard/version selection, and blocked export when
+   critical inputs are missing.
 6. Replace live-network assumptions with cache-first data services and visible data-source health
    checks.
 7. Add licensing and attribution checks for all bundled and live data sources.
-8. Implement or reviewed-input-block the Clause 4.2.3 mixed-terrain weighted average, Cyclonic
-   C/D coastal interpolation, and the Clause 4.4.2 most-adverse cross-section/escarpment checks.
+8. Add production GIS detection and source referencing of ordered Clause 4.2.3 terrain-transition
+   distances; the non-A0 weighted calculation already accepts complete `mixed_terrain_profiles`,
+   while A0 profiles are evidence-only. Also complete cyclonic C/D coastal interpolation and the
+   Clause 4.4.2 most-adverse
+   cross-section/escarpment checks.
 9. Validate the production wind-region boundary dataset against an Amendment 2-reviewed edition
    and record a content digest in result provenance.
 10. Complete consistent provider redirect/SSRF controls, bounded response downloads and total
