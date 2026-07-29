@@ -216,7 +216,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "does not select AEP / ARI" in body
     assert "<tr><th>AEP / ARI</th>" in script.text
     assert "importance metadata:" in script.text
-    assert "Engineer notes" in body
+    assert "Engineer notes" not in body
     assert "Advanced inputs" in body
     assert 'id="structure_orientation_deg"' in body
     orientation_control = body.split('id="structure_orientation_deg"', 1)[1].split("/>", 1)[0]
@@ -230,8 +230,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "drives the Clause 2.3" in body
     assert 'id="vdes-table"' in body
     assert "Street address" not in body
-    assert "Review and issue status" in body
-    assert "Assessment status" in body
+    assert "Review and issue status" not in body
+    assert "Assessment status" not in body
     assert "Directional values appear once below." in body
     assert "Editable assessment values" in body
     assert 'id="raw-data-save"' in body
@@ -303,7 +303,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "orientationOptions" in script.text
     assert "openWindDesignBuilding" in script.text
     assert "openWindWorkflowMap" in script.text
-    assert "nudgeDesignBuilding" in script.text
+    assert "nudgeDesignBuilding" not in script.text
     assert "offset_east_m" in script.text
     assert "startOrientationDrag" in script.text
     assert "applyOrientationFromLatLng" in script.text
@@ -401,7 +401,9 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     assert "region_polygon" not in wind_region_properties
 
 
-def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> None:
+def test_browser_uses_draft_api_contract_without_review_or_nudge_controls(
+    monkeypatch,
+) -> None:
     test_client = client(monkeypatch)
     page = test_client.get("/")
     script = test_client.get("/static/wind_workflow.js")
@@ -410,26 +412,27 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert page.status_code == 200
     assert script.status_code == 200
     assert stylesheet.status_code == 200
-    assert 'id="assessment_status"' in page.text
-    assert 'name="assessment_status"' in page.text
-    assert '<option value="draft" selected>Draft preliminary</option>' in page.text
-    assert '<option value="reviewed">Reviewed preliminary</option>' in page.text
-    assert 'id="review-metadata-fields" class="workflow-review" hidden' in page.text
-    assert 'id="reviewed_by"' in page.text
-    assert 'name="reviewed_by"' in page.text
-    assert 'id="engineer_notes"' in page.text
-    assert 'name="engineer_notes"' in page.text
+    assert 'id="assessment_status"' not in page.text
+    assert 'name="assessment_status"' not in page.text
+    assert "Review and issue status" not in page.text
+    assert 'id="reviewed_by"' not in page.text
+    assert 'name="reviewed_by"' not in page.text
+    assert 'id="engineer_notes"' not in page.text
+    assert 'name="engineer_notes"' not in page.text
+    assert "data-map-nudge" not in page.text
+    assert "Move building 1 m" not in page.text
     assert 'id="average_roof_height_m"' in page.text
     assert 'name="average_roof_height_m"' in page.text
     assert "Average roof height (m)" in page.text
-    assert "syncReviewControls();" in script.text
-    assert 'assessment_status: data.get("assessment_status") || "draft"' in script.text
-    assert "payload.reviewed_by" in script.text
-    assert "payload.engineer_notes" in script.text
-    assert "setCustomValidity" in script.text
+    assert "syncReviewControls" not in script.text
+    assert 'assessment_status: "draft"' in script.text
+    assert "payload.reviewed_by" not in script.text
+    assert "payload.engineer_notes" not in script.text
+    assert "mapNudgeButtons" not in script.text
     assert "workflowForm.reportValidity()" in script.text
-    assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260729-map-pdf-1" in page.text
+    assert ".workflow-review" not in stylesheet.text
+    assert ".map-nudge-control" not in stylesheet.text
+    assert "20260729-simplified-controls-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -449,8 +452,8 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Review items" in response.text
     assert "Basis and limitations" in response.text
     assert response.text.count("<section") == 4
-    assert "Assessment status" in response.text
-    assert "Draft preliminary" in response.text
+    assert "Assessment status" not in response.text
+    assert "Draft preliminary" not in response.text
     assert "Site wind inputs and calculated cardinal Vsit,b" in response.text
     assert "outside its scope" in response.text
     assert "certif" not in response.text.lower()
@@ -582,7 +585,7 @@ def test_reviewed_preliminary_status_requires_reviewer_and_notes(monkeypatch) ->
     assert "engineer_notes are required" in missing_notes.text
 
 
-def test_reviewed_preliminary_report_records_reviewer_without_duplicate_result_fields(
+def test_reviewed_preliminary_api_preserves_metadata_without_report_status(
     monkeypatch,
 ) -> None:
     test_client = client(monkeypatch)
@@ -602,7 +605,8 @@ def test_reviewed_preliminary_report_records_reviewer_without_duplicate_result_f
     assert "assessment_status" not in {key for key in body if key != "input"}
     assert "engineer_notes" not in {key for key in body if key != "input"}
     assert report.status_code == 200
-    assert "Reviewed preliminary - Engineer A" in report.text
+    assert "Assessment status" not in report.text
+    assert "Reviewed preliminary - Engineer A" not in report.text
     assert "certif" not in report.text.lower()
     assert "compliance" not in report.text.lower()
 
@@ -1157,6 +1161,29 @@ def test_wind_workflow_combined_map_has_toggle_layers(monkeypatch) -> None:
     assert "Vegetation polygons" not in body
     assert "Shielding candidates" not in body
     assert "Topographic circles" not in body
+
+
+def test_wind_workflow_map_capture_rebases_leaflet_svg_without_losing_viewbox(
+    monkeypatch,
+) -> None:
+    test_client = client(monkeypatch)
+
+    response = test_client.post("/api/wind-workflow/map", json=workflow_payload())
+
+    assert response.status_code == 200
+    body = response.text
+    assert "function cloneSvgOverlayForCapture(svg, width, height)" in body
+    assert 'const viewBox = svg.getAttribute("viewBox");' in body
+    assert 'if (viewBox) clone.setAttribute("viewBox", viewBox);' in body
+    assert 'clone.setAttribute("width", String(width));' in body
+    assert 'clone.setAttribute("height", String(height));' in body
+    assert 'clone.style.position = "static";' in body
+    assert 'clone.style.left = "0px";' in body
+    assert 'clone.style.top = "0px";' in body
+    assert 'clone.style.transform = "none";' in body
+    assert 'clone.style.webkitTransform = "none";' in body
+    assert 'clone.style.transformOrigin = "0 0";' in body
+    assert "const clone = cloneSvgOverlayForCapture(svg, rect.width, rect.height);" in body
 
 
 def test_wind_workflow_stream_sends_incremental_stage_payloads(monkeypatch) -> None:

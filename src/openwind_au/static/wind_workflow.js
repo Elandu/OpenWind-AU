@@ -40,12 +40,7 @@ const defaultStoreyHeightControl = document.getElementById("default_storey_heigh
 const roofPitchControl = document.getElementById("roof_pitch_deg");
 const averageRoofHeightControl = document.getElementById("average_roof_height_m");
 const baseRlControl = document.getElementById("base_rl_m");
-const assessmentStatusControl = document.getElementById("assessment_status");
-const reviewMetadataFields = document.getElementById("review-metadata-fields");
-const reviewedByControl = document.getElementById("reviewed_by");
-const engineerNotesControl = document.getElementById("engineer_notes");
 const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
-const mapNudgeButtons = Array.from(document.querySelectorAll("[data-map-nudge]"));
 const windDirectionMultiplierCaseControl = document.getElementById("wind_direction_multiplier_case");
 const DESIGN_LOCATION_STORAGE_KEY = "openwindDesignBuildingLocation";
 const PROJECT_NUMBER_STORAGE_KEY = "openwindProjectNumber";
@@ -233,16 +228,6 @@ window.addEventListener("mouseup", endMapDesignInteraction, true);
 window.addEventListener("pointerup", endMapDesignInteraction, true);
 window.addEventListener("blur", endMapDesignInteraction);
 
-mapNudgeButtons.forEach((button) => {
-  button.addEventListener("click", () => {
-    if (locationMode !== "coordinates" || !coordinateOverride) return;
-    postWorkflowMapCommand("nudge", {
-      east_m: Number(button.dataset.mapNudgeEast || 0),
-      north_m: Number(button.dataset.mapNudgeNorth || 0),
-    });
-  });
-});
-
 workflowForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (document.activeElement === dashboardAddress) {
@@ -273,18 +258,12 @@ rawDataSave?.addEventListener("click", saveRawDataEdits);
 rawDataUseCalculated?.addEventListener("click", stageCalculatedRawDataValues);
 rawDataDiscard?.addEventListener("click", discardRawDataEdits);
 
-assessmentStatusControl?.addEventListener("change", syncReviewControls);
-reviewedByControl?.addEventListener("input", syncReviewControls);
-engineerNotesControl?.addEventListener("input", syncReviewControls);
-syncReviewControls();
-
 if (locationMode === "coordinates" && coordinateOverride) {
   renderInitialMapFrame("Saved project site restored.");
 } else {
   renderPendingMapFrame("Enter an address and select a suggestion to position the building.");
 }
 syncDesignBuildingOverlay();
-updateMapNudgeAvailability();
 
 workflowMapFrame?.addEventListener("load", () => {
   syncCurrentMapSiteToFrame();
@@ -460,7 +439,6 @@ workflowPdf?.addEventListener("click", async () => {
 });
 
 async function runWorkflow(options = {}) {
-  syncReviewControls();
   const validationMessages = validateWorkflowInputs();
   const formIsValid = workflowForm.reportValidity();
   if (validationMessages.length || !formIsValid) {
@@ -811,14 +789,10 @@ function workflowPayload(overrides = workflowOverrides) {
     roof_pitch_deg: optionalNumber("roof_pitch_deg"),
     average_roof_height_m: optionalNumber("average_roof_height_m"),
     base_rl_m: optionalNumber("base_rl_m"),
-    assessment_status: data.get("assessment_status") || "draft",
+    assessment_status: "draft",
     mzcat_recommendation_mode: "conservative",
     workflow_overrides: overrides,
   };
-  if (payload.assessment_status === "reviewed") {
-    payload.reviewed_by = String(data.get("reviewed_by") || "").trim();
-    payload.engineer_notes = String(data.get("engineer_notes") || "").trim();
-  }
   if (locationMode === "coordinates" && coordinateOverride) {
     payload.latitude = coordinateOverride.latitude;
     payload.longitude = coordinateOverride.longitude;
@@ -896,25 +870,6 @@ function hasSupportedSiteCoordinates(site) {
     && latitude <= SUPPORTED_LATITUDE_RANGE[1]
     && longitude >= SUPPORTED_LONGITUDE_RANGE[0]
     && longitude <= SUPPORTED_LONGITUDE_RANGE[1]
-  );
-}
-
-function syncReviewControls() {
-  const reviewed = assessmentStatusControl?.value === "reviewed";
-  if (assessmentStatusControl) {
-    assessmentStatusControl.setAttribute("aria-expanded", String(reviewed));
-  }
-  if (reviewMetadataFields) reviewMetadataFields.hidden = !reviewed;
-  [reviewedByControl, engineerNotesControl].forEach((control) => {
-    if (!control) return;
-    control.disabled = !reviewed;
-    control.required = reviewed;
-  });
-  reviewedByControl?.setCustomValidity(
-    reviewed && !reviewedByControl.value.trim() ? "Enter the reviewer name." : "",
-  );
-  engineerNotesControl?.setCustomValidity(
-    reviewed && !engineerNotesControl.value.trim() ? "Enter engineer review notes." : "",
   );
 }
 
@@ -1747,19 +1702,6 @@ function initialMapHtml(message) {
         renderOrientationPoints();
       }
 
-      function nudgeDesignBuilding(eastM, northM) {
-        const east = Number(eastM);
-        const north = Number(northM);
-        if (!Number.isFinite(east) || !Number.isFinite(north)) return;
-        state.offset_east_m += east;
-        state.offset_north_m += north;
-        state.user_modified = true;
-        state.position_modified = true;
-        redraw();
-        notifyParent();
-        state.position_modified = false;
-      }
-
       function enableBuildingDrag(layer) {
         layer.on("mousedown", (event) => {
           L.DomEvent.preventDefault(event.originalEvent);
@@ -1814,9 +1756,6 @@ function initialMapHtml(message) {
           redraw();
           notifyParent();
         },
-        nudge(eastM, northM) {
-          nudgeDesignBuilding(eastM, northM);
-        },
         endInteraction() {
           stopDesignInteraction();
         },
@@ -1860,8 +1799,6 @@ function initialMapHtml(message) {
           window.openWindDesignBuilding.setDimensions(payload.width_m, payload.length_m);
         } else if (event.data.action === "set-orientation") {
           window.openWindDesignBuilding.setOrientation(payload.orientation_deg);
-        } else if (event.data.action === "nudge") {
-          window.openWindDesignBuilding.nudge(payload.east_m, payload.north_m);
         } else if (event.data.action === "end-interaction") {
           window.openWindDesignBuilding.endInteraction();
         } else if (event.data.action === "invalidate") {
@@ -2073,14 +2010,6 @@ function renderMapCoordinates(location) {
       ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
       : "Not positioned";
   }
-  updateMapNudgeAvailability();
-}
-
-function updateMapNudgeAvailability() {
-  const positioned = locationMode === "coordinates" && Boolean(coordinateOverride);
-  mapNudgeButtons.forEach((button) => {
-    button.disabled = !positioned;
-  });
 }
 
 function clearWorkflowOverridesForSiteChange() {

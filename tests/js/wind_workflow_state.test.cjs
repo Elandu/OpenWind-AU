@@ -186,7 +186,6 @@ function createHarness(options = {}) {
   };
 
   const defaultElementValues = {
-    assessment_status: "draft",
     building_length_m: "18",
     building_width_m: "12",
     structure_orientation_deg: "0",
@@ -220,7 +219,6 @@ function createHarness(options = {}) {
   const defaultFormValues = {
     address: "",
     annual_exceedance_probability: "1/500",
-    assessment_status: "draft",
     building_height_m: "10",
     building_length_m: "18",
     building_width_m: "12",
@@ -256,18 +254,6 @@ function createHarness(options = {}) {
     { value: "circular_or_polygonal_chimney_tank_or_pole" },
   ];
 
-  const mapNudgeButtons = [
-    ["north", "0", "1"],
-    ["west", "-1", "0"],
-    ["east", "1", "0"],
-    ["south", "0", "-1"],
-  ].map(([direction, east, north]) => {
-    const button = new FakeElement(`map-nudge-${direction}`);
-    button.dataset.mapNudge = "";
-    button.dataset.mapNudgeEast = east;
-    button.dataset.mapNudgeNorth = north;
-    return button;
-  });
   const activeWorkspaceTab = options.activeWorkspaceTab || "map";
   const workspaceTabs = ["map", "profile"].map((name) => {
     const button = new FakeElement(`workspace-tab-${name}`);
@@ -304,7 +290,6 @@ function createHarness(options = {}) {
       return queryElements.get(selector);
     },
     querySelectorAll(selector) {
-      if (selector === "[data-map-nudge]") return mapNudgeButtons;
       if (selector === "[data-workspace-tab]") {
         return options.activeWorkspaceTab ? workspaceTabs : [];
       }
@@ -355,7 +340,6 @@ function createHarness(options = {}) {
     },
     FormData: FakeFormData,
     localStorage,
-    mapNudgeButtons,
     setTimeout(callback, delay = 0) {
       const timerId = nextTimerId;
       nextTimerId += 1;
@@ -408,7 +392,6 @@ function createHarness(options = {}) {
       }
     },
     localStorage,
-    mapNudgeButtons,
     revokedObjectUrls,
     scheduledDelays,
     workspaceTabs,
@@ -1043,37 +1026,24 @@ test("changing project identity clears coordinates and workflow overrides", () =
   assert.equal(harness.localStorage.getItem(PROJECT_NUMBER_KEY), "OW-202");
 });
 
-test("keyboard-focusable nudge controls send one-metre map commands only for a positioned site", () => {
-  const positioned = createHarness({
-    storage: {
-      [DESIGN_LOCATION_KEY]: savedLocation(),
-      [PROJECT_NUMBER_KEY]: "OW-101",
-    },
-  });
-  const posted = [];
-  positioned.element("workflow-map-frame").contentWindow.postMessage = (message) => {
-    posted.push(JSON.parse(JSON.stringify(message)));
-  };
+test("workflow stays draft without review controls or directional nudge UI", () => {
+  const harness = createHarness();
+  const payload = JSON.parse(harness.evaluate("JSON.stringify(workflowPayload())"));
+  const mapHtml = harness.evaluate('initialMapHtml("Drag QA")');
 
-  assert.equal(positioned.mapNudgeButtons[0].disabled, false);
-  positioned.mapNudgeButtons[0].dispatch("click");
-  assert.deepEqual(posted, [{
-    type: "openwind-map-command",
-    action: "nudge",
-    payload: { east_m: 0, north_m: 1 },
-  }]);
-
-  const unpositioned = createHarness();
-  const unexpected = [];
-  unpositioned.element("workflow-map-frame").contentWindow.postMessage = (message) => {
-    unexpected.push(message);
-  };
-  assert.equal(unpositioned.mapNudgeButtons[0].disabled, true);
-  unpositioned.mapNudgeButtons[0].dispatch("click");
-  assert.deepEqual(unexpected, []);
-
-  assert.match(HTML_SOURCE, /data-map-nudge[^>]+aria-label="Move building north one metre"/);
-  assert.match(HTML_SOURCE, /data-map-nudge[^>]+aria-label="Move building south one metre"/);
+  assert.equal(payload.assessment_status, "draft");
+  assert.equal(Object.hasOwn(payload, "reviewed_by"), false);
+  assert.equal(Object.hasOwn(payload, "engineer_notes"), false);
+  assert.doesNotMatch(
+    HTML_SOURCE,
+    /Review and issue status|id="assessment_status"|id="reviewed_by"|id="engineer_notes"/,
+  );
+  assert.doesNotMatch(HTML_SOURCE, /data-map-nudge|map-nudge-control|Move building 1 m/);
+  assert.doesNotMatch(SCRIPT_SOURCE, /mapNudge|nudgeDesignBuilding|action === "nudge"/);
+  assert.doesNotMatch(STYLES_SOURCE, /\.map-nudge-control|\.map-nudge-buttons|\.workflow-review/);
+  assert.match(mapHtml, /enableBuildingDrag\(footprint\)/);
+  assert.match(mapHtml, /applyResizeFromLatLng/);
+  assert.match(mapHtml, /applyOrientationFromLatLng/);
 });
 
 test("wind direction multiplier case defaults, serializes, and restores", () => {
@@ -2387,11 +2357,11 @@ test("dashboard shows every tied governing direction and serves the current UI a
   );
   assert.match(
     HTML_SOURCE,
-    /wind_workflow\.js\?v=20260729-map-pdf-1/,
+    /wind_workflow\.js\?v=20260729-simplified-controls-1/,
   );
   assert.match(
     HTML_SOURCE,
-    /styles\.css\?v=20260729-map-pdf-1/,
+    /styles\.css\?v=20260729-simplified-controls-1/,
   );
 });
 

@@ -588,49 +588,6 @@ main {
   min-width: 210px;
 }
 
-.map-nudge-control {
-  display: grid;
-  gap: 3px;
-  justify-items: center;
-}
-
-.map-nudge-buttons {
-  display: grid;
-  grid-template-columns: repeat(3, 28px);
-  grid-template-rows: repeat(3, 24px);
-  gap: 2px;
-}
-
-.map-nudge-buttons button {
-  min-width: 28px;
-  min-height: 24px;
-  margin: 0;
-  border-radius: 4px;
-  padding: 0;
-  font-size: 0.9rem;
-  line-height: 1;
-}
-
-.map-nudge-buttons button:nth-child(1) {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.map-nudge-buttons button:nth-child(2) {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.map-nudge-buttons button:nth-child(3) {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.map-nudge-buttons button:nth-child(4) {
-  grid-column: 2;
-  grid-row: 3;
-}
-
 .map-toolbar strong,
 .orientation-readout strong {
   display: block;
@@ -1395,25 +1352,6 @@ tr:last-child td {
 .code-cell {
   font-family: Consolas, "Courier New", monospace;
   overflow-wrap: anywhere;
-}
-
-.workflow-review {
-  display: grid;
-  gap: 8px;
-  min-width: 220px;
-}
-
-.workflow-review[hidden] {
-  display: none;
-}
-
-.workflow-review button {
-  margin-top: 0;
-}
-
-.workflow-review textarea {
-  min-height: 64px;
-  resize: vertical;
 }
 
 .inline-assessment-value {

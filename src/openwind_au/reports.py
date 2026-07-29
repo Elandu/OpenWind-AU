@@ -1328,6 +1328,29 @@ def _add_workflow_map_capture_bridge(fmap: folium.Map) -> None:
         });
       }
 
+      function cloneSvgOverlayForCapture(svg, width, height) {
+        const clone = svg.cloneNode(true);
+        const viewBox = svg.getAttribute("viewBox");
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+        clone.setAttribute("width", String(width));
+        clone.setAttribute("height", String(height));
+        if (viewBox) clone.setAttribute("viewBox", viewBox);
+
+        // Leaflet positions its SVG renderer with a root CSS transform and uses
+        // the viewBox for the same layer-coordinate origin. The bounding rectangle
+        // used below already includes the CSS position, so retaining that transform
+        // in the standalone SVG would translate the overlay a second time.
+        clone.style.position = "static";
+        clone.style.left = "0px";
+        clone.style.top = "0px";
+        clone.style.transform = "none";
+        clone.style.webkitTransform = "none";
+        clone.style.transformOrigin = "0 0";
+        clone.removeAttribute("x");
+        clone.removeAttribute("y");
+        return clone;
+      }
+
       function drawVisibleTiles(context, container, containerBounds, cropTop) {
         let tileCount = 0;
         Array.from(container.querySelectorAll("img.leaflet-tile")).forEach((tile) => {
@@ -1348,8 +1371,7 @@ def _add_workflow_map_capture_bridge(fmap: folium.Map) -> None:
         for (const svg of container.querySelectorAll(".leaflet-overlay-pane svg")) {
           const rect = relativeRect(svg, containerBounds, cropTop);
           if (rect.width <= 0 || rect.height <= 0) continue;
-          const clone = svg.cloneNode(true);
-          clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+          const clone = cloneSvgOverlayForCapture(svg, rect.width, rect.height);
           const markup = serializer.serializeToString(clone);
           const objectUrl = URL.createObjectURL(
             new Blob([markup], { type: "image/svg+xml;charset=utf-8" })
@@ -2111,7 +2133,6 @@ def render_wind_workflow_pdf_report(
     )
     summary_rows = [
         ["Project", result.input.project_number or "Not supplied"],
-        ["Assessment status", _wind_report_status(result)],
         ["Site", site_label],
         [
             "Coordinates",
@@ -2901,12 +2922,6 @@ def _wind_report_vdes_summary(result: WindWorkflowResult) -> str:
         return "Not available"
     faces = result.governing_vdes_faces
     return f"{', '.join(faces) or 'N/A'} - {result.governing_vdes_mps:.3f} m/s"
-
-
-def _wind_report_status(result: WindWorkflowResult) -> str:
-    if result.input.assessment_status == "reviewed":
-        return f"Reviewed preliminary - {result.input.reviewed_by}"
-    return "Draft preliminary"
 
 
 def _wind_report_md_case(result: WindWorkflowResult) -> str:
@@ -4317,14 +4332,6 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           <th>Project</th>
           <td>
             {{ result.input.project_number|e if result.input.project_number else "Not supplied" }}
-          </td>
-        </tr>
-        <tr>
-          <th>Assessment status</th>
-          <td>
-            {% if result.input.assessment_status == "reviewed" %}
-            Reviewed preliminary - {{ result.input.reviewed_by|e }}
-            {% else %}Draft preliminary{% endif %}
           </td>
         </tr>
         <tr>

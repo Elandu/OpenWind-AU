@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260729-map-pdf-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260729-simplified-controls-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -293,46 +293,6 @@
             </label>
             </div>
           </details>
-          <details class="form-details">
-            <summary>Review and issue status</summary>
-            <div class="workflow-review">
-              <label>
-                Assessment status
-                <select
-                  id="assessment_status"
-                  name="assessment_status"
-                  aria-controls="review-metadata-fields"
-                  aria-expanded="false"
-                >
-                  <option value="draft" selected>Draft preliminary</option>
-                  <option value="reviewed">Reviewed preliminary</option>
-                </select>
-              </label>
-              <div id="review-metadata-fields" class="workflow-review" hidden>
-                <label>
-                  Reviewed by
-                  <input
-                    id="reviewed_by"
-                    name="reviewed_by"
-                    type="text"
-                    maxlength="200"
-                    autocomplete="name"
-                    disabled
-                  />
-                </label>
-                <label>
-                  Engineer notes
-                  <textarea
-                    id="engineer_notes"
-                    name="engineer_notes"
-                    maxlength="5000"
-                    rows="4"
-                    disabled
-                  ></textarea>
-                </label>
-              </div>
-            </div>
-          </details>
           <button class="assessment-submit" type="submit">Run assessment</button>
             </form>
           </section>
@@ -353,15 +313,6 @@
             <div class="orientation-readout map-coordinate-readout">
               <span class="kicker">Building location</span>
               <strong id="map-coordinate-readout">Not positioned</strong>
-            </div>
-            <div class="map-nudge-control" role="group" aria-label="Move the design building in one metre steps">
-              <span class="kicker">Move building 1 m</span>
-              <div class="map-nudge-buttons">
-                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="1" aria-label="Move building north one metre" title="Move north 1 m" disabled>&uarr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="-1" data-map-nudge-north="0" aria-label="Move building west one metre" title="Move west 1 m" disabled>&larr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="1" data-map-nudge-north="0" aria-label="Move building east one metre" title="Move east 1 m" disabled>&rarr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="-1" aria-label="Move building south one metre" title="Move south 1 m" disabled>&darr;</button>
-              </div>
             </div>
           </div>
           <iframe
@@ -537,6 +488,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260729-map-pdf-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-simplified-controls-1"></script>
   </body>
 </html>
