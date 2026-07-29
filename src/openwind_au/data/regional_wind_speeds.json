@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "source": {
     "title": "Editable regional wind speed lookup table",
     "standard": "AS/NZS 1170.2:2021",
@@ -6,7 +7,9 @@
     "table": "Table 3.1(A) - Regional wind speeds - Australia",
     "standard_reference": "AS/NZS 1170.2:2021 Section 3 Table 3.1(A)",
     "status": "review data; not a substitute for the Standard",
-    "review_status": "verified_against_standard",
+    "review_status": "pending_independent_review",
+    "reviewed_by": null,
+    "reviewed_on": null,
     "review_note": "Values manually checked against licensed standard. User must hold appropriate rights to verify source standard."
   },
   "tables": {
@@ -26,5 +29,6 @@
       "ultimate": {"1": 23.0, "5": 35.0, "10": 43.0, "20": 51.0, "25": 53.0, "50": 60.0, "100": 66.0, "200": 72.0, "250": 74.0, "500": 80.0, "1000": 85.0, "2000": 90.0, "2500": 91.0, "5000": 95.0, "10000": 99.0},
       "serviceability": {"25": 53.0}
     }
-  }
+  },
+  "values_sha256": "b84bbd24ebc0ab144e929af93e1b4f90cdf855245d2ae4c4ab93c8161d6d2d5f"
 }

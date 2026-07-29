@@ -15,8 +15,8 @@ import openwind_au.api as api_module
 import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
 from openwind_au.obstructions import run_obstruction_inventory
-from openwind_au.standard_calculations import DIRECTIONS
 from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
     MS_DATA_FILE,
     MZCAT_DATA_FILE,
     VERIFIED_LOOKUP_REVIEW_STATUS,
@@ -55,21 +55,7 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
             "available_region_names": production_regions,
         },
     )
-    monkeypatch.setattr(
-        api_module,
-        "load_md_tables",
-        lambda: {
-            "source": {
-                "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
-                "reviewed_by": "Independent Test Engineer",
-                "reviewed_on": "2026-07-12",
-            },
-            "tables": {
-                region: {direction: 1.0 for direction in DIRECTIONS}
-                for region in production_regions
-            },
-        },
-    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: reviewed_lookup(MD_DATA_FILE))
     monkeypatch.setattr(api_module, "load_mzcat_table", lambda: reviewed_lookup(MZCAT_DATA_FILE))
     monkeypatch.setattr(api_module, "load_ms_table", lambda: reviewed_lookup(MS_DATA_FILE))
     monkeypatch.setattr(api_module, "load_vr_tables", lambda: reviewed_lookup(VR_DATA_FILE))
@@ -87,6 +73,8 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
     assert ready.json()["checks"]["shielding_multiplier_table"]["reviewed"] is True
     assert len(ready.json()["checks"]["terrain_height_multiplier_table"]["values_sha256"]) == 64
     assert len(ready.json()["checks"]["shielding_multiplier_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["regional_wind_speed_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["direction_multiplier_table"]["values_sha256"]) == 64
 
 
 def test_health_reports_missing_production_inputs(monkeypatch) -> None:
@@ -158,10 +146,8 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch, caplog) -> N
 
 def test_health_rejects_out_of_range_direction_multiplier(monkeypatch) -> None:
     regions = ["A2"]
-    tables = {
-        "A2": {direction: 1.0 for direction in DIRECTIONS},
-    }
-    tables["A2"]["N"] = 5.0
+    data = reviewed_lookup(MD_DATA_FILE)
+    data["tables"]["A2"]["N"] = 5.0
     monkeypatch.setattr(
         api_module,
         "dataset_metadata",
@@ -172,18 +158,7 @@ def test_health_rejects_out_of_range_direction_multiplier(monkeypatch) -> None:
             "available_region_names": regions,
         },
     )
-    monkeypatch.setattr(
-        api_module,
-        "load_md_tables",
-        lambda: {
-            "source": {
-                "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
-                "reviewed_by": "Independent Test Engineer",
-                "reviewed_on": "2026-07-12",
-            },
-            "tables": tables,
-        },
-    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: data)
 
     report = api_module.readiness_report()
     check = report["checks"]["direction_multiplier_table"]

@@ -318,8 +318,8 @@ class MzCatDirectionAssessment(BaseModel):
     azimuth_deg: float
     recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
     suggested_terrain_category_range: str
-    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
-    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
+    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
     assessment_height_m: float
     lower_indicative_mzcat: float
     upper_indicative_mzcat: float
@@ -328,7 +328,9 @@ class MzCatDirectionAssessment(BaseModel):
     recommended_mzcat: float | None = None
     recommendation_confidence: Literal["high", "medium", "low"] = "low"
     recommendation_reasoning: list[str] = Field(default_factory=list)
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
     final_mzcat: float | None = None
     reviewed_by: str | None = None
     review_notes: str | None = None
@@ -347,7 +349,9 @@ class MzCatReviewSelection(StrictRequestModel):
     """Engineer-selected final Mz,cat fields supplied for reviewed reports."""
 
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
     final_mzcat: float | None = Field(default=None, gt=0, le=10)
     reviewed_by: str | None = Field(default=None, max_length=200)
     review_notes: str | None = Field(default=None, max_length=5_000)
@@ -891,6 +895,15 @@ class CombinedMapRequest(SiteAnalysisRequest):
     @model_validator(mode="after")
     def validate_review_inputs(self) -> CombinedMapRequest:
         _validate_obstruction_review_inputs(self.manual_overrides, self.reviewed_footprints)
+        if (
+            self.reference_height_m <= 25.0
+            and self.obstruction_radius_m < 20.0 * self.reference_height_m
+        ):
+            raise ValueError(
+                "obstruction_radius_m must be at least 20 times average roof/reference "
+                "height h when h is 25 m or less, so the complete Clause 4.3.1 shielding "
+                "sector is assessed."
+            )
         return self
 
 
@@ -915,6 +928,7 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
 
 
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+BuildingPlanFace = Literal["Front", "Right", "Back", "Left"]
 WindWorkflowVariable = Literal["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 WindWorkflowOverrideVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 WindDirectionMultiplierCase = Literal[
@@ -923,7 +937,7 @@ WindDirectionMultiplierCase = Literal[
     "circular_or_polygonal_chimney_tank_or_pole",
 ]
 AssessmentStatus = Literal["draft", "reviewed"]
-TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
 ShieldingClassLabel = Literal["FS", "PS", "NS"]
 TopographicClassLabel = Literal["T0", "T1", "T2", "T3", "T4", "T5"]
 WindRegionLabel = Literal[
@@ -1030,7 +1044,13 @@ class RegionalWindSpeedAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     wind_region: WindRegionLabel
-    importance_level: str | None = None
+    importance_level: str | None = Field(
+        default=None,
+        description=(
+            "Optional report metadata copied from the workflow request. It does not select "
+            "or alter the annual exceedance probability or ARI."
+        ),
+    )
     ari_years: int
     annual_exceedance_probability: str
     vr_ult: float | None = None
@@ -1137,13 +1157,34 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     )
 
     project_number: str | None = Field(default=None, max_length=200)
-    annual_exceedance_probability: str = Field(default="1/500", min_length=1, max_length=50)
-    importance_level: str | None = Field(default=None, max_length=100)
+    annual_exceedance_probability: str = Field(
+        default="1/500",
+        min_length=1,
+        max_length=50,
+        description="User-selected AEP/ARI input used to select the regional wind speed.",
+    )
+    importance_level: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Optional report metadata only. It does not select or alter "
+            "annual_exceedance_probability."
+        ),
+    )
     user_assumptions: str | None = Field(default=None, max_length=5_000)
     structure_class: Literal["building", "house", "monopole", "tower", "other"] | None = None
     structure_type: str | None = Field(default=None, max_length=300)
     wind_direction_multiplier_case: WindDirectionMultiplierCase = "main_structure"
-    building_dimensions: str | None = Field(default=None, max_length=300)
+    building_dimensions: str | None = Field(
+        default=None,
+        max_length=300,
+        description=(
+            "Deprecated legacy free-text building dimension metadata retained for migration. "
+            "It does not define the structured footprint or drive calculations. Omit this field "
+            "when building_width_m and building_length_m are used."
+        ),
+        json_schema_extra={"deprecated": True},
+    )
     structure_orientation_deg: float | None = Field(
         default=None,
         ge=0,
@@ -1151,7 +1192,8 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         description=(
             "Engineering azimuth beta for the building theta=0/front axis, in degrees "
             "clockwise from true North in the range [0, 360). Right, back, and left "
-            "are beta + 90, + 180, and + 270 degrees respectively."
+            "are beta + 90, + 180, and + 270 degrees respectively. The four axes drive "
+            "the Clause 2.3 building-orthogonal ultimate design wind speeds."
         ),
     )
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
@@ -1168,7 +1210,14 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         ),
     )
     base_rl_m: float | None = Field(default=None, ge=-500, le=10_000)
-    design_life_years: int | None = Field(default=None, gt=0, le=1000)
+    design_life_years: int | None = Field(
+        default=None,
+        gt=0,
+        le=1000,
+        description=(
+            "Optional report metadata only. It does not derive or alter the selected AEP/ARI."
+        ),
+    )
     assessment_status: AssessmentStatus = "draft"
     reviewed_by: str | None = Field(default=None, max_length=200)
     engineer_notes: str | None = Field(default=None, max_length=5000)
@@ -1210,6 +1259,13 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
             raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if self.building_dimensions is not None and (
+            self.building_width_m is not None or self.building_length_m is not None
+        ):
+            raise ValueError(
+                "Deprecated building_dimensions cannot be combined with structured "
+                "building_width_m or building_length_m."
+            )
         if (self.building_width_m is None) != (self.building_length_m is None):
             raise ValueError(
                 "building_width_m and building_length_m must be provided together, or both omitted."
@@ -1269,8 +1325,34 @@ class SiteWindSpeedRow(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DesignWindSpeedCandidate(BaseModel):
+    """One interpolated Vsit,b candidate inside a Clause 2.3 design sector."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    beta_deg: float
+    vsitb_mps: float
+
+
+class DesignWindSpeedRow(BaseModel):
+    """Building-orthogonal ultimate design wind speed for one plan face."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    face: BuildingPlanFace
+    theta_deg: float
+    beta_deg: float
+    sector_start_beta_deg: float
+    sector_end_beta_deg: float
+    candidates: list[DesignWindSpeedCandidate]
+    raw_vdes_theta_mps: float
+    vdes_theta_mps: float
+    minimum_uls_applied: bool = False
+    is_governing: bool = False
+
+
 class WindWorkflowResult(BaseModel):
-    """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
+    """AS/NZS 1170.2 workflow result through Vsit,b and Vdes,theta."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1281,9 +1363,16 @@ class WindWorkflowResult(BaseModel):
     direction_multiplier_assessment: DirectionMultiplierAssessment
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    design_wind_speeds: list[DesignWindSpeedRow] = Field(default_factory=list)
     governing_directions: list[WindDirection] = Field(default_factory=list)
     governing_direction: WindDirection | None = None
     governing_vsitb: float | None = None
+    governing_vdes_faces: list[BuildingPlanFace] = Field(default_factory=list)
+    governing_vdes_mps: float | None = None
+    design_wind_speed_basis: str = (
+        "AS/NZS 1170.2:2021 Clause 2.3: maximum linearly interpolated Vsit,b "
+        "within beta = theta +/-45 degrees; ultimate Vdes,theta >= 30 m/s."
+    )
     integrity_token: str | None = Field(
         default=None,
         description="Server-issued integrity token required by completed-result report routes.",
@@ -1291,9 +1380,9 @@ class WindWorkflowResult(BaseModel):
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
-        "OpenWind-AU organises preliminary site wind evidence through Vsit,b for "
-        "engineering review. It does not calculate final pressures and does not certify "
-        "AS/NZS 1170.2 compliance."
+        "OpenWind-AU organises preliminary site wind evidence through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta for engineering review. It does not calculate final "
+        "pressures and does not certify AS/NZS 1170.2 compliance."
     )
 
 

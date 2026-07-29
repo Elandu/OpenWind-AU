@@ -241,16 +241,19 @@ $env:OPENWIND_VR_TABLE_PATH="C:\data\openwind-au\regional_wind_speeds.json"
 $env:OPENWIND_MD_TABLE_PATH="C:\data\openwind-au\direction_multipliers.json"
 $env:OPENWIND_MZCAT_TABLE_PATH="C:\data\openwind-au\terrain_height_multipliers.json"
 $env:OPENWIND_MS_TABLE_PATH="C:\data\openwind-au\shielding_multipliers.json"
+$env:OPENWIND_VR_EXPECTED_SHA256="<approved canonical tables digest>"
+$env:OPENWIND_MD_EXPECTED_SHA256="<approved canonical tables digest>"
 $env:OPENWIND_MZCAT_EXPECTED_SHA256="<approved canonical values digest>"
 $env:OPENWIND_MS_EXPECTED_SHA256="<approved canonical values digest>"
 $env:OPENWIND_RESULT_SIGNING_KEY="<deployment secret containing at least 32 UTF-8 bytes>"
 ```
 
-Replacement Table 4.1 and Table 4.2 files must retain schema version 1, source/table metadata, a
-review status, valid interpolation rules, and a `values_sha256` matching the canonical `values`
-object. An override retains the trusted packaged digest unless the deployment separately pins an
-approved replacement with `OPENWIND_MZCAT_EXPECTED_SHA256` or `OPENWIND_MS_EXPECTED_SHA256`.
-Changing only the digest inside the JSON is therefore insufficient to make changed values ready.
+All four replacement lookup files must retain schema version 1, exact source/table metadata, a
+review status, and a `values_sha256`. For VR and Md the digest covers the canonical `tables`
+object; for Mz,cat and Ms it covers the canonical `values` object. An override retains the trusted
+packaged digest unless the deployment separately pins an approved replacement with the matching
+`OPENWIND_*_EXPECTED_SHA256` variable. Changing only the digest inside the JSON is therefore
+insufficient to make changed values ready.
 
 Readiness requires `source.reviewed_by` and an ISO `source.reviewed_on` date alongside
 `review_status: "verified_against_standard"` for all four wind-variable lookup assets. Do not

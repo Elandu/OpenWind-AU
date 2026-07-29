@@ -27,19 +27,32 @@ from openwind_au.standard_calculations import (
 )
 from openwind_au.standard_lookup_tables import (
     MD_DATA_FILE,
+    MD_EXPECTED_SHA256_ENV,
     MD_TABLE_ENV,
+    TRUSTED_PACKAGED_VALUES_SHA256,
     VR_DATA_FILE,
+    VR_EXPECTED_SHA256_ENV,
     VR_TABLE_ENV,
     load_lookup_data,
     load_packaged_lookup_data,
     lookup_metadata_warnings,
+    lookup_provenance_issues,
     source_reference,
+    trusted_values_sha256,
 )
 from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
 VR_METADATA_WARNING = "VR lookup table does not have complete independent reviewer/date metadata."
 MD_METADATA_WARNING = "Md lookup table does not have complete independent reviewer/date metadata."
 VR_EQUATION_REFERENCE = "AS/NZS 1170.2:2021 Table 3.1(A) regional equation"
+VR_SOURCE_CLAUSE = "Section 3"
+VR_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Section 3 Table 3.1(A)"
+VR_SOURCE_TABLE = "Table 3.1(A) - Regional wind speeds - Australia"
+MD_SOURCE_CLAUSE = "Section 3"
+MD_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Section 3 Table 3.2(A)"
+MD_SOURCE_TABLE = "Table 3.2(A) - Wind direction multiplier (Md) - Australia"
+EXPECTED_VR_TABLE_REGIONS = ("A", "B", "C", "D")
+EXPECTED_MD_TABLE_REGIONS = ("A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D")
 
 
 def regional_wind_speed_assessment(
@@ -552,13 +565,107 @@ def configured_regional_wind_speed(
     return None, note
 
 
+def vr_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 3.1(A) structure, source, and digest validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=VR_DATA_FILE,
+            expected_digest_env=VR_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[VR_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=VR_SOURCE_CLAUSE,
+            expected_standard_reference=VR_STANDARD_REFERENCE,
+            expected_table=VR_SOURCE_TABLE,
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+            payload_key="tables",
+        )
+    )
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        return [*issues, "tables must be an object"]
+    missing = [region for region in EXPECTED_VR_TABLE_REGIONS if region not in tables]
+    unexpected = [str(region) for region in tables if region not in EXPECTED_VR_TABLE_REGIONS]
+    if missing:
+        issues.append(f"tables is missing regions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"tables contains unexpected regions: {', '.join(sorted(unexpected))}")
+    for region in EXPECTED_VR_TABLE_REGIONS:
+        issues.extend(f"{region}: {issue}" for issue in vr_table_issues(tables.get(region)))
+    return issues
+
+
+def md_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 3.2(A) structure, source, and digest validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=MD_DATA_FILE,
+            expected_digest_env=MD_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[MD_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=MD_SOURCE_CLAUSE,
+            expected_standard_reference=MD_STANDARD_REFERENCE,
+            expected_table=MD_SOURCE_TABLE,
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+            payload_key="tables",
+        )
+    )
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        return [*issues, "tables must be an object"]
+    missing = [region for region in EXPECTED_MD_TABLE_REGIONS if region not in tables]
+    unexpected = [str(region) for region in tables if region not in EXPECTED_MD_TABLE_REGIONS]
+    if missing:
+        issues.append(f"tables is missing regions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"tables contains unexpected regions: {', '.join(sorted(unexpected))}")
+    for region in EXPECTED_MD_TABLE_REGIONS:
+        issues.extend(
+            f"{region}: {issue}" for issue in direction_multiplier_row_issues(tables.get(region))
+        )
+    return issues
+
+
 def load_vr_tables() -> dict[str, Any]:
     """Load editable regional wind speed lookup data."""
 
-    return load_lookup_data(VR_TABLE_ENV, VR_DATA_FILE)
+    data = load_lookup_data(VR_TABLE_ENV, VR_DATA_FILE)
+    issues = vr_lookup_issues(data, require_reviewed=False)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.1(A) VR lookup data: {'; '.join(issues)}")
+    return data
 
 
 def load_md_tables() -> dict[str, Any]:
     """Load editable direction multiplier lookup data."""
 
-    return load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
+    data = load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
+    issues = md_lookup_issues(data, require_reviewed=False)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.2(A) Md lookup data: {'; '.join(issues)}")
+    return data

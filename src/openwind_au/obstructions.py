@@ -2051,6 +2051,8 @@ def _post_overpass_url(url: str, query: str, user_agent: str) -> dict[str, Any]:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=OVERPASS_HTTP_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:

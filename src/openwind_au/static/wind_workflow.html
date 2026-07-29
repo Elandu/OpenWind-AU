@@ -148,8 +148,9 @@
                 90&deg; = E, 180&deg; = S, 270&deg; = W. Right, Back, and Left are
                 &beta;+90&deg;, &beta;+180&deg;, and &beta;+270&deg;. For gable roofs,
                 front is a long side; for hip or monoslope roofs, front faces down the roof
-                slope, perpendicular to the ridge. Orientation only aligns these axes on the
-                map; this workflow does not calculate V<sub>des,&theta;</sub> or design pressures.
+                slope, perpendicular to the ridge. Orientation drives the Clause 2.3
+                building-orthogonal V<sub>des,&theta;</sub> calculation; design pressures are
+                outside this workflow.
               </span>
             </label>
             <label>
@@ -203,11 +204,17 @@
             <label>
               Obstruction radius (m)
               <select id="obstruction_radius_m" name="obstruction_radius_m">
+                <option value="50">50</option>
                 <option value="100">100</option>
                 <option value="200">200</option>
                 <option value="500" selected>500</option>
                 <option value="1000">1000</option>
+                <option value="2000">2000</option>
+                <option value="4000">4000</option>
               </select>
+              <span class="note">
+                For average roof height h &le; 25 m, this must cover at least 20h.
+              </span>
             </label>
             <label>
               Storey height assumption (m)
@@ -268,12 +275,12 @@
               />
             </label>
             <label>
-              Return period / importance level
+              Importance level (report metadata only)
               <input
                 id="importance_level"
                 name="importance_level"
                 maxlength="100"
-                placeholder="e.g. IL2, 1:500 annual probability"
+                placeholder="e.g. IL2; does not select AEP / ARI"
               />
             </label>
             </div>
@@ -437,6 +444,31 @@
         </div>
       </section>
 
+      <section id="vdes-summary" class="panel workflow-step" data-step="3">
+        <h2>Building-Orthogonal Design Wind Speed, Vdes,&theta;</h2>
+        <p class="note">
+          Clause 2.3 maximum linearly interpolated Vsit,b within &beta; =
+          &theta; &plusmn;45&deg;. Ultimate Vdes,&theta; is not less than 30 m/s.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Plan face</th>
+                <th>&theta;</th>
+                <th>Face &beta;</th>
+                <th>&beta; sector</th>
+                <th>Raw maximum</th>
+                <th>Vdes,&theta;</th>
+              </tr>
+            </thead>
+            <tbody id="vdes-table">
+              <tr><td colspan="6">Run the workflow to see the four design directions.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <details class="raw-detail-group">
         <summary>Engineering overrides</summary>
         <div class="raw-detail-stack">
@@ -489,6 +521,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260729-ui-building-editor-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-vdes-1"></script>
   </body>
 </html>

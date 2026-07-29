@@ -1742,8 +1742,8 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
         Paragraph("OpenWind-AU Site Wind Assessment", title_style),
         Paragraph("<b>PRELIMINARY - NOT FOR CERTIFICATION</b>", body_style),
         Paragraph(
-            "Compact engineering review summary through Vsit,b. This is not a certified "
-            "design-pressure report.",
+            "Compact engineering review summary through cardinal Vsit,b and "
+            "building-orthogonal Vdes,theta. This is not a certified design-pressure report.",
             muted_style,
         ),
         Paragraph("Project and outcome", section_style),
@@ -1782,8 +1782,10 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             ),
         ],
         ["Mc", _report_number(mc_value)],
-        ["Governing result", _wind_report_governing_summary(result)],
+        ["Governing Vsit,b", _wind_report_governing_summary(result)],
     ]
+    if result.governing_vdes_mps is not None:
+        summary_rows.append(["Governing Vdes,theta", _wind_report_vdes_summary(result)])
     story.append(_wind_pdf_table(summary_rows, [38 * mm, 140 * mm], header=False))
     story.extend(
         [
@@ -1841,6 +1843,44 @@ def render_wind_workflow_pdf_report(result: WindWorkflowResult) -> bytes:
             },
         )
     )
+    if result.design_wind_speeds:
+        story.extend(
+            [
+                Paragraph("Building-orthogonal design wind speeds", section_style),
+                Paragraph(
+                    "Clause 2.3: maximum linearly interpolated Vsit,b within beta = "
+                    "theta +/-45 degrees; ultimate Vdes,theta is not less than 30 m/s.",
+                    muted_style,
+                ),
+            ]
+        )
+        design_rows = [["Face", "theta", "Face beta", "Beta sector", "Raw maximum", "Vdes,theta"]]
+        design_rows.extend(
+            [
+                f"{row.face}{' *' if row.is_governing else ''}",
+                f"{row.theta_deg:.1f} deg",
+                f"{row.beta_deg:.1f} deg",
+                (f"{row.sector_start_beta_deg:.1f} to {row.sector_end_beta_deg:.1f} deg"),
+                f"{row.raw_vdes_theta_mps:.3f} m/s",
+                (
+                    f"{row.vdes_theta_mps:.3f} m/s"
+                    f"{' (30 m/s min.)' if row.minimum_uls_applied else ''}"
+                ),
+            ]
+            for row in result.design_wind_speeds
+        )
+        story.append(
+            _wind_pdf_table(
+                design_rows,
+                [25 * mm, 22 * mm, 26 * mm, 39 * mm, 31 * mm, 35 * mm],
+                header=True,
+                governing_rows={
+                    index + 1
+                    for index, row in enumerate(result.design_wind_speeds)
+                    if row.is_governing
+                },
+            )
+        )
     # Keep the issued PDF to a compact engineering-review summary. The HTML
     # report and workflow diagnostics retain the broader warning set.
     warnings = concise_workflow_warnings(result, limit=3)
@@ -1917,8 +1957,18 @@ def _wind_report_building_summary(result: WindWorkflowResult) -> str:
         parts.append(f"reviewed base RL {result.input.base_rl_m:.2f} m")
     if result.input.building_width_m is not None and result.input.building_length_m is not None:
         parts.append(
-            f"{result.input.building_width_m:.2f} m x {result.input.building_length_m:.2f} m"
+            f"breadth {result.input.building_width_m:.2f} m x "
+            f"front-to-back depth {result.input.building_length_m:.2f} m"
         )
+    if result.input.structure_orientation_deg is not None:
+        parts.append(
+            f"front beta {result.input.structure_orientation_deg:.1f} deg clockwise from true North"
+        )
+    if result.input.roof_shape:
+        roof = f"{result.input.roof_shape} roof"
+        if result.input.roof_pitch_deg is not None:
+            roof += f" at {result.input.roof_pitch_deg:.1f} deg"
+        parts.append(roof)
     if result.input.structure_class:
         parts.append(result.input.structure_class)
     return "; ".join(parts)
@@ -1943,6 +1993,13 @@ def _wind_report_governing_summary(result: WindWorkflowResult) -> str:
         [result.governing_direction] if result.governing_direction else []
     )
     return f"{', '.join(directions) or 'N/A'} - {result.governing_vsitb:.3f} m/s"
+
+
+def _wind_report_vdes_summary(result: WindWorkflowResult) -> str:
+    if result.governing_vdes_mps is None:
+        return "Not available"
+    faces = result.governing_vdes_faces
+    return f"{', '.join(faces) or 'N/A'} - {result.governing_vdes_mps:.3f} m/s"
 
 
 def _wind_report_status(result: WindWorkflowResult) -> str:
@@ -1978,10 +2035,11 @@ def _wind_report_basis(result: WindWorkflowResult) -> str:
             "interpolation is not automated and requires independent engineering review."
         )
     return (
-        "Wind region: configured Geoscience Australia 1170.2 GIS dataset. "
+        f"Wind region: {result.wind_region_assessment.source}. "
         "VR: AS/NZS 1170.2:2021 Table 3.1(A). Mc: Clause 3.4 and Table 3.3. "
         f"Md: {md_clause}. "
-        "Mz,cat: Table 4.1. Ms: Clause 4.3 and Table 4.2. Mt: Clause 4.4."
+        "Mz,cat: Table 4.1. Ms: Clause 4.3 and Table 4.2. Mt: Clause 4.4. "
+        "Vdes,theta: Clause 2.3."
         f"{coastal_basis}"
     )
 
@@ -3358,7 +3416,7 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
 <body>
   <header>
     <h1>OpenWind-AU Site Wind Assessment</h1>
-    <p>Compact engineering review summary through Vsit,b</p>
+    <p>Compact engineering review summary through Vsit,b and Vdes,theta</p>
   </header>
   <div class="preliminary-banner">PRELIMINARY - NOT FOR CERTIFICATION</div>
   <main>
@@ -3426,7 +3484,7 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
           <td>{{ "%.3f"|format(mc_value) if mc_value is not none else "Not available" }}</td>
         </tr>
         <tr>
-          <th>Governing result</th>
+          <th>Governing Vsit,b</th>
           <td>
             {% if result.governing_vsitb is not none %}
             {{ (result.governing_directions
@@ -3436,8 +3494,49 @@ CONCISE_WIND_WORKFLOW_REPORT_TEMPLATE = HTML_TEMPLATE_ENV.from_string(
             {% else %}Not available{% endif %}
           </td>
         </tr>
+        {% if result.design_wind_speeds %}
+        <tr>
+          <th>Governing Vdes,theta</th>
+          <td>
+            {{ result.governing_vdes_faces|join(", ") }}
+            - {{ "%.3f"|format(result.governing_vdes_mps) }} m/s
+          </td>
+        </tr>
+        {% endif %}
       </table>
     </section>
+
+    {% if result.design_wind_speeds %}
+    <section>
+      <h2>Building-orthogonal design wind speeds</h2>
+      <p class="note">
+        Clause 2.3: maximum linearly interpolated Vsit,b within beta = theta +/-45 degrees.
+        Ultimate Vdes,theta is not less than 30 m/s.
+      </p>
+      <table>
+        <tr>
+          <th>Plan face</th><th>theta</th><th>Face beta</th><th>Beta sector</th>
+          <th>Raw maximum</th><th>Vdes,theta</th>
+        </tr>
+        {% for row in result.design_wind_speeds %}
+        <tr class="{% if row.is_governing %}governing{% endif %}">
+          <td>{{ row.face }}{% if row.is_governing %} *{% endif %}</td>
+          <td>{{ "%.1f"|format(row.theta_deg) }} deg</td>
+          <td>{{ "%.1f"|format(row.beta_deg) }} deg</td>
+          <td>
+            {{ "%.1f"|format(row.sector_start_beta_deg) }} to
+            {{ "%.1f"|format(row.sector_end_beta_deg) }} deg
+          </td>
+          <td>{{ "%.3f"|format(row.raw_vdes_theta_mps) }} m/s</td>
+          <td>
+            {{ "%.3f"|format(row.vdes_theta_mps) }} m/s
+            {% if row.minimum_uls_applied %}(30 m/s minimum applied){% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </table>
+    </section>
+    {% endif %}
 
     <section>
       <h2>Directional site wind speeds</h2>

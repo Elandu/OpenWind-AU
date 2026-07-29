@@ -52,7 +52,8 @@ certified design tool. Suitable for exploration, review, contribution, and regre
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
-- Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
+- Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, `Vsit,b`, and Clause 2.3
+  building-orthogonal `Vdes,theta` tools through an MCP server.
 
 ## What It Does Not Do
 
@@ -209,6 +210,7 @@ a production wind-region map.
 - [Running locally](docs/running-locally.md)
 - [Workflow guide](docs/workflow.md)
 - [Calculation basis and data lineage](docs/calculation-basis.md)
+- [Base AS/NZS 1170.2:2021 verification matrix](docs/base-standard-verification.md)
 - [Reviewer checklist](docs/reviewer-checklist.md)
 - [API usage](docs/api.md)
 - [MCP server](docs/mcp.md)
@@ -274,10 +276,11 @@ GET  /api/validation/report/html
 `/health/live` is the process-liveness probe. `/health` is the stricter assessment-readiness probe
 and returns HTTP 503 with component checks until required production datasets, reviewed lookup
 tables (`VR`, `Md`, `Mz,cat`, and `Ms`), matching lookup digests, and the configured DEM
-provider/cache are usable. Digest pinning currently covers `Mz,cat` and `Ms`; `VR` and `Md` use
-review metadata and coverage checks. Completed-result report endpoints also require the unmodified
-`integrity_token` returned by the workflow. Production deployments must configure the same
-32-byte-or-longer `OPENWIND_RESULT_SIGNING_KEY` on every API worker.
+provider/cache are usable. All four lookup assets are digest-protected: `VR` and `Md` hash their
+canonical `tables` objects, while `Mz,cat` and `Ms` hash their canonical `values` objects.
+Completed-result report endpoints also require the unmodified `integrity_token` returned by the
+workflow. Production deployments must configure the same 32-byte-or-longer
+`OPENWIND_RESULT_SIGNING_KEY` on every API worker.
 
 ## Example Outputs
 

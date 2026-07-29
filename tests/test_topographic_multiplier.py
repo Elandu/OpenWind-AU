@@ -167,10 +167,10 @@ def test_topographic_multiplier_rejects_ambiguous_generic_region_a() -> None:
         )
 
 
-def test_dynamic_feature_height_threshold_and_gentle_slope_rules() -> None:
-    below_dynamic_threshold = calculate_topographic_multiplier(
+def test_ten_metre_feature_height_threshold_and_gentle_slope_rules() -> None:
+    below_threshold = calculate_topographic_multiplier(
         feature_type="ridge",
-        h_m=3.9,
+        h_m=9.9,
         lu_m=20.0,
         x_m=0.0,
         z_m=0.0,
@@ -178,9 +178,9 @@ def test_dynamic_feature_height_threshold_and_gentle_slope_rules() -> None:
         wind_region="A2",
         site_elevation_m=100.0,
     )
-    at_dynamic_threshold = calculate_topographic_multiplier(
+    at_threshold = calculate_topographic_multiplier(
         feature_type="ridge",
-        h_m=4.0,
+        h_m=10.0,
         lu_m=20.0,
         x_m=0.0,
         z_m=0.0,
@@ -199,9 +199,10 @@ def test_dynamic_feature_height_threshold_and_gentle_slope_rules() -> None:
         site_elevation_m=100.0,
     )
 
-    assert below_dynamic_threshold.minimum_feature_height_m == pytest.approx(4.0)
-    assert below_dynamic_threshold.mt == 1.0
-    assert at_dynamic_threshold.mt > 1.0
+    assert below_threshold.minimum_feature_height_m == pytest.approx(10.0)
+    assert below_threshold.mt == 1.0
+    assert "H < 10 m" in below_threshold.equation
+    assert at_threshold.mt > 1.0
     assert gentle.mt == 1.0
 
 

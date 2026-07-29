@@ -5,6 +5,7 @@ const windInputsSummary = document.getElementById("wind-inputs-summary");
 const workflowMapFrame = document.getElementById("workflow-map-frame");
 const terrainProfileFrame = document.getElementById("terrain-profile-frame");
 const vsitbTable = document.getElementById("vsitb-table");
+const vdesTable = document.getElementById("vdes-table");
 const rawProvenance = document.getElementById("raw-provenance");
 const workflowReport = document.getElementById("workflow-report");
 const workflowPdf = document.getElementById("workflow-pdf");
@@ -27,6 +28,7 @@ const mapCoordinateReadout = document.getElementById("map-coordinate-readout");
 const buildingWidthControl = document.getElementById("building_width_m");
 const buildingLengthControl = document.getElementById("building_length_m");
 const sampleIntervalControl = document.getElementById("sample_interval_m");
+const obstructionRadiusControl = document.getElementById("obstruction_radius_m");
 const defaultStoreyHeightControl = document.getElementById("default_storey_height_m");
 const roofPitchControl = document.getElementById("roof_pitch_deg");
 const averageRoofHeightControl = document.getElementById("average_roof_height_m");
@@ -505,6 +507,15 @@ function validateWorkflowInputs() {
       }),
     ],
     [
+      obstructionRadiusControl,
+      numberControlError(obstructionRadiusControl, "Obstruction radius", {
+        required: true,
+        integer: true,
+        min: 50,
+        max: 4000,
+      }),
+    ],
+    [
       defaultStoreyHeightControl,
       numberControlError(defaultStoreyHeightControl, "Storey height assumption", {
         minExclusive: 0,
@@ -556,6 +567,21 @@ function validateWorkflowInputs() {
     errorByControl.set(
       averageRoofHeightControl,
       "Average roof height must not exceed the overall building height.",
+    );
+  }
+  const referenceHeight = averageRoofHeight ?? buildingHeight;
+  const obstructionRadius = parseOptionalNumber(obstructionRadiusControl?.value);
+  if (
+    referenceHeight !== null
+    && referenceHeight <= 25
+    && obstructionRadius !== null
+    && obstructionRadius < 20 * referenceHeight
+    && !errorByControl.get(obstructionRadiusControl)
+  ) {
+    errorByControl.set(
+      obstructionRadiusControl,
+      `Obstruction radius must be at least ${(20 * referenceHeight).toFixed(0)} m `
+        + "to cover the full 20h shielding sector.",
     );
   }
   for (const [control] of controls) {
@@ -939,6 +965,9 @@ function renderWorkflowFailure(error) {
   setWorkflowProgress(100, label, "error");
   workflowSummary.textContent = `Workflow failed: ${message}`;
   vsitbTable.innerHTML = "<tr><td colspan=\"6\">Workflow failed.</td></tr>";
+  if (vdesTable) {
+    vdesTable.innerHTML = "<tr><td colspan=\"6\">Workflow failed.</td></tr>";
+  }
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
   updateReportAvailability();
@@ -981,6 +1010,12 @@ function renderWorkflow(workflow) {
       status: row.status,
       vsitb: row.final_vsitb,
     })),
+    vdes_status: (workflow.design_wind_speeds || []).map((row) => ({
+      face: row.face,
+      theta_deg: row.theta_deg,
+      beta_deg: row.beta_deg,
+      vdes_theta_mps: row.vdes_theta_mps,
+    })),
     disclaimer: workflow.disclaimer,
   }, null, 2);
 
@@ -993,6 +1028,7 @@ function renderWorkflow(workflow) {
     renderVariableSection(variable, grouped[variable] || []);
   });
   renderVsitbTable(workflow.directional_vsitb || []);
+  renderVdesTable(workflow.design_wind_speeds || []);
   renderRawProvenance(workflow.variables || [], workflow.warnings || []);
 }
 
@@ -2456,6 +2492,9 @@ function replaceWorkflowCards(section, html) {
 
 function renderSiteInputs(workflow) {
   const input = workflow.input || {};
+  const importanceMetadataRow = input.importance_level
+    ? `<tr><th>Importance level (report metadata only)</th><td>${escapeHtml(input.importance_level)}; does not select AEP / ARI</td></tr>`
+    : "";
   const structureRows = [
     input.structure_class ? `<tr><th>Structure class</th><td>${escapeHtml(input.structure_class)}</td></tr>` : "",
     input.structure_orientation_deg !== null && input.structure_orientation_deg !== undefined ? `<tr><th>Orientation</th><td>${formatNullableNumber(input.structure_orientation_deg, 2, "deg")}</td></tr>` : "",
@@ -2476,7 +2515,8 @@ function renderSiteInputs(workflow) {
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>
           <tr><th>Building height</th><td>${Number(input.building_height_m).toFixed(2)} m</td></tr>
           ${structureRows}
-          <tr><th>Return period / importance level</th><td>${escapeHtml(input.importance_level || input.annual_exceedance_probability || "user input")}</td></tr>
+          <tr><th>AEP / ARI</th><td>${escapeHtml(input.annual_exceedance_probability || "not supplied")}</td></tr>
+          ${importanceMetadataRow}
         </tbody>
       </table>
     </div>
@@ -2491,6 +2531,13 @@ function renderWindInputs(workflow) {
     windInputsSummary.innerHTML = "<p class=\"note\">Wind inputs were not generated.</p>";
     return;
   }
+  const selectedAep = speed.annual_exceedance_probability
+    || workflow.input?.annual_exceedance_probability
+    || "not supplied";
+  const importanceMetadata = speed.importance_level || workflow.input?.importance_level;
+  const returnPeriodNote = importanceMetadata
+    ? `Selected AEP / ARI: ${selectedAep}; importance metadata: ${importanceMetadata} (does not select AEP / ARI)`
+    : `Selected AEP / ARI: ${selectedAep}`;
   windInputsSummary.innerHTML = `
     <div class="status-strip">
       <div>
@@ -2501,7 +2548,7 @@ function renderWindInputs(workflow) {
       <div>
         <span class="kicker">Return period</span>
         <strong>ARI ${Number(speed.ari_years)} years</strong>
-        <span class="muted">${escapeHtml(speed.importance_level || "user-selected AEP")}</span>
+        <span class="muted">${escapeHtml(returnPeriodNote)}</span>
       </div>
       <div>
         <span class="kicker">Confidence</span>
@@ -2564,6 +2611,9 @@ function resetWorkflowSections() {
   if (dashboardGoverningVsitb) dashboardGoverningVsitb.textContent = "Calculating";
   if (vsitbTable) {
     vsitbTable.innerHTML = "<tr><td colspan=\"6\">Waiting for directional variables.</td></tr>";
+  }
+  if (vdesTable) {
+    vdesTable.innerHTML = "<tr><td colspan=\"6\">Waiting for design directions.</td></tr>";
   }
   if (rawProvenance) {
     rawProvenance.innerHTML = "<p class=\"note\">Waiting for calculation sources and warnings...</p>";
@@ -2719,6 +2769,27 @@ function renderVsitbTable(rows) {
       <td>${formatWorkflowValue(row.ms, "")}</td>
       <td>${formatWorkflowValue(row.mt, "")}</td>
       <td>${row.final_vsitb === null || row.final_vsitb === undefined ? "blocked" : `${row.final_vsitb.toFixed(3)} m/s${row.is_governing ? "<span class=\"muted\">governing Vsit,b</span>" : ""}`}</td>
+    </tr>
+  `).join("");
+}
+
+function renderVdesTable(rows) {
+  if (!vdesTable) return;
+  if (!rows.length) {
+    vdesTable.innerHTML = (
+      "<tr><td colspan=\"6\">Vdes,theta requires the front orientation and all eight "
+      + "directional Vsit,b values.</td></tr>"
+    );
+    return;
+  }
+  vdesTable.innerHTML = rows.map((row) => `
+    <tr class="${row.is_governing ? "governing-row" : ""}">
+      <td>${escapeHtml(row.face)}${row.is_governing ? "<span class=\"muted\">governing face</span>" : ""}</td>
+      <td>${formatOrientation(row.theta_deg)} deg</td>
+      <td>${formatOrientation(row.beta_deg)} deg</td>
+      <td>${formatOrientation(row.sector_start_beta_deg)} to ${formatOrientation(row.sector_end_beta_deg)} deg</td>
+      <td>${Number(row.raw_vdes_theta_mps).toFixed(3)} m/s</td>
+      <td>${Number(row.vdes_theta_mps).toFixed(3)} m/s${row.minimum_uls_applied ? "<span class=\"muted\">30 m/s ULS minimum applied</span>" : ""}</td>
     </tr>
   `).join("");
 }

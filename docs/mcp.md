@@ -1,8 +1,8 @@
 # MCP Server
 
 OpenWind-AU includes a Model Context Protocol server for deterministic Australian wind-variable
-calculations through `Vsit,b`. It uses the stable v1 Python SDK and supports stdio and Streamable
-HTTP transports.
+calculations through cardinal `Vsit,b` and building-orthogonal ultimate `Vdes,theta`. It uses the
+stable v1 Python SDK and supports stdio and Streamable HTTP transports.
 
 ## Install
 
@@ -83,6 +83,9 @@ directly in that case:
 - `calculate_topographic_wind_multiplier`: Clause 4.4 calculation with intermediate values.
 - `calculate_site_wind_speed`: reviewed-input Clause 2.2
   `VR x Mc x Md x Mz,cat x Ms x Mt` product.
+- `calculate_design_wind_speeds`: four Clause 2.3 Front/Right/Back/Left ultimate
+  `Vdes,theta` results from a front `beta` and the eight cardinal `Vsit,b` values, including
+  circular linear interpolation and the 30 m/s ultimate minimum.
 - `calculate_all_wind_variables`: a traceable combined result for one direction.
 
 The combined tool requires a `wind_direction_multiplier_case`. It also accepts the optional

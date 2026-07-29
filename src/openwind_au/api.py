@@ -116,8 +116,10 @@ from openwind_au.wind_inputs import (
     direction_multiplier_assessment,
     load_md_tables,
     load_vr_tables,
+    md_lookup_issues,
     regional_wind_speed_assessment,
     run_wind_region_validation_cases,
+    vr_lookup_issues,
     vr_table_issues,
     wind_region_map_html,
 )
@@ -1244,17 +1246,19 @@ def readiness_report() -> dict[str, Any]:
         }
         missing_regions = [region for region, issues in md_region_issues.items() if issues]
         metadata_reviewed = lookup_is_reviewed(md_data)
-        md_ready = metadata_reviewed and not missing_regions
+        lookup_issues = md_lookup_issues(md_data, require_reviewed=True)
+        md_ready = not lookup_issues and not missing_regions
         checks["direction_multiplier_table"] = {
             "ready": md_ready,
             "reviewed": metadata_reviewed,
+            "values_sha256": md_data.get("values_sha256"),
             "missing_regions": missing_regions,
+            "lookup_issues": lookup_issues,
             "issues": {region: issues for region, issues in md_region_issues.items() if issues},
             "message": (
-                "Reviewed Md rows cover every configured wind-region label."
+                "Reviewed, digest-protected Md rows cover every configured wind-region label."
                 if md_ready
-                else "Reviewed Md rows are missing or invalid for one or more configured "
-                "wind regions."
+                else "Md lookup review, digest, or regional coverage is incomplete."
             ),
         }
     except Exception:
@@ -1273,15 +1277,18 @@ def readiness_report() -> dict[str, Any]:
         missing_vr_regions = [
             region for region in ("A", "B", "C", "D") if not _valid_vr_table(vr_tables.get(region))
         ]
-        vr_ready = vr_reviewed and not missing_vr_regions
+        vr_lookup_failures = vr_lookup_issues(vr_data, require_reviewed=True)
+        vr_ready = not vr_lookup_failures and not missing_vr_regions
         checks["regional_wind_speed_table"] = {
             "ready": vr_ready,
             "reviewed": vr_reviewed,
+            "values_sha256": vr_data.get("values_sha256"),
             "missing_regions": missing_vr_regions,
+            "lookup_issues": vr_lookup_failures,
             "message": (
-                "Reviewed VR tables cover Australian regions A-D."
+                "Reviewed, digest-protected VR tables cover Australian regions A-D."
                 if vr_ready
-                else "Reviewed VR lookup data is missing or invalid."
+                else "VR lookup review, digest, or regional coverage is incomplete."
             ),
         }
     except Exception:

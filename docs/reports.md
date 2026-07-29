@@ -95,6 +95,8 @@ The HTML and PDF outputs use the same compact report structure:
   `VR,ult`, `Mc`, and every tied governing direction;
 - one eight-direction table for `Md`, `Mz,cat`, `Ms`, `Mt`, calculated `Vsit,b`, and final
   `Vsit,b` when a reviewed direct override applies;
+- one four-face Clause 2.3 table for the relative `theta`, absolute `beta`, design sector, raw
+  maximum and ultimate `Vdes,theta`;
 - deduplicated decision-relevant warnings, overrides, and engineer notes when present; and
 - a short calculation-basis and limitations statement.
 
@@ -108,5 +110,5 @@ rather than repeated across all eight directional rows. Numeric class-multiplier
 disclosed alongside their calculated values, while a direct `Vsit,b` override is labelled as the
 final reviewed value instead of being presented as the multiplier product.
 
-The site wind assessment report does not include pressure calculations, `Cpe`, `Cpi`, or final
-design pressures.
+The site wind assessment report includes cardinal `Vsit,b` and building-orthogonal ultimate
+`Vdes,theta`. It does not include pressure calculations, `Cpe`, `Cpi`, or final design pressures.

@@ -64,9 +64,10 @@ GET http://127.0.0.1:8000/health
 
 `/health/live` returns HTTP 200 when the API process is responsive. `/health` returns HTTP 200 only
 when the production wind-region dataset, reviewed `VR`/`Md`/`Mz,cat`/`Ms` lookup data, matching
-`Mz,cat`/`Ms` digests, configured DEM provider/cache, and durable result-signing key are ready;
-otherwise it returns HTTP 503 with per-component checks. A development instance can be live while
-correctly reporting `not_ready` for project assessments.
+lookup digests, configured DEM provider/cache, and durable result-signing key are ready. `VR` and
+`Md` hash canonical `tables`; `Mz,cat` and `Ms` hash canonical `values`. Otherwise it returns HTTP
+503 with per-component checks. A development instance can be live while correctly reporting
+`not_ready` for project assessments.
 
 Run the identical readiness report before starting or routing traffic:
 

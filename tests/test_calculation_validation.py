@@ -10,7 +10,7 @@ from openwind_au.calculation_validation import run_calculation_validation_cases
 def test_calculation_validation_cases_pass() -> None:
     report = run_calculation_validation_cases()
 
-    assert report.summary == {"pass": 12, "fail": 0}
+    assert report.summary == {"pass": 13, "fail": 0}
     assert {result.calculation_area for result in report.results} == {
         "shielding",
         "topography",
@@ -45,6 +45,15 @@ def test_calculation_validation_includes_reference_formula_checks() -> None:
         check.field == "Region B2 climate-change multiplier Mc" and check.actual == 1.05
         for check in site_wind.checks
     )
+    design_wind = by_id["design-wind-speed-clause-2-3-reference"]
+    assert any(
+        check.field == "west-facing Front Vdes,theta" and check.actual == 41.3
+        for check in design_wind.checks
+    )
+    assert any(
+        check.field == "337.5-degree interpolated sector maximum" and check.actual == 40.3
+        for check in design_wind.checks
+    )
 
     multiplier = by_id["topographic-multiplier-clause-4-4-reference"]
     assert any(
@@ -71,7 +80,7 @@ def test_calculation_validation_api() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["summary"] == {"pass": 12, "fail": 0}
+    assert body["summary"] == {"pass": 13, "fail": 0}
     assert "certify AS/NZS 1170.2 compliance" in body["disclaimer"]
     assert {result["calculation_area"] for result in body["results"]} == {
         "shielding",

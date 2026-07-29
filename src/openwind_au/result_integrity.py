@@ -15,6 +15,7 @@ from openwind_au.mzcat import indicative_mzcat
 from openwind_au.standard_calculations import (
     DIRECTIONS,
     climate_change_multiplier,
+    design_wind_speed,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
 RESULT_SIGNING_KEY_ENV = "OPENWIND_RESULT_SIGNING_KEY"
 TOKEN_PREFIX = "owau-hmac-sha256-v1:"
 _EPHEMERAL_SIGNING_KEY = secrets.token_bytes(32)
+BUILDING_PLAN_FACE_OFFSETS = (
+    ("Front", 0.0),
+    ("Right", 90.0),
+    ("Back", 180.0),
+    ("Left", 270.0),
+)
 
 
 def result_signing_key_is_configured() -> bool:
@@ -313,6 +320,88 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
         or result.governing_vsitb is not None
     ):
         raise ValueError("Blocked workflow result must not identify a governing wind speed.")
+
+    _validate_design_wind_speeds(result)
+
+
+def _validate_design_wind_speeds(result: WindWorkflowResult) -> None:
+    """Verify the signed Clause 2.3 building-orthogonal design-speed rows."""
+
+    complete_vsitb = all(row.final_vsitb is not None for row in result.directional_vsitb)
+    orientation = result.input.structure_orientation_deg
+    if orientation is None or not complete_vsitb:
+        if (
+            result.design_wind_speeds
+            or result.governing_vdes_faces
+            or result.governing_vdes_mps is not None
+        ):
+            raise ValueError(
+                "Blocked Clause 2.3 design wind speeds must not identify calculated results."
+            )
+        return
+
+    if [row.face for row in result.design_wind_speeds] != [
+        face for face, _offset in BUILDING_PLAN_FACE_OFFSETS
+    ]:
+        raise ValueError(
+            "Workflow result must contain Front, Right, Back, and Left design wind speeds."
+        )
+    direction_speeds = {
+        row.direction: float(row.final_vsitb)
+        for row in result.directional_vsitb
+        if row.final_vsitb is not None
+    }
+    expected_design_speeds: list[float] = []
+    for row, (face, theta_deg) in zip(
+        result.design_wind_speeds,
+        BUILDING_PLAN_FACE_OFFSETS,
+        strict=True,
+    ):
+        beta_deg = (float(orientation) + theta_deg) % 360.0
+        calculation = design_wind_speed(
+            theta_degrees=beta_deg,
+            direction_speeds=direction_speeds,
+            ultimate_limit_state=True,
+        )
+        if row.face != face or not _optional_float_equal(row.theta_deg, theta_deg):
+            raise ValueError(f"Clause 2.3 plan-face definition is inconsistent for {face}.")
+        numeric_pairs = (
+            (row.beta_deg, beta_deg),
+            (row.sector_start_beta_deg, calculation.sector_start_degrees),
+            (row.sector_end_beta_deg, calculation.sector_end_degrees),
+            (row.raw_vdes_theta_mps, calculation.raw_maximum_m_s),
+            (row.vdes_theta_mps, calculation.design_wind_speed_m_s),
+        )
+        if any(not _optional_float_equal(actual, expected) for actual, expected in numeric_pairs):
+            raise ValueError(f"Clause 2.3 design wind speed is inconsistent for {face}.")
+        if row.minimum_uls_applied != calculation.minimum_applied:
+            raise ValueError(f"Clause 2.3 ULS minimum status is inconsistent for {face}.")
+        if len(row.candidates) != len(calculation.candidates) or any(
+            not _optional_float_equal(actual.beta_deg, expected.bearing_degrees)
+            or not _optional_float_equal(actual.vsitb_mps, expected.site_wind_speed_m_s)
+            for actual, expected in zip(row.candidates, calculation.candidates, strict=True)
+        ):
+            raise ValueError(f"Clause 2.3 interpolation candidates are inconsistent for {face}.")
+        expected_design_speeds.append(calculation.design_wind_speed_m_s)
+
+    governing_value = max(expected_design_speeds)
+    expected_governing_faces = [
+        row.face
+        for row in result.design_wind_speeds
+        if math.isclose(
+            row.vdes_theta_mps,
+            governing_value,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+    ]
+    actual_governing_faces = [row.face for row in result.design_wind_speeds if row.is_governing]
+    if (
+        actual_governing_faces != expected_governing_faces
+        or result.governing_vdes_faces != expected_governing_faces
+        or not _optional_float_equal(result.governing_vdes_mps, governing_value)
+    ):
+        raise ValueError("Clause 2.3 governing design wind speed is inconsistent.")
 
 
 def _canonical_result_bytes(result: WindWorkflowResult) -> bytes:

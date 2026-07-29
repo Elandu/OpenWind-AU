@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from openwind_au.models import TerrainProfile, TopographicFeature
+from openwind_au.topographic_multiplier import MIN_TOPOGRAPHIC_FEATURE_HEIGHT_M
 
 MIN_CONTEXT_FEATURE_RELIEF_M = 5.0
 MIN_RIDGE_VALLEY_SUBSTANTIAL_RELIEF_M = 50.0
@@ -74,7 +75,7 @@ def analyse_profile_topography(
     if len(distances) < 3:
         return _no_significant_feature(profile, site_rl_m)
 
-    minimum_feature_relief_m = min(0.4 * average_roof_height_m, 5.0)
+    minimum_feature_relief_m = MIN_TOPOGRAPHIC_FEATURE_HEIGHT_M
     candidates = [
         *_ridge_candidates(distances, elevations, minimum_feature_relief_m),
         *_valley_candidates(distances, elevations),
@@ -241,7 +242,7 @@ def _ridge_candidates(
                 slope=slope,
                 score=h_m + prominence,
                 notes=(
-                    "Local crest meets the Clause 4.4.2 H >= min(0.4h, 5 m) screening height.",
+                    "Local crest meets the Clause 4.4.2 H >= 10 m screening height.",
                     "Classified as a ridge candidate from profile geometry only.",
                 ),
             )

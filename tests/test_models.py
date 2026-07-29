@@ -179,6 +179,36 @@ def test_wind_workflow_rejects_orientation_outside_engineering_azimuth(
         )
 
 
+def test_wind_workflow_requires_complete_twenty_h_shielding_fetch() -> None:
+    with pytest.raises(ValidationError, match="at least 20 times"):
+        WindWorkflowRequest(
+            latitude=-34.550445,
+            longitude=150.848728,
+            building_height_m=25,
+            obstruction_radius_m=499,
+        )
+
+    request = WindWorkflowRequest(
+        latitude=-34.550445,
+        longitude=150.848728,
+        building_height_m=25,
+        obstruction_radius_m=500,
+    )
+
+    assert request.obstruction_radius_m == 500
+
+
+def test_wind_workflow_does_not_require_shielding_fetch_above_25_m() -> None:
+    request = WindWorkflowRequest(
+        latitude=-34.550445,
+        longitude=150.848728,
+        building_height_m=30,
+        obstruction_radius_m=50,
+    )
+
+    assert request.reference_height_m == 30
+
+
 @pytest.mark.parametrize(
     ("building_width_m", "building_length_m"),
     [(4.0, None), (None, 5.0)],
@@ -198,3 +228,29 @@ def test_wind_workflow_requires_building_dimensions_as_a_pair(
             building_width_m=building_width_m,
             building_length_m=building_length_m,
         )
+
+
+def test_wind_workflow_rejects_legacy_and_structured_building_dimensions() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="Deprecated building_dimensions cannot be combined with structured",
+    ):
+        WindWorkflowRequest(
+            latitude=-34.550445,
+            longitude=150.848728,
+            building_height_m=3,
+            building_dimensions="12 m x 8 m",
+            building_width_m=12,
+            building_length_m=8,
+        )
+
+
+def test_wind_workflow_retains_legacy_building_dimensions_when_structured_absent() -> None:
+    request = WindWorkflowRequest(
+        latitude=-34.550445,
+        longitude=150.848728,
+        building_height_m=3,
+        building_dimensions="12 m x 8 m",
+    )
+
+    assert request.building_dimensions == "12 m x 8 m"

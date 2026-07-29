@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from openwind_au.errors import ServiceNotReadyError
@@ -71,6 +73,28 @@ MS_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2"
 EXPECTED_SHIELDING_PARAMETER_NODES: tuple[float, ...] = (1.5, 3.0, 6.0, 12.0)
 EXPECTED_SHIELDING_REDUCTION_HEIGHT_LIMIT_M = 25.0
 MAX_DIRECTION_MULTIPLIER = 2.0
+ULTIMATE_DESIGN_WIND_SPEED_MINIMUM_M_S = 30.0
+
+
+@dataclass(frozen=True)
+class DesignWindSpeedCandidate:
+    """One site-wind-speed value considered over a design-direction sector."""
+
+    bearing_degrees: float
+    site_wind_speed_m_s: float
+
+
+@dataclass(frozen=True)
+class DesignWindSpeedResult:
+    """Deterministic Clause 2.3 design-wind-speed calculation detail."""
+
+    theta_degrees: float
+    sector_start_degrees: float
+    sector_end_degrees: float
+    candidates: tuple[DesignWindSpeedCandidate, ...]
+    raw_maximum_m_s: float
+    design_wind_speed_m_s: float
+    minimum_applied: bool
 
 
 def table_region_key(region: str, tables: dict[str, Any]) -> str:
@@ -338,3 +362,109 @@ def site_wind_speed(
     if invalid:
         raise ValueError(f"Site-wind inputs must be positive and finite: {', '.join(invalid)}")
     return float(vr) * float(mc) * float(md) * float(mzcat) * float(ms) * float(mt)
+
+
+def design_wind_speed(
+    *,
+    theta_degrees: float,
+    direction_speeds: Mapping[str, float],
+    ultimate_limit_state: bool = True,
+) -> DesignWindSpeedResult:
+    """Calculate Vdes,theta from eight directional site wind speeds.
+
+    Site wind speed is linearly interpolated between the 45-degree direction
+    knots. The maximum is evaluated over the closed sector from theta - 45
+    degrees to theta + 45 degrees. For an ultimate limit state, the returned
+    design wind speed is not permitted to be less than 30 m/s.
+    """
+
+    if (
+        isinstance(theta_degrees, bool)
+        or not isinstance(theta_degrees, int | float)
+        or not math.isfinite(theta_degrees)
+        or not 0 <= theta_degrees < 360
+    ):
+        raise ValueError("Design orientation theta must be finite and in the range [0, 360).")
+    if not isinstance(direction_speeds, Mapping):
+        raise ValueError("Directional site wind speeds must be a mapping.")
+    if not isinstance(ultimate_limit_state, bool):
+        raise ValueError("ultimate_limit_state must be a boolean.")
+    missing = [direction for direction in DIRECTIONS if direction not in direction_speeds]
+    unexpected = sorted(
+        str(direction) for direction in direction_speeds if direction not in DIRECTIONS
+    )
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing directions: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected directions: {', '.join(unexpected)}")
+        raise ValueError(
+            f"Directional site wind speeds must contain exactly N through NW: {'; '.join(details)}"
+        )
+
+    speeds: tuple[float, ...] = tuple(
+        _validated_direction_speed(direction, direction_speeds[direction])
+        for direction in DIRECTIONS
+    )
+    theta = float(theta_degrees)
+    unwrapped_start = theta - 45.0
+    unwrapped_end = theta + 45.0
+    first_knot_index = math.ceil(unwrapped_start / 45.0)
+    last_knot_index = math.floor(unwrapped_end / 45.0)
+    candidate_bearings = {unwrapped_start, unwrapped_end}
+    candidate_bearings.update(
+        knot_index * 45.0 for knot_index in range(first_knot_index, last_knot_index + 1)
+    )
+    candidates = tuple(
+        DesignWindSpeedCandidate(
+            bearing_degrees=_normalise_bearing(unwrapped_bearing),
+            site_wind_speed_m_s=_interpolated_direction_speed(unwrapped_bearing, speeds),
+        )
+        for unwrapped_bearing in sorted(candidate_bearings)
+    )
+    raw_maximum = max(candidate.site_wind_speed_m_s for candidate in candidates)
+    design_speed = (
+        max(raw_maximum, ULTIMATE_DESIGN_WIND_SPEED_MINIMUM_M_S)
+        if ultimate_limit_state
+        else raw_maximum
+    )
+    return DesignWindSpeedResult(
+        theta_degrees=theta,
+        sector_start_degrees=_normalise_bearing(unwrapped_start),
+        sector_end_degrees=_normalise_bearing(unwrapped_end),
+        candidates=candidates,
+        raw_maximum_m_s=raw_maximum,
+        design_wind_speed_m_s=design_speed,
+        minimum_applied=design_speed > raw_maximum,
+    )
+
+
+def _validated_direction_speed(direction: str, value: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"Directional site wind speed {direction} must be positive and finite.")
+    return float(value)
+
+
+def _normalise_bearing(bearing_degrees: float) -> float:
+    normalised = bearing_degrees % 360.0
+    return 0.0 if normalised == 0 else normalised
+
+
+def _interpolated_direction_speed(
+    bearing_degrees: float,
+    direction_speeds: tuple[float, ...],
+) -> float:
+    bearing = _normalise_bearing(bearing_degrees)
+    lower_index = int(math.floor(bearing / 45.0))
+    lower_bearing = lower_index * 45.0
+    fraction = (bearing - lower_bearing) / 45.0
+    upper_index = (lower_index + 1) % len(DIRECTIONS)
+    return direction_speeds[lower_index] + fraction * (
+        direction_speeds[upper_index] - direction_speeds[lower_index]
+    )

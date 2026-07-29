@@ -1,10 +1,13 @@
-"""AS/NZS 1170.2 site wind workflow through reviewed Vsit,b."""
+"""AS/NZS 1170.2 workflow through reviewed Vsit,b and Vdes,theta."""
 
 from __future__ import annotations
 
 import math
 
 from openwind_au.models import (
+    BuildingPlanFace,
+    DesignWindSpeedCandidate,
+    DesignWindSpeedRow,
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
     ObstructionInventoryResult,
@@ -34,6 +37,7 @@ from openwind_au.standard_calculations import (
     MC_STANDARD_REFERENCE,
     MS_METADATA_WARNING,
     climate_change_multiplier,
+    design_wind_speed,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
@@ -51,6 +55,12 @@ TOPOGRAPHIC_SECTION_REVIEW_WARNING = (
     "escarpment downwind-slope eligibility are not automated; Mt requires engineer review."
 )
 VSITB_GOVERNING_ABS_TOLERANCE = 1e-9
+BUILDING_PLAN_FACE_OFFSETS: tuple[tuple[BuildingPlanFace, float], ...] = (
+    ("Front", 0.0),
+    ("Right", 90.0),
+    ("Back", 180.0),
+    ("Left", 270.0),
+)
 
 
 def run_wind_workflow(
@@ -64,7 +74,7 @@ def run_wind_workflow(
     direction_multipliers: DirectionMultiplierAssessment | None = None,
     mzcat_lookup_data: dict | None = None,
 ) -> WindWorkflowResult:
-    """Assemble reviewable AS/NZS 1170.2 site wind variables through Vsit,b."""
+    """Assemble reviewable AS/NZS 1170.2 variables through Vsit,b and Vdes,theta."""
 
     overrides = override_lookup(request.workflow_overrides)
     class_overrides = class_override_lookup(request.class_multiplier_overrides)
@@ -124,9 +134,18 @@ def run_wind_workflow(
     vsitb_variables = vsitb_assessments(vsitb_rows, overrides)
     vsitb_rows = apply_vsitb_assessments_to_rows(vsitb_rows, vsitb_variables)
     vsitb_rows = mark_governing_vsitb(vsitb_rows)
+    design_wind_speeds = building_orthogonal_design_wind_speeds(
+        vsitb_rows,
+        request.structure_orientation_deg,
+    )
     exact_governing_row = max(
         (row for row in vsitb_rows if row.final_vsitb is not None),
         key=lambda row: float(row.final_vsitb),
+        default=None,
+    )
+    exact_governing_vdes = max(
+        design_wind_speeds,
+        key=lambda row: float(row.vdes_theta_mps),
         default=None,
     )
     variables.extend(vsitb_variables)
@@ -143,6 +162,16 @@ def run_wind_workflow(
     warnings.extend(regional_speed.warnings)
     warnings.extend(direction_multipliers.warnings)
     warnings.extend(mzcat_lookup_warnings(mzcat_lookup))
+    if request.structure_orientation_deg is None:
+        warnings.append(
+            "Structure orientation beta was not supplied, so Clause 2.3 building-orthogonal "
+            "Vdes,theta was not calculated."
+        )
+    elif not design_wind_speeds:
+        warnings.append(
+            "Clause 2.3 building-orthogonal Vdes,theta is blocked until all eight final "
+            "directional Vsit,b values are available."
+        )
     if (
         obstruction_result.ms_lookup_provenance is not None
         and not obstruction_result.ms_lookup_provenance.independent_review_recorded
@@ -156,18 +185,80 @@ def run_wind_workflow(
         direction_multiplier_assessment=direction_multipliers,
         variables=variables,
         directional_vsitb=vsitb_rows,
+        design_wind_speeds=design_wind_speeds,
         governing_directions=[row.direction for row in vsitb_rows if row.is_governing],
         governing_direction=exact_governing_row.direction if exact_governing_row else None,
         governing_vsitb=exact_governing_row.final_vsitb if exact_governing_row else None,
+        governing_vdes_faces=[row.face for row in design_wind_speeds if row.is_governing],
+        governing_vdes_mps=(exact_governing_vdes.vdes_theta_mps if exact_governing_vdes else None),
         evidence_references=[
             "Wind region map",
             "Terrain and shielding map",
             "Terrain profiles",
             "Calculation details",
+            "Clause 2.3 building-orthogonal design directions",
         ],
         warnings=warnings,
     )
     return seal_workflow_result(result)
+
+
+def building_orthogonal_design_wind_speeds(
+    rows: list[SiteWindSpeedRow],
+    front_beta_deg: float | None,
+) -> list[DesignWindSpeedRow]:
+    """Return Clause 2.3 ultimate Vdes,theta rows for the four building plan faces."""
+
+    if front_beta_deg is None:
+        return []
+    direction_speeds = {
+        row.direction: float(row.final_vsitb) for row in rows if row.final_vsitb is not None
+    }
+    if set(direction_speeds) != set(DIRECTIONS):
+        return []
+
+    design_rows: list[DesignWindSpeedRow] = []
+    for face, theta_deg in BUILDING_PLAN_FACE_OFFSETS:
+        beta_deg = (float(front_beta_deg) + theta_deg) % 360.0
+        calculation = design_wind_speed(
+            theta_degrees=beta_deg,
+            direction_speeds=direction_speeds,
+            ultimate_limit_state=True,
+        )
+        design_rows.append(
+            DesignWindSpeedRow(
+                face=face,
+                theta_deg=theta_deg,
+                beta_deg=beta_deg,
+                sector_start_beta_deg=calculation.sector_start_degrees,
+                sector_end_beta_deg=calculation.sector_end_degrees,
+                candidates=[
+                    DesignWindSpeedCandidate(
+                        beta_deg=candidate.bearing_degrees,
+                        vsitb_mps=candidate.site_wind_speed_m_s,
+                    )
+                    for candidate in calculation.candidates
+                ],
+                raw_vdes_theta_mps=calculation.raw_maximum_m_s,
+                vdes_theta_mps=calculation.design_wind_speed_m_s,
+                minimum_uls_applied=calculation.minimum_applied,
+            )
+        )
+
+    governing_value = max(row.vdes_theta_mps for row in design_rows)
+    return [
+        row.model_copy(
+            update={
+                "is_governing": math.isclose(
+                    row.vdes_theta_mps,
+                    governing_value,
+                    rel_tol=1e-12,
+                    abs_tol=VSITB_GOVERNING_ABS_TOLERANCE,
+                )
+            }
+        )
+        for row in design_rows
+    ]
 
 
 def override_lookup(
@@ -267,7 +358,12 @@ def vr_assessment(
         ),
         calculation_inputs=[
             f"Region: {regional_speed.wind_region}",
-            f"Importance level / return period: {request.importance_level or 'user input'}",
+            f"AEP / ARI input: {request.annual_exceedance_probability}",
+            *(
+                [f"Importance level (report metadata only): {request.importance_level}"]
+                if request.importance_level
+                else []
+            ),
             *regional_speed.lookup_values,
         ],
         detail_items=[

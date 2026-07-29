@@ -17,6 +17,9 @@ No licensed PDF, workstation path, copied clause, or bulk standards table is com
 repository. Derived data, source references, tests, and review status are recorded without
 publishing the licensed source material.
 
+The detailed clause/page matrix and reverification procedure are recorded in
+[`base-standard-verification.md`](base-standard-verification.md).
+
 ## Wind Region
 
 ### Input Data
@@ -32,6 +35,9 @@ selection for the site coordinate. When more than one polygon intersects the sit
 configured selection logic and reports neighbouring polygons for review. Boundary warning logic
 checks the site distance to the selected region boundary and downgrades confidence near a
 configured warning distance.
+
+If no configured polygon covers the site, calculation is blocked. The nearest polygon remains
+available only in internal diagnostics and is not promoted to a wind-region assessment.
 
 Internal dataset diagnostics include the configured path. Public assessments report the dataset
 identity, polygon count, available region labels, and whether the active dataset is a test
@@ -105,8 +111,10 @@ ISO `source.reviewed_on` date to avoid a warning.
 
 ### Review Requirements
 
-The engineer must confirm the ARI, importance level, table applicability, jurisdictional NCC
-variations, and any override source before using the value in design decisions.
+The engineer must confirm the selected AEP/ARI, table applicability, jurisdictional NCC
+variations, and any override source before using the value in design decisions. `importance_level`
+and `design_life_years` are retained as report metadata only; they do not derive or select the
+AEP/ARI.
 
 ## Direction Multiplier (Md)
 
@@ -186,9 +194,10 @@ OpenWind-AU does not assign final terrain categories. It provides evidence only.
 For each reviewed or recommended category, the wind workflow evaluates `Mz,cat` at the request's
 single common reference height (`average_roof_height_m`, falling back to `building_height_m`). The
 lookup supports the AS/NZS 1170.2:2021 Table 4.1 height nodes from `z <= 3 m` through `z = 200 m`;
-intermediate heights and terrain categories use linear interpolation. Intermediate TC1.5 values
-are derived between TC1 and TC2 rather than stored as a separate standard table column. The Region
-A0 rule uses TC2 for `z <= 100 m` and `Mz,cat = 1.24` above 100 m to 200 m.
+intermediate heights and terrain categories use linear interpolation. Intermediate categories
+such as TC1.5 and TC3.5 are derived between adjacent standard table columns rather than stored as
+separate table columns. The Region A0 rule uses TC2 for `z <= 100 m` and `Mz,cat = 1.24` above
+100 m to 200 m.
 
 The Clause 4.2.3 mixed-terrain weighted-average workflow is not automated. A mixed directional
 fetch still requires an engineer-reviewed category/value rather than an inferred final design
@@ -288,6 +297,9 @@ against the subject building height threshold. For included obstructions, it cal
 counts, average shielding height, footprint breadth normal to wind, spacing evidence, and an
 indicative shielding multiplier workflow.
 
+For `h <= 25 m`, request validation requires the obstruction inventory radius to cover at least
+`20h`; a shorter provider query is rejected rather than presented as a complete shielding sector.
+
 Vegetation is excluded because Clause 4.3 does not permit trees or vegetation to provide
 shielding. For structures higher than 25 m, `Ms` is fixed at 1.0. Where ground levels are
 available, an upwind building on an average ground gradient greater than 0.2 is rejected unless
@@ -351,7 +363,7 @@ common reference height `z` / average roof height `h`. The workflow uses
 `average_roof_height_m` when supplied and falls back to `building_height_m`. The implementation
 applies:
 
-- the `H < min(0.4h, 5 m)` and `H/(2Lu) < 0.05` exclusions;
+- the `H < 10 m` and `H/(2Lu) < 0.05` exclusions;
 - Equation 4.4(3) in the local topographic zone;
 - Equation 4.4(4) in the steep-slope rectangular peak zone;
 - the different downwind length scale for escarpments;
@@ -382,11 +394,13 @@ The intended evidence chain is:
 Wind Region -> VR -> Mc -> Md -> Terrain Evidence -> Shielding Evidence -> Topographic Evidence ->
 Engineer Review -> Final design calculations
 
-OpenWind-AU organises the workflow through `Vsit,b` as review support. It does not currently
-perform the Clause 2.3 conversion to building-orthogonal `Vdes,theta` or produce certified design
-wind pressures. The stored building orientation uses the Figure 2.2 engineering-azimuth
-convention—clockwise from true North over `0 <= beta < 360`—so the axis metadata is unambiguous
-when that later calculation stage is implemented.
+OpenWind-AU organises the workflow through cardinal `Vsit,b` and building-orthogonal ultimate
+`Vdes,theta` as review support. The stored front orientation uses the Figure 2.2 engineering
+azimuth convention (clockwise from true North over `0 <= beta < 360`). Right, Back, and Left are
+offset by 90, 180, and 270 degrees. For each face, the Clause 2.3 calculation linearly interpolates
+`Vsit,b` between the eight 45-degree direction points, takes the maximum over the closed sector
+from `beta - 45` to `beta + 45`, and enforces the 30 m/s ultimate minimum. It does not produce
+certified design wind pressures.
 
 The Clause 2.2 product used by the workflow is:
 
@@ -397,9 +411,9 @@ The Clause 2.2 product used by the workflow is:
 | Output | Primary Dataset | Fallback Dataset | Review Status |
 | --- | --- | --- | --- |
 | Wind Region | Geoscience Australia AS1170 wind region polygons | Configured test fixture or alternate user-supplied GIS dataset | Requires engineer confirmation, especially near boundaries |
-| VR | Packaged `regional_wind_speeds.json` for AS/NZS 1170.2:2021 Table 3.1(A) | `OPENWIND_VR_TABLE_PATH` override JSON | Coverage and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| VR | Packaged `regional_wind_speeds.json` for AS/NZS 1170.2:2021 Table 3.1(A) | `OPENWIND_VR_TABLE_PATH` override JSON | Exact structure, independently pinned canonical `tables` digest, coverage, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Mc | Deterministic AS/NZS 1170.2:2021 Clause 3.4/Table 3.3 mapping | No override table; generic Region B is rejected | Wind-region subclassification requires engineer confirmation |
-| Md | Packaged `direction_multipliers.json` for AS/NZS 1170.2:2021 Table 3.2(A) | `OPENWIND_MD_TABLE_PATH` override JSON | Region coverage and named reviewer/date metadata are checked; packaged named sign-off is pending |
+| Md | Packaged `direction_multipliers.json` for AS/NZS 1170.2:2021 Table 3.2(A) | `OPENWIND_MD_TABLE_PATH` override JSON | Exact structure, independently pinned canonical `tables` digest, region coverage, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Mz,cat | Packaged `terrain_height_multipliers.json` for Table 4.1 and A0 rules | `OPENWIND_MZCAT_TABLE_PATH` override JSON | Exact structure, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Ms | Packaged `shielding_multipliers.json` for Table 4.2 and the 25 m rule | `OPENWIND_MS_TABLE_PATH` override JSON | Exact normative points, independently pinned values digest, and named reviewer/date metadata are checked; packaged named sign-off is pending |
 | Obstruction Inventory | Reviewed footprint data, then Microsoft Building Footprints | OpenStreetMap building footprints | Review required for coverage, duplicates, and height sources |

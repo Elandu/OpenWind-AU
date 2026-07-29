@@ -58,7 +58,7 @@ third-party binary format.
 | Need | Current / Candidate Source | Consumer-Ready Requirement |
 | --- | --- | --- |
 | Terrain DEM | Geoscience Australia 1-second SRTM-derived DEM, NASA SRTM, or configured DEM rasters | Local cache with versioned metadata, datum notes, and fallback behaviour |
-| Wind lookup data | AS/NZS 1170.2:2021 and AS 4055:2021 verified tables | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
+| Wind lookup data | Derived AS/NZS 1170.2:2021 assets with named independent sign-off still pending; separate AS 4055 work remains | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
 | Point elevation | Configured DEM first; Open-Meteo opt-in fallback/comparison provider | Source provenance in every report and clear warnings for external API data |
 | Map context | OSM, MapTiler/Stadia, ESRI imagery, or project-configured tiles | Attribution, key management, and offline/error behaviour |
 | Address search | Photon autocomplete plus deliberate Nominatim single-address resolution | Self-hosted or contracted provider capacity, caching, attribution, and outage handling |

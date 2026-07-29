@@ -3,9 +3,9 @@
   "source": {
     "title": "Editable terrain/height multiplier lookup table",
     "standard": "AS/NZS 1170.2:2021",
-    "clause": "Clauses 4.2.2 and 4.2.3",
+    "clause": "Clause 4.2.2",
     "table": "Table 4.1",
-    "standard_reference": "AS/NZS 1170.2:2021 Clauses 4.2.2 and 4.2.3, Table 4.1",
+    "standard_reference": "AS/NZS 1170.2:2021 Clause 4.2.2, Table 4.1",
     "status": "review data; not a substitute for the Standard",
     "review_status": "pending_independent_review",
     "reviewed_by": null,

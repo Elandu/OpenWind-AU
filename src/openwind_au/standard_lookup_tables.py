@@ -23,6 +23,8 @@ VR_TABLE_ENV = "OPENWIND_VR_TABLE_PATH"
 MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
 MZCAT_TABLE_ENV = "OPENWIND_MZCAT_TABLE_PATH"
 MS_TABLE_ENV = "OPENWIND_MS_TABLE_PATH"
+VR_EXPECTED_SHA256_ENV = "OPENWIND_VR_EXPECTED_SHA256"
+MD_EXPECTED_SHA256_ENV = "OPENWIND_MD_EXPECTED_SHA256"
 MZCAT_EXPECTED_SHA256_ENV = "OPENWIND_MZCAT_EXPECTED_SHA256"
 MS_EXPECTED_SHA256_ENV = "OPENWIND_MS_EXPECTED_SHA256"
 
@@ -36,6 +38,8 @@ PENDING_LOOKUP_REVIEW_STATUS = "pending_independent_review"
 AS_NZS_1170_2_EDITION = "AS/NZS 1170.2:2021"
 MAX_LOOKUP_FILE_BYTES = 256_000
 TRUSTED_PACKAGED_VALUES_SHA256: dict[str, str] = {
+    VR_DATA_FILE: "b84bbd24ebc0ab144e929af93e1b4f90cdf855245d2ae4c4ab93c8161d6d2d5f",
+    MD_DATA_FILE: "6e4e362fee71aaf4a53476653807c2bc807498c5352b5234bf95079fa6215666",
     MZCAT_DATA_FILE: "0a89849ef40a1ad376c1dabb11614095afbdb27c7278a331aec31ab5182275b5",
     MS_DATA_FILE: "fc337acb9f85996304b3532b6572a1c99164244af1a34074581604eebfe2d531",
 }
@@ -128,17 +132,27 @@ def _reject_json_constant(_value: str) -> None:
     raise ValueError("Lookup JSON must not contain non-finite numeric constants")
 
 
-def canonical_values_sha256(data: dict[str, Any]) -> str:
-    """Return the stable digest for a lookup's calculation-affecting values."""
+def canonical_lookup_payload_sha256(
+    data: dict[str, Any],
+    *,
+    payload_key: str,
+) -> str:
+    """Return a stable digest for one calculation-affecting lookup payload."""
 
     encoded = json.dumps(
-        data.get("values"),
+        data.get(payload_key),
         ensure_ascii=True,
         allow_nan=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_values_sha256(data: dict[str, Any]) -> str:
+    """Return the stable digest for a lookup's calculation-affecting values."""
+
+    return canonical_lookup_payload_sha256(data, payload_key="values")
 
 
 def lookup_provenance_issues(
@@ -149,6 +163,7 @@ def lookup_provenance_issues(
     expected_table: str,
     expected_values_sha256: str,
     require_reviewed: bool,
+    payload_key: str = "values",
 ) -> list[str]:
     """Return deterministic source, schema, and digest validation failures."""
 
@@ -178,9 +193,9 @@ def lookup_provenance_issues(
         issues.append("values_sha256 must be a 64-character hexadecimal SHA-256 digest")
     else:
         try:
-            actual_digest = canonical_values_sha256(data)
+            actual_digest = canonical_lookup_payload_sha256(data, payload_key=payload_key)
         except (TypeError, ValueError):
-            issues.append("values must be canonical JSON without non-finite numbers")
+            issues.append(f"{payload_key} must be canonical JSON without non-finite numbers")
         else:
             if digest.lower() != actual_digest:
                 issues.append("values_sha256 does not match the calculation values")

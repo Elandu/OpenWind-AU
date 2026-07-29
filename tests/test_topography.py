@@ -223,20 +223,18 @@ def test_analyse_topography_returns_one_result_per_profile() -> None:
     assert all(result.feature_type == "no significant feature" for result in results)
 
 
-def test_feature_screening_uses_dynamic_clause_height_threshold() -> None:
-    profile = make_profile([100, 100, 104.5, 100, 100], spacing_m=10.0)
-
-    low_building = analyse_profile_topography(
-        profile,
+def test_feature_screening_uses_ten_metre_clause_height_threshold() -> None:
+    below_threshold = analyse_profile_topography(
+        make_profile([100, 100, 109.9, 100, 100], spacing_m=10.0),
         100,
         average_roof_height_m=10.0,
     )
-    taller_building = analyse_profile_topography(
-        profile,
+    at_threshold = analyse_profile_topography(
+        make_profile([100, 100, 110.0, 100, 100], spacing_m=10.0),
         100,
         average_roof_height_m=20.0,
     )
 
-    assert low_building.feature_type in {"ridge", "escarpment"}
-    assert low_building.h_m == pytest.approx(4.5)
-    assert taller_building.feature_type == "no significant feature"
+    assert below_threshold.feature_type == "no significant feature"
+    assert at_threshold.feature_type in {"ridge", "escarpment"}
+    assert at_threshold.h_m == pytest.approx(10.0)

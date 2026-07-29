@@ -2,10 +2,12 @@
 
 OpenWind-AU is an early-stage, preliminary terrain analysis tool.
 
+It calculates the Clause 2.3 four-face ultimate `Vdes,theta` values from the eight final
+cardinal-direction `Vsit,b` rows using linear interpolation and the prescribed sector maximum.
 It does not:
 
-- automate the Clause 2.3 conversion from the eight cardinal-direction `Vsit,b` values to
-  building-orthogonal `Vdes,theta`; orientation is retained as reviewable building-axis metadata;
+- calculate serviceability `Vdes,theta` from a separate full set of directional serviceability
+  site speeds;
 - automate the Clause 4.2.3 weighted average across mixed-terrain fetches; the workflow evaluates
   one reviewed or recommended terrain category at the common reference height;
 - interpolate Region C or D regional wind speed between a smooth coastline and the inland boundary;

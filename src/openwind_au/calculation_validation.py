@@ -24,6 +24,7 @@ from openwind_au.shielding import (
 )
 from openwind_au.standard_calculations import (
     climate_change_multiplier,
+    design_wind_speed,
     ms_from_shielding_parameter,
     site_wind_speed,
 )
@@ -84,6 +85,7 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
         _shielding_ms_interpolation_case(),
         _topographic_multiplier_reference_case(),
         _site_wind_speed_precision_case(),
+        _design_wind_speed_reference_case(),
         _shielding_sector_reference_case(),
         _shielding_height_rejection_case(),
         _topography_flat_threshold_case(),
@@ -251,6 +253,48 @@ def _site_wind_speed_precision_case() -> CalculationValidationCaseResult:
     )
 
 
+def _design_wind_speed_reference_case() -> CalculationValidationCaseResult:
+    direction_speeds = {
+        "N": 35.1,
+        "NE": 31.0,
+        "E": 35.1,
+        "SE": 39.3,
+        "S": 39.3,
+        "SW": 39.3,
+        "W": 41.3,
+        "NW": 39.3,
+    }
+    front = design_wind_speed(theta_degrees=270.0, direction_speeds=direction_speeds)
+    right = design_wind_speed(theta_degrees=0.0, direction_speeds=direction_speeds)
+    interpolated = design_wind_speed(
+        theta_degrees=337.5,
+        direction_speeds=direction_speeds,
+    )
+    checks = [
+        _check_close("west-facing Front Vdes,theta", front.design_wind_speed_m_s, 41.3),
+        _check_close("north-facing Right Vdes,theta", right.design_wind_speed_m_s, 39.3),
+        _check_equal(
+            "Front candidate bearings",
+            [item.bearing_degrees for item in front.candidates],
+            [225.0, 270.0, 315.0],
+        ),
+        _check_close(
+            "337.5-degree interpolated sector maximum",
+            interpolated.design_wind_speed_m_s,
+            40.3,
+        ),
+    ]
+    return _case_result(
+        case_id="design-wind-speed-clause-2-3-reference",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates Clause 2.3 face bearings, circular linear interpolation, the "
+            "plus-or-minus 45-degree sector maximum, and ultimate design speed."
+        ),
+        checks=checks,
+    )
+
+
 def _shielding_sector_reference_case() -> CalculationValidationCaseResult:
     records = [_obstruction_record("north-reference", 0, 100, 20, 10, 12)]
     north = next(
@@ -321,7 +365,7 @@ def _shielding_height_rejection_case() -> CalculationValidationCaseResult:
 
 def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
     feature = analyse_profile_topography(
-        _profile([100, 101, 104.9, 101, 100]),
+        _profile([100, 101, 109.9, 101, 100]),
         100,
         average_roof_height_m=20.0,
     )
@@ -333,7 +377,7 @@ def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
     return _case_result(
         case_id="topography-relief-threshold-reference",
         calculation_area="topography",
-        description="Validates that sub-5 m local relief is screened out.",
+        description="Validates the Clause 4.4.2 rule that sub-10 m feature relief is screened out.",
         checks=checks,
     )
 

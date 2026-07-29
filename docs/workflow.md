@@ -25,14 +25,17 @@ OpenWind-AU also accepts structured building inputs for review workflows:
 
 The Design building on the map uses the same coordinate, orientation, and dimension values as the
 assessment request. Drag the footprint to move it, drag the orientation handle to set any
-whole-degree azimuth, or drag a corner handle to resize it. Map edits update the visible form
-controls, invalidate any earlier signed result, and are saved with the selected project number.
+full-circle azimuth at 0.1-degree precision, or drag a corner handle to resize it. Map edits
+update the visible form controls, invalidate any earlier signed result, and are saved with the
+selected project number.
 Projects without a project number remain session-only. Entering a new address clears the saved
 coordinate override so autocomplete can resolve the replacement site.
 
-Orientation identifies the front/right/back/left building axes for review. The current workflow
-ends at the eight cardinal-direction `Vsit,b` values; it does not yet perform the Clause 2.3
-conversion to building-orthogonal `Vdes,theta` or calculate design pressures.
+Orientation identifies the front/right/back/left building axes and drives the Clause 2.3
+building-orthogonal ultimate `Vdes,theta` calculation. For each face, the workflow linearly
+interpolates between the eight cardinal/intercardinal `Vsit,b` points, takes the maximum within
+the face bearing plus or minus 45 degrees, and applies the 30 m/s ultimate minimum. It does not
+calculate design pressures.
 For a front azimuth `beta`, the right, back, and left axes are `beta + 90`, `beta + 180`, and
 `beta + 270` degrees, normalized back into the same full-circle range.
 
@@ -40,6 +43,15 @@ Both building dimensions are optional, but when one is entered the other is requ
 height must not exceed overall building height. The browser validates these relationships and the
 published numeric bounds before sending the request; server validation remains authoritative and
 returns the affected field when a request is rejected.
+
+The deprecated `building_dimensions` field is retained as legacy free-text request metadata only.
+It does not define the editable footprint or drive calculations. Use it only when the structured
+`building_width_m` and `building_length_m` fields are absent; requests that combine the legacy and
+structured representations are rejected.
+
+`annual_exceedance_probability` is the AEP/ARI input that selects the regional wind speed.
+`importance_level` and `design_life_years` are optional report metadata only; they do not derive,
+select, or alter the AEP/ARI.
 
 ## 2. Terrain Profiles
 
@@ -150,10 +162,13 @@ variable/direction pairs are rejected. `Mc` is deterministic and cannot be overr
 The visible `wind_direction_multiplier_case` input distinguishes main-structure calculations from
 cladding/immediate-support and circular/polygonal chimney, tank or pole cases. The workflow
 enforces the mandatory Clause 3.3 `Md = 1.0` cases, selects one non-directional `Mc` from Clause
-3.4/Table 3.3, and calculates `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`.
+3.4/Table 3.3, calculates `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`, and then derives the four
+Clause 2.3 ultimate `Vdes,theta` rows when a front orientation is supplied.
 
 `average_roof_height_m` is the common AS/NZS reference height used for `Mz,cat`,
 shielding-height checks, and `Mt`. It defaults to `building_height_m` when omitted.
+That fallback is a continuity assumption, is not uniformly conservative across all multipliers,
+and requires confirmation of the actual average roof height.
 The legacy request alias `average_height_m` is accepted only for migration; normalized
 workflow inputs use `average_roof_height_m`.
 
@@ -165,5 +180,5 @@ rejected. Calculated values remain separate from reviewed override values in the
 trail.
 
 The wind workflow request rejects unknown fields. Legacy fields that previously appeared to
-override a result but were ignored—`wind_region`, `regional_wind_speed_mps`,
-`wind_direction_multipliers`, and `workflow_reviews`—are no longer accepted.
+override a result but were ignored (`wind_region`, `regional_wind_speed_mps`,
+`wind_direction_multipliers`, and `workflow_reviews`) are no longer accepted.

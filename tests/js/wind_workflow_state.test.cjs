@@ -640,6 +640,67 @@ test("address autocomplete replaces a restored site with the selected suggestion
   assert.doesNotMatch(mapFrame.srcdoc, /Old saved site/);
 });
 
+test("manual address resolution replaces saved coordinates instead of staying pinned", async () => {
+  const requested = [];
+  const resolvedSite = {
+    display_name: "New Road, Oak Park, Melbourne VIC",
+    latitude: -37.7134988,
+    longitude: 144.9080534,
+  };
+  const harness = createHarness({
+    fetch: async (url, request) => {
+      requested.push({
+        body: JSON.parse(request.body),
+        url,
+      });
+      return {
+        ok: true,
+        async json() {
+          return resolvedSite;
+        },
+      };
+    },
+    storage: {
+      [DESIGN_LOCATION_KEY]: savedLocation(),
+      [PROJECT_NUMBER_KEY]: "OW-101",
+    },
+  });
+  const address = harness.element("dashboard-address");
+  address.value = "200 New Road Melbourne VIC";
+  address.dispatch("input");
+
+  const pendingPayload = JSON.parse(
+    harness.evaluate("JSON.stringify(workflowPayload())"),
+  );
+  assert.equal(pendingPayload.address, "200 New Road Melbourne VIC");
+  assert.equal(Object.hasOwn(pendingPayload, "latitude"), false);
+  assert.equal(Object.hasOwn(pendingPayload, "longitude"), false);
+  assert.equal(harness.localStorage.getItem(DESIGN_LOCATION_KEY), null);
+
+  await harness.evaluate("zoomMapToAddress()");
+
+  const state = locationState(harness);
+  const payload = JSON.parse(
+    harness.evaluate("JSON.stringify(workflowPayload())"),
+  );
+  const persisted = JSON.parse(
+    harness.localStorage.getItem(DESIGN_LOCATION_KEY),
+  );
+  assert.deepEqual(requested, [{
+    body: { query: "200 New Road Melbourne VIC" },
+    url: "/api/geocode/resolve",
+  }]);
+  assert.equal(state.locationMode, "coordinates");
+  assert.deepEqual(state.coordinateOverride, resolvedSite);
+  assert.equal(payload.latitude, resolvedSite.latitude);
+  assert.equal(payload.longitude, resolvedSite.longitude);
+  assert.equal(Object.hasOwn(payload, "address"), false);
+  assert.equal(persisted.latitude, resolvedSite.latitude);
+  assert.equal(persisted.longitude, resolvedSite.longitude);
+  assert.notEqual(persisted.latitude, savedLocation().latitude);
+  assert.notEqual(persisted.longitude, savedLocation().longitude);
+});
+
 test("a map drag persists adjusted coordinates and reuses them for map/profile payloads", async () => {
   const harness = createHarness({
     storage: {
@@ -785,6 +846,44 @@ test("map corner resizing updates, persists, and invalidates building dimensions
   assert.equal(persisted.length_m, 51.2);
   assert.equal(harness.element("workflow-pdf").disabled, true);
   assert.equal(harness.element("workflow-report").disabled, true);
+  assert.match(
+    harness.element("workflow-progress-label").textContent,
+    /Map adjusted and saved/,
+  );
+});
+
+test("map rotation persists a continuous front beta across the full engineering circle", () => {
+  const harness = createHarness({
+    storage: {
+      [DESIGN_LOCATION_KEY]: savedLocation(),
+      [PROJECT_NUMBER_KEY]: "OW-101",
+    },
+  });
+  const mapFrame = harness.element("workflow-map-frame");
+
+  harness.dispatchWindow("message", {
+    data: {
+      type: "openwind-design-building-change",
+      state: {
+        latitude: -33.8688,
+        longitude: 151.2093,
+        offset_east_m: 0,
+        offset_north_m: 0,
+        orientation_deg: 359.9,
+        orientation_modified: true,
+        position_modified: false,
+        dimensions_modified: false,
+      },
+    },
+    source: mapFrame.contentWindow,
+  });
+
+  const payload = JSON.parse(harness.evaluate("JSON.stringify(workflowPayload())"));
+  const persisted = JSON.parse(harness.localStorage.getItem(DESIGN_LOCATION_KEY));
+  assert.equal(harness.element("structure_orientation_deg").value, "359.9");
+  assert.equal(harness.element("orientation-readout").textContent, "359.9 deg");
+  assert.equal(payload.structure_orientation_deg, 359.9);
+  assert.equal(persisted.orientation_deg, 359.9);
   assert.match(
     harness.element("workflow-progress-label").textContent,
     /Map adjusted and saved/,
@@ -1576,6 +1675,69 @@ test("directional Vsit,b rows omit constants and show VR and Mc once in Assessme
   assert.doesNotMatch(SCRIPT_SOURCE, /non_directional_inputs/);
 });
 
+test("Clause 2.3 design rows render four plan faces without repeating cardinal inputs", () => {
+  const harness = createHarness();
+  harness.context.__designRows = [
+    {
+      face: "Front",
+      theta_deg: 0,
+      beta_deg: 337.5,
+      sector_start_beta_deg: 292.5,
+      sector_end_beta_deg: 22.5,
+      raw_vdes_theta_mps: 42.125,
+      vdes_theta_mps: 42.125,
+      minimum_uls_applied: false,
+      is_governing: true,
+    },
+    {
+      face: "Right",
+      theta_deg: 90,
+      beta_deg: 67.5,
+      sector_start_beta_deg: 22.5,
+      sector_end_beta_deg: 112.5,
+      raw_vdes_theta_mps: 38,
+      vdes_theta_mps: 38,
+      minimum_uls_applied: false,
+      is_governing: false,
+    },
+    {
+      face: "Back",
+      theta_deg: 180,
+      beta_deg: 157.5,
+      sector_start_beta_deg: 112.5,
+      sector_end_beta_deg: 202.5,
+      raw_vdes_theta_mps: 29,
+      vdes_theta_mps: 30,
+      minimum_uls_applied: true,
+      is_governing: false,
+    },
+    {
+      face: "Left",
+      theta_deg: 270,
+      beta_deg: 247.5,
+      sector_start_beta_deg: 202.5,
+      sector_end_beta_deg: 292.5,
+      raw_vdes_theta_mps: 40,
+      vdes_theta_mps: 40,
+      minimum_uls_applied: false,
+      is_governing: false,
+    },
+  ];
+
+  harness.evaluate("renderVdesTable(__designRows)");
+
+  const html = harness.element("vdes-table").innerHTML;
+  assert.equal((html.match(/<tr/g) || []).length, 4);
+  assert.match(html, /Front/);
+  assert.match(html, /337\.5 deg/);
+  assert.match(html, /292\.5 to 22\.5 deg/);
+  assert.match(html, /42\.125 m\/s/);
+  assert.match(html, /30 m\/s ULS minimum applied/);
+  assert.doesNotMatch(html, />N<|>NE<|>E<|>SE<|>S<|>SW<|>W<|>NW</);
+  assert.match(HTML_SOURCE, /id="vdes-summary"/);
+  assert.ok(HTML_SOURCE.indexOf('id="vdes-summary"') > HTML_SOURCE.indexOf('id="vsitb-summary"'));
+});
+
 test("required AEP and sample interval inputs keep blank values invalid instead of defaulting", () => {
   const aepInput = HTML_SOURCE.match(
     /<input\s+id="annual_exceedance_probability"[\s\S]*?\/>/,
@@ -1616,7 +1778,8 @@ test("orientation input and initial map use a continuous engineering azimuth edi
   assert.doesNotMatch(HTML_SOURCE, /<select id="structure_orientation_deg"/);
   assert.match(HTML_SOURCE, /Enter &beta; for the Front, clockwise from true North/);
   assert.match(HTML_SOURCE, /Right, Back, and Left are/);
-  assert.match(HTML_SOURCE, /does not calculate V<sub>des,&theta;<\/sub> or design pressures/);
+  assert.match(HTML_SOURCE, /Orientation drives the Clause 2\.3/);
+  assert.match(HTML_SOURCE, /building-orthogonal V<sub>des,&theta;<\/sub> calculation/);
 
   const harness = createHarness({
     values: { structure_orientation_deg: "127.5" },
@@ -1685,6 +1848,25 @@ test("client validation explains paired dimensions, roof height, and field bound
     );
   });
 
+  await t.test("obstruction radius must cover the complete 20h shielding sector", () => {
+    const harness = createHarness({
+      formValues: {
+        building_height_m: "20",
+        obstruction_radius_m: "200",
+      },
+    });
+    const messages = JSON.parse(
+      harness.evaluate("JSON.stringify(validateWorkflowInputs())"),
+    );
+    assert.deepEqual(messages, [
+      "Obstruction radius must be at least 400 m to cover the full 20h shielding sector.",
+    ]);
+    assert.match(
+      harness.element("obstruction_radius_m").validationMessage,
+      /at least 400 m.*20h shielding sector/,
+    );
+  });
+
   await t.test("backend numeric bounds are checked before submission", () => {
     const harness = createHarness({
       values: {
@@ -1738,7 +1920,7 @@ test("dashboard shows every tied governing direction and serves the current UI a
   );
   assert.match(
     HTML_SOURCE,
-    /wind_workflow\.js\?v=20260729-ui-building-editor-1/,
+    /wind_workflow\.js\?v=20260729-vdes-1/,
   );
 });
 

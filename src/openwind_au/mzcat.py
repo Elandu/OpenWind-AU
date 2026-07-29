@@ -31,7 +31,15 @@ from openwind_au.standard_lookup_tables import (
 )
 from openwind_au.wind_region import assess_wind_region
 
-SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = ("TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4")
+SUPPORTED_TERRAIN_CATEGORIES: tuple[str, ...] = (
+    "TC1",
+    "TC1.5",
+    "TC2",
+    "TC2.5",
+    "TC3",
+    "TC3.5",
+    "TC4",
+)
 TABLE_TERRAIN_CATEGORIES: tuple[float, ...] = (1.0, 2.0, 2.5, 3.0, 4.0)
 TABLE_HEIGHTS_M: tuple[float, ...] = (
     3.0,
@@ -50,8 +58,8 @@ TABLE_HEIGHTS_M: tuple[float, ...] = (
 MZCAT_METADATA_WARNING = (
     "Mz,cat lookup table does not have complete independent reviewer/date metadata."
 )
-MZCAT_SOURCE_CLAUSE = "Clauses 4.2.2 and 4.2.3"
-MZCAT_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clauses 4.2.2 and 4.2.3, Table 4.1"
+MZCAT_SOURCE_CLAUSE = "Clause 4.2.2"
+MZCAT_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.2.2, Table 4.1"
 EXPECTED_A0_RULE = {
     "category_at_or_below_100_m": 2.0,
     "constant_above_height_m": 100.0,
@@ -367,8 +375,6 @@ def nearest_supported_category(category: str) -> str:
 
     if category in SUPPORTED_TERRAIN_CATEGORIES:
         return category
-    if category == "TC3.5":
-        return "TC4"
     if category == "TC0":
         return "TC1"
     return "TC2"

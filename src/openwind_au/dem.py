@@ -299,6 +299,8 @@ def _get_json(url: str, params: dict[str, Any], timeout_seconds: float) -> dict:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
         )
         if completed.returncode != 0:
@@ -335,6 +337,8 @@ def _download_file(url: str, target: Path) -> None:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
         )
         if completed.returncode != 0:

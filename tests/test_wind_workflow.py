@@ -22,6 +22,7 @@ from openwind_au.models import (
 )
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.reports import concise_workflow_warnings
+from openwind_au.standard_calculations import design_wind_speed
 from openwind_au.wind_inputs import VR_EQUATION_REFERENCE
 from openwind_au.wind_workflow import mark_governing_vsitb, vsitb_directional_rows
 from tests.test_api import FlatDEM, sample_footprints
@@ -125,6 +126,7 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
         "Regional Wind Speed, VR",
         "Climate Change Multiplier, Mc",
         "Directional Site Wind Speed, Vsit,b",
+        "Building-Orthogonal Design Wind Speed",
         "Wind Direction Multiplier, Md",
         "Terrain Category / Mz,cat",
         "Shielding Multiplier, Ms",
@@ -187,7 +189,10 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "<h2>1." not in body
     assert "<h2>2." not in body
     assert "<h2>9." not in body
-    assert "Return period / importance level" in body
+    assert "Importance level (report metadata only)" in body
+    assert "does not select AEP / ARI" in body
+    assert "<tr><th>AEP / ARI</th>" in script.text
+    assert "importance metadata:" in script.text
     assert "Engineer notes" in body
     assert "Advanced inputs" in body
     assert 'id="structure_orientation_deg"' in body
@@ -199,7 +204,8 @@ def test_wind_workflow_page_loads_in_map_first_order(monkeypatch) -> None:
     assert "required" in orientation_control
     assert '<select id="structure_orientation_deg"' not in body
     assert "Right, Back, and Left are" in body
-    assert "does not calculate V<sub>des,&theta;</sub>" in body
+    assert "Orientation drives the Clause 2.3" in body
+    assert 'id="vdes-table"' in body
     assert "Street address" not in body
     assert "Review and issue status" in body
     assert "Assessment status" in body
@@ -352,6 +358,9 @@ def test_openapi_exposes_preliminary_status_contract_without_duplicate_result_fi
     assert "reviewed_by" in request_properties
     assert "average_roof_height_m" in request_properties
     assert "average_height_m" not in request_properties
+    assert request_properties["building_dimensions"]["deprecated"] is True
+    assert "report metadata only" in request_properties["importance_level"]["description"]
+    assert "report metadata only" in request_properties["design_life_years"]["description"]
     assert "assessment_status" not in result_properties
     assert "reviewed_by" not in result_properties
     assert "engineer_notes" not in result_properties
@@ -388,7 +397,7 @@ def test_browser_review_controls_match_preliminary_api_contract(monkeypatch) -> 
     assert "setCustomValidity" in script.text
     assert "workflowForm.reportValidity()" in script.text
     assert ".workflow-review[hidden]" in stylesheet.text
-    assert "20260729-ui-building-editor-1" in page.text
+    assert "20260729-vdes-1" in page.text
 
 
 def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) -> None:
@@ -418,7 +427,7 @@ def test_workflow_report_is_concise_and_keeps_decision_information(monkeypatch) 
     assert "Direction Multiplier Assessment" not in response.text
     assert "Maps" not in response.text
     assert "Profiles" not in response.text
-    assert "configured Geoscience Australia 1170.2 GIS dataset" in response.text
+    assert "Configured test wind-region GIS fixture" in response.text
     assert "Table 3.1(A)" in response.text
     assert "Table 3.3" in response.text
     assert "Table 3.2(A)" in response.text
@@ -1060,6 +1069,45 @@ def test_vsitb_calculates_without_variable_review(monkeypatch) -> None:
     assert any("Clause 4.4.2 most-adverse" in warning for warning in body["warnings"])
 
 
+def test_orientation_drives_four_clause_2_3_design_wind_speeds(monkeypatch) -> None:
+    test_client = client(monkeypatch)
+    payload = workflow_payload() | {"structure_orientation_deg": 337.5}
+
+    response = test_client.post("/api/wind-workflow", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    direction_speeds = {row["direction"]: row["final_vsitb"] for row in body["directional_vsitb"]}
+    rows = body["design_wind_speeds"]
+    assert [row["face"] for row in rows] == ["Front", "Right", "Back", "Left"]
+    assert [row["theta_deg"] for row in rows] == [0.0, 90.0, 180.0, 270.0]
+    assert [row["beta_deg"] for row in rows] == [337.5, 67.5, 157.5, 247.5]
+    for row in rows:
+        expected = design_wind_speed(
+            theta_degrees=row["beta_deg"],
+            direction_speeds=direction_speeds,
+        )
+        assert row["sector_start_beta_deg"] == pytest.approx(expected.sector_start_degrees)
+        assert row["sector_end_beta_deg"] == pytest.approx(expected.sector_end_degrees)
+        assert row["raw_vdes_theta_mps"] == pytest.approx(expected.raw_maximum_m_s)
+        assert row["vdes_theta_mps"] == pytest.approx(expected.design_wind_speed_m_s)
+        assert row["minimum_uls_applied"] is expected.minimum_applied
+    governing_value = max(row["vdes_theta_mps"] for row in rows)
+    assert body["governing_vdes_mps"] == pytest.approx(governing_value)
+    assert body["governing_vdes_faces"] == [row["face"] for row in rows if row["is_governing"]]
+    assert "Clause 2.3" in body["design_wind_speed_basis"]
+
+    report = test_client.post("/api/wind-workflow/result/report/html", json=body)
+    assert report.status_code == 200
+    assert "Building-orthogonal design wind speeds" in report.text
+    assert "337.5 deg" in report.text
+    tampered = json.loads(json.dumps(body))
+    tampered["design_wind_speeds"][0]["vdes_theta_mps"] += 1
+    rejected = test_client.post("/api/wind-workflow/result/report/html", json=tampered)
+    assert rejected.status_code == 422
+    assert "Clause 2.3" in rejected.text
+
+
 def test_reasoned_override_values_propagate_to_workflow(monkeypatch) -> None:
     test_client = client(monkeypatch)
     payload = workflow_payload() | {"workflow_overrides": sample_overrides()}
@@ -1490,7 +1538,9 @@ def test_project_classes_without_numeric_values_do_not_invent_multipliers(monkey
 
 def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     test_client = client(monkeypatch)
-    payload = workflow_payload() | {
+    payload = workflow_payload()
+    payload.pop("building_dimensions")
+    payload |= {
         "project_number": "OW-2026-018",
         "structure_class": "building",
         "structure_orientation_deg": 0,
@@ -1521,10 +1571,10 @@ def test_structured_building_inputs_are_preserved(monkeypatch) -> None:
     assert "overall height 10.00 m" in report.text
     assert "average roof/reference height h,z 3.00 m" in report.text
     assert "reviewed base RL 0.00 m" in report.text
-    assert "4.00 m x" in report.text
-    assert "5.00 m" in report.text
+    assert "breadth 4.00 m x front-to-back depth 5.00 m" in report.text
+    assert "front beta 0.0 deg clockwise from true North" in report.text
+    assert "gable roof at 15.0 deg" in report.text
     assert "; building" in report.text
-    assert "Roof shape" not in report.text
 
 
 def test_vsitb_calculated_for_all_directions_immediately(monkeypatch) -> None:
