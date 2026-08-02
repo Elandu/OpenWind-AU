@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import math
@@ -10,6 +11,9 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+import time
+from datetime import UTC, datetime
 from io import StringIO
 from json import JSONDecodeError
 from pathlib import Path
@@ -19,6 +23,7 @@ import requests
 from shapely.errors import ShapelyError
 from shapely.geometry import shape
 
+from openwind_au.cache_io import atomic_write_bytes, cache_target_lock
 from openwind_au.elevation_enrichment import (
     ElevationProvider,
     RasterElevationProvider,
@@ -63,6 +68,14 @@ OVERPASS_URLS = (
 )
 OVERPASS_QUERY_TIMEOUT_SECONDS = 15
 OVERPASS_HTTP_TIMEOUT_SECONDS = 25
+MAX_OSM_CACHE_FILE_BYTES = 25 * 1024 * 1024
+MAX_OSM_CACHE_BYTES = 256 * 1024 * 1024
+MAX_OSM_CACHE_ENTRIES = 512
+MAX_OSM_CACHE_AGE_SECONDS = 30 * 24 * 60 * 60
+OSM_CACHE_FILENAME_RE = re.compile(r"^osm-[0-9a-f]{64}\.json$")
+OSM_CACHE_MAINTENANCE_LOCK = threading.Lock()
+MAX_PROVIDER_HEIGHT_M = 500.0
+MAX_PROVIDER_BUILDING_LEVELS = 200.0
 DUPLICATE_OVERLAP_THRESHOLD = 0.5
 COMMON_OSM_BUILDING_VALUES = {
     "yes",
@@ -125,12 +138,16 @@ def run_obstruction_inventory(
                 site.longitude,
                 inventory_radius_m,
             )
-        except Exception as exc:
+        except Exception:
+            LOGGER.exception("Microsoft Building Footprints cache query failed")
             microsoft_result = MicrosoftFootprintResult(
                 footprints=[],
                 source_status="unavailable",
                 cache_status="error",
-                warnings=[f"Microsoft Building Footprints cache query failed: {exc}"],
+                warnings=[
+                    "Microsoft Building Footprints data was unavailable; the inventory "
+                    "continued with other configured sources."
+                ],
             )
         microsoft_footprints = normalise_footprints(
             microsoft_result.footprints,
@@ -157,14 +174,22 @@ def run_obstruction_inventory(
                     site.longitude,
                     inventory_radius_m,
                 )
-                save_cached_osm_footprints(
-                    site.latitude,
-                    site.longitude,
-                    inventory_radius_m,
-                    raw_footprints,
-                    overpass_debug,
-                )
-            except FootprintQueryError as exc:
+                try:
+                    save_cached_osm_footprints(
+                        site.latitude,
+                        site.longitude,
+                        inventory_radius_m,
+                        raw_footprints,
+                        overpass_debug,
+                    )
+                except Exception:
+                    LOGGER.exception("Failed to persist the derived OSM footprint cache")
+                    warnings.append(
+                        "Live OSM building footprints were used, but the local outage cache "
+                        "could not be updated."
+                    )
+            except FootprintQueryError:
+                LOGGER.warning("Live Overpass building footprint query failed", exc_info=True)
                 cached = load_cached_osm_footprints(
                     site.latitude,
                     site.longitude,
@@ -178,7 +203,6 @@ def run_obstruction_inventory(
                     warnings.append(
                         "Live Overpass query failed; reused cached OSM footprint geometry."
                     )
-                    warnings.append(str(exc))
                 else:
                     raw_footprints = []
                     if not microsoft_footprints:
@@ -189,8 +213,13 @@ def run_obstruction_inventory(
                             "available; "
                             "indicative Ms cannot be calculated."
                         )
-                    warnings.append(str(exc))
-            except Exception as exc:
+                    else:
+                        warnings.append(
+                            "Live OSM building footprint enrichment was unavailable; the "
+                            "inventory continued with Microsoft Building Footprints data."
+                        )
+            except Exception:
+                LOGGER.exception("Unexpected live Overpass building footprint query failure")
                 cached = load_cached_osm_footprints(
                     site.latitude,
                     site.longitude,
@@ -204,7 +233,6 @@ def run_obstruction_inventory(
                     warnings.append(
                         "Live Overpass query failed; reused cached OSM footprint geometry."
                     )
-                    warnings.append(f"Overpass query failed: {exc}")
                 else:
                     raw_footprints = []
                     if not microsoft_footprints:
@@ -215,7 +243,11 @@ def run_obstruction_inventory(
                             "available; "
                             "indicative Ms cannot be calculated."
                         )
-                    warnings.append(f"Overpass query failed: {exc}")
+                    else:
+                        warnings.append(
+                            "Live OSM building footprint enrichment was unavailable; the "
+                            "inventory continued with Microsoft Building Footprints data."
+                        )
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
     else:
         osm_footprints = normalise_footprints(raw_footprints, default_source="OSM")
@@ -375,10 +407,7 @@ def query_building_footprints_with_debug(
     """Query OpenStreetMap building footprints and return pipeline diagnostics."""
 
     query = build_overpass_building_query(latitude, longitude, radius_m)
-    LOGGER.info(
-        "Overpass obstruction query centre=(%s,%s) radius_m=%s", latitude, longitude, radius_m
-    )
-    LOGGER.info("Overpass obstruction query string:\n%s", query)
+    LOGGER.debug("Starting an Overpass obstruction query with radius_m=%s", radius_m)
     data = _post_overpass(query, user_agent)
     elements = data.get("elements", [])
     footprints, conversion_debug = overpass_elements_to_footprints_with_debug(elements)
@@ -413,8 +442,9 @@ def default_osm_footprint_cache_dir() -> Path:
 def osm_footprint_cache_file(latitude: float, longitude: float, radius_m: int) -> Path:
     """Return the cache file path for an OSM footprint query."""
 
-    key = f"{latitude:.6f}_{longitude:.6f}_{int(radius_m)}m".replace("-", "m").replace(".", "p")
-    return default_osm_footprint_cache_dir() / f"{key}.json"
+    identity = f"{latitude:.6f},{longitude:.6f},{int(radius_m)}".encode()
+    digest = hashlib.sha256(identity).hexdigest()
+    return default_osm_footprint_cache_dir() / f"osm-{digest}.json"
 
 
 def save_cached_osm_footprints(
@@ -424,20 +454,37 @@ def save_cached_osm_footprints(
     footprints: list[dict[str, Any]],
     debug: dict[str, Any],
 ) -> None:
-    """Persist successful OSM footprint geometry for repeatable obstruction analysis."""
+    """Persist successful OSM geometry atomically within bounded cache quotas."""
 
     if not footprints:
         return
     path = osm_footprint_cache_file(latitude, longitude, radius_m)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
+        "schema_version": 1,
+        "cached_at": datetime.now(UTC).isoformat(),
         "latitude": latitude,
         "longitude": longitude,
         "radius_m": radius_m,
         "footprints": footprints,
-        "debug": debug,
+        "debug": _osm_cache_debug_projection(debug),
     }
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) > MAX_OSM_CACHE_FILE_BYTES:
+        raise ValueError(f"OSM footprint cache entry exceeds {MAX_OSM_CACHE_FILE_BYTES} bytes")
+
+    with cache_target_lock(path):
+        atomic_write_bytes(path, encoded)
+    try:
+        prune_osm_footprint_cache(path.parent, protected=path)
+    except Exception:
+        with cache_target_lock(path):
+            path.unlink(missing_ok=True)
+        raise
 
 
 def load_cached_osm_footprints(
@@ -445,23 +492,276 @@ def load_cached_osm_footprints(
     longitude: float,
     radius_m: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
-    """Load cached OSM footprint geometry for a failed live query."""
+    """Load a fresh, bounded and structurally valid OSM outage-cache entry."""
 
     path = osm_footprint_cache_file(latitude, longitude, radius_m)
     if not path.exists():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    footprints = data.get("footprints", [])
-    debug = data.get("debug", {})
-    if not isinstance(footprints, list) or not isinstance(debug, dict):
+    try:
+        with cache_target_lock(path):
+            stat = path.stat()
+            if stat.st_size <= 0 or stat.st_size > MAX_OSM_CACHE_FILE_BYTES:
+                raise ValueError("OSM footprint cache entry has an invalid size")
+            if time.time() - stat.st_mtime > MAX_OSM_CACHE_AGE_SECONDS:
+                _discard_osm_cache_file(path)
+                return None
+            raw = path.read_bytes()
+        data = _strict_osm_cache_json(raw)
+        footprints, debug = _validated_osm_cache_payload(
+            data,
+            latitude=latitude,
+            longitude=longitude,
+            radius_m=radius_m,
+        )
+    except (
+        JSONDecodeError,
+        OSError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        LOGGER.exception("Discarding an invalid derived OSM footprint cache entry: %s", path)
+        _discard_osm_cache_file(path)
         return None
     debug = {
         **empty_overpass_debug(latitude, longitude, radius_m),
         **debug,
     }
+    debug["raw_osm_building_footprints"] = footprints
     debug.setdefault("pipeline_log", [])
-    debug["pipeline_log"].append(f"Loaded OSM footprint cache: {path}")
+    debug["pipeline_log"].append("Loaded a validated OSM footprint outage-cache entry.")
     return footprints, debug
+
+
+def _discard_osm_cache_file(path: Path) -> None:
+    """Best-effort removal must not turn a cache miss into a workflow failure."""
+
+    try:
+        with cache_target_lock(path):
+            path.unlink(missing_ok=True)
+    except OSError:
+        LOGGER.warning(
+            "Could not remove an invalid derived OSM footprint cache entry",
+            exc_info=True,
+        )
+
+
+def prune_osm_footprint_cache(cache_dir: Path, *, protected: Path) -> None:
+    """Enforce age, entry-count and total-byte bounds on generated cache files."""
+
+    with OSM_CACHE_MAINTENANCE_LOCK:
+        now = time.time()
+        entries: list[tuple[Path, int, float]] = []
+        for candidate in cache_dir.iterdir():
+            if not candidate.is_file() or not OSM_CACHE_FILENAME_RE.fullmatch(candidate.name):
+                continue
+            stat = candidate.stat()
+            if candidate != protected and now - stat.st_mtime > MAX_OSM_CACHE_AGE_SECONDS:
+                with cache_target_lock(candidate):
+                    candidate.unlink(missing_ok=True)
+                continue
+            entries.append((candidate, stat.st_size, stat.st_mtime))
+
+        entries.sort(key=lambda item: item[2])
+        total_bytes = sum(size for _path, size, _modified in entries)
+        while len(entries) > MAX_OSM_CACHE_ENTRIES or total_bytes > MAX_OSM_CACHE_BYTES:
+            removable_index = next(
+                (index for index, item in enumerate(entries) if item[0] != protected),
+                None,
+            )
+            if removable_index is None:
+                raise OSError("OSM footprint cache quota cannot retain the new entry")
+            candidate, size, _modified = entries.pop(removable_index)
+            with cache_target_lock(candidate):
+                candidate.unlink(missing_ok=True)
+            total_bytes -= size
+
+        if len(entries) > MAX_OSM_CACHE_ENTRIES or total_bytes > MAX_OSM_CACHE_BYTES:
+            raise OSError("OSM footprint cache remains above its configured quota")
+
+
+def _strict_osm_cache_json(raw: bytes) -> dict[str, Any]:
+    """Decode a cache payload without ambiguous members or non-finite numbers."""
+
+    if len(raw) > MAX_OSM_CACHE_FILE_BYTES:
+        raise ValueError("OSM footprint cache entry exceeds its size limit")
+
+    def object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("OSM footprint cache contains duplicate object members")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("OSM footprint cache contains a non-finite number")
+
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("OSM footprint cache contains a non-finite number")
+        return parsed
+
+    data = json.loads(
+        raw.decode("utf-8-sig"),
+        object_pairs_hook=object_without_duplicates,
+        parse_constant=reject_constant,
+        parse_float=finite_float,
+    )
+    if not isinstance(data, dict):
+        raise ValueError("OSM footprint cache root must be an object")
+    return data
+
+
+def _validated_osm_cache_payload(
+    data: dict[str, Any],
+    *,
+    latitude: float,
+    longitude: float,
+    radius_m: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Validate a cache entry belongs to the requested site and has safe containers."""
+
+    cached_latitude = _finite_osm_cache_number(data.get("latitude"))
+    cached_longitude = _finite_osm_cache_number(data.get("longitude"))
+    cached_radius = data.get("radius_m")
+    if (
+        type(data.get("schema_version")) is not int
+        or data.get("schema_version") != 1
+        or not isinstance(data.get("cached_at"), str)
+        or cached_latitude is None
+        or cached_longitude is None
+        or type(cached_radius) is not int
+        or round(cached_latitude, 6) != round(latitude, 6)
+        or round(cached_longitude, 6) != round(longitude, 6)
+        or cached_radius != radius_m
+    ):
+        raise ValueError("OSM footprint cache entry does not match the requested site")
+    footprints = data.get("footprints")
+    debug = data.get("debug")
+    if (
+        not isinstance(footprints, list)
+        or not all(isinstance(item, dict) for item in footprints)
+        or not isinstance(debug, dict)
+    ):
+        raise ValueError("OSM footprint cache entry has an invalid structure")
+    for footprint in footprints:
+        _validate_cached_osm_footprint(footprint)
+    _validate_osm_cache_debug(debug)
+    return footprints, debug
+
+
+def _finite_osm_cache_number(value: Any) -> float | None:
+    """Return a finite JSON number without accepting booleans or overflowing integers."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _validate_cached_osm_footprint(footprint: dict[str, Any]) -> None:
+    """Validate the containers consumed after an OSM outage-cache hit."""
+
+    allowed_members = {
+        "source_id",
+        "footprint_geometry",
+        "tags",
+        "footprint_source",
+        "source_provenance",
+    }
+    if set(footprint) - allowed_members:
+        raise ValueError("OSM footprint cache entry contains unsupported footprint members")
+    source_id = footprint.get("source_id")
+    if not isinstance(source_id, str) or not source_id or len(source_id) > 300:
+        raise ValueError("OSM footprint cache entry has an invalid source identifier")
+    if footprint.get("footprint_source") != "OSM":
+        raise ValueError("OSM footprint cache entry has an invalid footprint source")
+    tags = footprint.get("tags")
+    if not isinstance(tags, dict):
+        raise ValueError("OSM footprint cache entry has invalid footprint tags")
+    provenance = footprint.get("source_provenance")
+    if provenance is not None and (
+        not isinstance(provenance, list)
+        or not provenance
+        or not all(isinstance(item, str) and item for item in provenance)
+    ):
+        raise ValueError("OSM footprint cache entry has invalid footprint provenance")
+
+    geometry = footprint.get("footprint_geometry")
+    if not isinstance(geometry, dict) or set(geometry) != {"type", "coordinates"}:
+        raise ValueError("OSM footprint cache entry has invalid footprint geometry")
+    coordinates = geometry.get("coordinates")
+    if (
+        geometry.get("type") != "Polygon"
+        or not isinstance(coordinates, list)
+        or not 1 <= len(coordinates) <= 32
+    ):
+        raise ValueError("OSM footprint cache entry has invalid Polygon coordinates")
+    position_count = 0
+    for ring in coordinates:
+        if not isinstance(ring, list) or len(ring) < 4:
+            raise ValueError("OSM footprint cache entry has an invalid Polygon ring")
+        for position in ring:
+            if not isinstance(position, list) or len(position) != 2:
+                raise ValueError("OSM footprint cache entry has an invalid Polygon position")
+            longitude = _finite_osm_cache_number(position[0])
+            latitude = _finite_osm_cache_number(position[1])
+            if (
+                longitude is None
+                or latitude is None
+                or not -180 <= longitude <= 180
+                or not -90 <= latitude <= 90
+            ):
+                raise ValueError("OSM footprint cache entry has invalid Polygon coordinates")
+            position_count += 1
+            if position_count > 100_000:
+                raise ValueError("OSM footprint cache entry has too many Polygon positions")
+        if ring[0] != ring[-1]:
+            raise ValueError("OSM footprint cache entry has an open Polygon ring")
+
+
+def _validate_osm_cache_debug(debug: dict[str, Any]) -> None:
+    """Validate the compact diagnostic projection consumed by result models."""
+
+    allowed_members = {
+        "raw_overpass_counts",
+        "parsed_counts",
+        "returned_geometry_bbox",
+    }
+    if set(debug) - allowed_members:
+        raise ValueError("OSM footprint cache entry contains unsupported diagnostics")
+    for key in ("raw_overpass_counts", "parsed_counts"):
+        counts = debug.get(key, {})
+        if not isinstance(counts, dict) or not all(
+            isinstance(name, str) and type(value) is int and 0 <= value <= 1_000_000_000
+            for name, value in counts.items()
+        ):
+            raise ValueError("OSM footprint cache entry has invalid diagnostic counts")
+    bbox = debug.get("returned_geometry_bbox")
+    if bbox is not None and (
+        not isinstance(bbox, list)
+        or len(bbox) != 4
+        or any(_finite_osm_cache_number(value) is None for value in bbox)
+    ):
+        raise ValueError("OSM footprint cache entry has an invalid geometry bounding box")
+
+
+def _osm_cache_debug_projection(debug: dict[str, Any]) -> dict[str, Any]:
+    """Keep cache diagnostics useful without serializing raw geometry twice."""
+
+    projected: dict[str, Any] = {}
+    for key in ("raw_overpass_counts", "parsed_counts", "returned_geometry_bbox"):
+        value = debug.get(key)
+        if isinstance(value, dict | list):
+            projected[key] = value
+    return projected
 
 
 def build_overpass_building_query(latitude: float, longitude: float, radius_m: int) -> str:
@@ -605,10 +905,9 @@ def empty_microsoft_result(
 def log_obstruction_debug(debug: dict[str, Any]) -> None:
     """Emit obstruction pipeline counts to the application log."""
 
-    LOGGER.info("Obstruction query centre: %s", debug.get("query_centre"))
-    LOGGER.info("Obstruction query radius_m: %s", debug.get("query_radius_m"))
-    LOGGER.info("Raw Overpass counts: %s", debug.get("raw_overpass_counts"))
-    LOGGER.info("Parsed obstruction counts: %s", debug.get("parsed_counts"))
+    LOGGER.debug("Obstruction query radius_m: %s", debug.get("query_radius_m"))
+    LOGGER.debug("Raw Overpass counts: %s", debug.get("raw_overpass_counts"))
+    LOGGER.debug("Parsed obstruction counts: %s", debug.get("parsed_counts"))
 
 
 def normalise_footprints(
@@ -1013,8 +1312,20 @@ def height_from_tags(
 ) -> dict[str, Any]:
     """Resolve obstruction height from explicit tags or building levels only."""
 
-    explicit_height = parse_height_m(tags.get("height") or tags.get("building:height"))
-    building_levels = parse_float(tags.get("building:levels") or tags.get("levels"))
+    raw_height = tags.get("height") or tags.get("building:height")
+    raw_levels = tags.get("building:levels") or tags.get("levels")
+    explicit_height = parse_height_m(raw_height)
+    building_levels = parse_provider_levels(raw_levels)
+    notes: list[str] = []
+    if raw_height is not None and explicit_height is None:
+        notes.append(
+            f"Provider height was invalid or exceeded {MAX_PROVIDER_HEIGHT_M:g} m and was ignored."
+        )
+    if raw_levels is not None and building_levels is None:
+        notes.append(
+            "Provider building levels were invalid or exceeded "
+            f"{MAX_PROVIDER_BUILDING_LEVELS:g} and were ignored."
+        )
     if explicit_height is not None:
         return {
             "height_m": explicit_height,
@@ -1022,16 +1333,34 @@ def height_from_tags(
             "height_source": "OSM_HEIGHT",
             "confidence": "medium",
             "manual_review_required": True,
-            "notes": ["Height taken from explicit OSM height tag."],
+            "notes": [*notes, "Height taken from explicit OSM height tag."],
         }
     if building_levels is not None:
+        estimated_height = provider_height_from_levels(
+            building_levels,
+            default_storey_height_m,
+        )
+        if estimated_height is None:
+            return {
+                "height_m": None,
+                "building_levels": None,
+                "height_source": "missing",
+                "confidence": "unknown",
+                "manual_review_required": True,
+                "notes": [
+                    *notes,
+                    "Provider levels produced an invalid or implausible estimated height and "
+                    "were ignored.",
+                ],
+            }
         return {
-            "height_m": building_levels * default_storey_height_m,
+            "height_m": estimated_height,
             "building_levels": building_levels,
             "height_source": "OSM_LEVELS",
             "confidence": "medium",
             "manual_review_required": True,
             "notes": [
+                *notes,
                 "Height estimated from building:levels using configured storey height.",
                 "Manual review is required before shielding use.",
             ],
@@ -1042,7 +1371,14 @@ def height_from_tags(
         "height_source": "missing",
         "confidence": "unknown",
         "manual_review_required": True,
-        "notes": ["No explicit height or building:levels tag was available."],
+        "notes": [
+            *notes,
+            (
+                "No usable explicit height or building:levels tag was available."
+                if notes
+                else "No explicit height or building:levels tag was available."
+            ),
+        ],
     }
 
 
@@ -1053,8 +1389,20 @@ def height_from_footprint(
 ) -> dict[str, Any]:
     """Resolve height from imported attributes before falling back to tags."""
 
-    imported_height = parse_float(footprint.get("height_m"))
-    imported_levels = parse_float(footprint.get("building_levels"))
+    raw_height = footprint.get("height_m")
+    raw_levels = footprint.get("building_levels")
+    imported_height = parse_provider_height(raw_height)
+    imported_levels = parse_provider_levels(raw_levels)
+    notes: list[str] = []
+    if raw_height is not None and imported_height is None:
+        notes.append(
+            f"Imported height was invalid or exceeded {MAX_PROVIDER_HEIGHT_M:g} m and was ignored."
+        )
+    if raw_levels is not None and imported_levels is None:
+        notes.append(
+            "Imported building levels were invalid or exceeded "
+            f"{MAX_PROVIDER_BUILDING_LEVELS:g} and were ignored."
+        )
     if footprint.get("footprint_source") == "manual_reviewed":
         if imported_height is not None:
             return {
@@ -1063,17 +1411,28 @@ def height_from_footprint(
                 "height_source": "manual_verified",
                 "confidence": "high",
                 "manual_review_required": False,
-                "notes": ["Height supplied by reviewed obstruction JSON."],
+                "notes": [*notes, "Height supplied by reviewed obstruction JSON."],
             }
         if imported_levels is not None:
-            return {
-                "height_m": imported_levels * default_storey_height_m,
-                "building_levels": imported_levels,
-                "height_source": "manual_verified",
-                "confidence": "high",
-                "manual_review_required": False,
-                "notes": ["Height estimated from reviewed obstruction levels."],
-            }
+            estimated_height = provider_height_from_levels(
+                imported_levels,
+                default_storey_height_m,
+            )
+            if estimated_height is None:
+                imported_levels = None
+                notes.append(
+                    "Reviewed levels produced an invalid or implausible estimated height and "
+                    "were ignored."
+                )
+            else:
+                return {
+                    "height_m": estimated_height,
+                    "building_levels": imported_levels,
+                    "height_source": "manual_verified",
+                    "confidence": "high",
+                    "manual_review_required": False,
+                    "notes": [*notes, "Height estimated from reviewed obstruction levels."],
+                }
     if imported_height is not None:
         return {
             "height_m": imported_height,
@@ -1081,18 +1440,30 @@ def height_from_footprint(
             "height_source": "IMPORTED",
             "confidence": "medium",
             "manual_review_required": True,
-            "notes": ["Height supplied by imported footprint source."],
+            "notes": [*notes, "Height supplied by imported footprint source."],
         }
     if imported_levels is not None:
-        return {
-            "height_m": imported_levels * default_storey_height_m,
-            "building_levels": imported_levels,
-            "height_source": "IMPORTED",
-            "confidence": "medium",
-            "manual_review_required": True,
-            "notes": ["Height estimated from imported building levels."],
-        }
-    return height_from_tags(tags, default_storey_height_m)
+        estimated_height = provider_height_from_levels(
+            imported_levels,
+            default_storey_height_m,
+        )
+        if estimated_height is not None:
+            return {
+                "height_m": estimated_height,
+                "building_levels": imported_levels,
+                "height_source": "IMPORTED",
+                "confidence": "medium",
+                "manual_review_required": True,
+                "notes": [*notes, "Height estimated from imported building levels."],
+            }
+        notes.append(
+            "Imported levels produced an invalid or implausible estimated height and were ignored."
+        )
+    tagged_height = height_from_tags(tags, default_storey_height_m)
+    return {
+        **tagged_height,
+        "notes": [*notes, *tagged_height["notes"]],
+    }
 
 
 def obstruction_data_quality(
@@ -1393,10 +1764,13 @@ def _parse_import_number(value: Any, field: str, row_number: int) -> float | Non
 def parse_height_m(value: Any) -> float | None:
     """Parse an OSM height value in metres."""
 
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
     if isinstance(value, int | float):
-        height = float(value)
+        try:
+            height = float(value)
+        except (OverflowError, TypeError, ValueError):
+            return None
     else:
         text = str(value).strip().lower()
         match = re.fullmatch(
@@ -1406,7 +1780,10 @@ def parse_height_m(value: Any) -> float | None:
         )
         if not match:
             return None
-        height = float(match.group(1))
+        try:
+            height = float(match.group(1))
+        except (OverflowError, ValueError):
+            return None
         unit = match.group(2) or "m"
         if unit == "mm":
             height /= 1000
@@ -1414,7 +1791,37 @@ def parse_height_m(value: Any) -> float | None:
             height /= 100
         elif unit in {"ft", "feet", "foot"}:
             height *= 0.3048
-    if not math.isfinite(height) or height < 0 or height > 500:
+    if not math.isfinite(height) or height < 0 or height > MAX_PROVIDER_HEIGHT_M:
+        return None
+    return height
+
+
+def parse_provider_height(value: Any) -> float | None:
+    """Parse a bounded non-negative height supplied by a provider."""
+
+    number = parse_float(value)
+    if number is None or number > MAX_PROVIDER_HEIGHT_M:
+        return None
+    return number
+
+
+def parse_provider_levels(value: Any) -> float | None:
+    """Parse a bounded non-negative building-level count supplied by a provider."""
+
+    number = parse_float(value)
+    if number is None or number > MAX_PROVIDER_BUILDING_LEVELS:
+        return None
+    return number
+
+
+def provider_height_from_levels(
+    building_levels: float,
+    storey_height_m: float,
+) -> float | None:
+    """Return a bounded provider-derived height after checking the multiplication."""
+
+    height = building_levels * storey_height_m
+    if not math.isfinite(height) or height < 0 or height > MAX_PROVIDER_HEIGHT_M:
         return None
     return height
 
@@ -1644,6 +2051,8 @@ def _post_overpass_url(url: str, query: str, user_agent: str) -> dict[str, Any]:
                 check=False,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=OVERPASS_HTTP_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:

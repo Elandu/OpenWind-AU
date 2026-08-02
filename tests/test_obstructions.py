@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 import openwind_au.obstructions as obstructions_module
@@ -129,6 +132,14 @@ def test_height_tags_reject_non_finite_or_implausible_values(raw_height) -> None
     assert result["height_m"] is None
 
 
+def test_height_tags_quarantine_boolean_and_oversized_integer_values() -> None:
+    for raw_height in (True, 10**10_000):
+        result = height_from_tags({"height": raw_height})
+
+        assert result["height_m"] is None
+        assert result["height_source"] == "missing"
+
+
 def test_building_levels_convert_using_configured_storey_height() -> None:
     result = height_from_tags({"building:levels": "4"}, default_storey_height_m=3.2)
 
@@ -137,6 +148,49 @@ def test_building_levels_convert_using_configured_storey_height() -> None:
     assert result["height_source"] == "OSM_LEVELS"
     assert result["confidence"] == "medium"
     assert result["manual_review_required"] is True
+
+
+def test_implausible_provider_levels_are_quarantined() -> None:
+    result = height_from_tags({"building:levels": "1e300"})
+
+    assert result["height_m"] is None
+    assert result["building_levels"] is None
+    assert result["height_source"] == "missing"
+    assert any("exceeded 200" in note for note in result["notes"])
+
+
+def test_imported_height_above_provider_bound_is_not_operational() -> None:
+    footprint = square_footprint()
+    footprint["height_m"] = 501.0
+
+    records = build_obstruction_records(
+        [footprint],
+        site_latitude=-33.86,
+        site_longitude=151.21,
+        radius_m=500,
+    )
+
+    assert records[0].height_m is None
+    assert records[0].height_source == "missing"
+    assert records[0].review_required is True
+    assert any("exceeded 500 m" in note for note in records[0].notes)
+
+
+def test_provider_level_product_above_height_bound_is_not_operational() -> None:
+    footprint = square_footprint()
+    footprint["building_levels"] = 200.0
+
+    records = build_obstruction_records(
+        [footprint],
+        site_latitude=-33.86,
+        site_longitude=151.21,
+        radius_m=500,
+        default_storey_height_m=6.0,
+    )
+
+    assert records[0].height_m is None
+    assert records[0].building_levels is None
+    assert any("implausible estimated height" in note for note in records[0].notes)
 
 
 def test_missing_height_does_not_infer_from_footprint_size() -> None:
@@ -346,6 +400,45 @@ def test_run_obstruction_inventory_returns_warning_when_footprint_source_fails(
     assert result.obstructions == []
     assert result.warnings
     assert any("indicative Ms cannot be calculated" in warning for warning in result.warnings)
+
+
+def test_provider_failure_details_are_logged_but_not_exposed(
+    monkeypatch,
+    tmp_path,
+    caplog,
+) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    microsoft_secret = r"https://example.test/data?sig=private-token"
+    overpass_secret = r"C:\private\provider\response.json"
+
+    def fail_microsoft(*_args, **_kwargs):
+        raise RuntimeError(microsoft_secret)
+
+    def fail_overpass(*_args, **_kwargs):
+        raise FootprintQueryError(overpass_secret)
+
+    monkeypatch.setattr(
+        obstructions_module,
+        "query_microsoft_building_footprints",
+        fail_microsoft,
+    )
+    monkeypatch.setattr(
+        obstructions_module,
+        "query_building_footprints_with_debug",
+        fail_overpass,
+    )
+
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500)
+    )
+    public_warnings = " ".join(result.warnings)
+
+    assert microsoft_secret not in public_warnings
+    assert overpass_secret not in public_warnings
+    assert "Microsoft Building Footprints data was unavailable" in public_warnings
+    assert "indicative Ms cannot be calculated" in public_warnings
+    assert microsoft_secret in caplog.text
+    assert overpass_secret in caplog.text
 
 
 def test_common_osm_building_tags_are_included() -> None:
@@ -578,6 +671,183 @@ def test_osm_footprint_cache_reused_when_live_overpass_fails(monkeypatch, tmp_pa
     assert second.data_source_status == "ok"
     assert second.data_quality.total_osm_building_footprints_found == 1
     assert "reused cached OSM footprint geometry" in " ".join(second.warnings)
+
+
+def test_osm_cache_write_failure_keeps_successful_live_footprints(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    footprints = [square_footprint("osm-live", {"building": "yes"})]
+    debug = obstructions_module.empty_overpass_debug(-33.86, 151.21, 500)
+
+    monkeypatch.setattr(
+        obstructions_module,
+        "query_microsoft_building_footprints",
+        lambda *_args, **_kwargs: microsoft_result([]),
+    )
+    monkeypatch.setattr(
+        obstructions_module,
+        "query_building_footprints_with_debug",
+        lambda *_args, **_kwargs: (footprints, debug),
+    )
+
+    def fail_cache(*_args, **_kwargs):
+        raise OSError(r"C:\private\cache\write failed")
+
+    monkeypatch.setattr(obstructions_module, "save_cached_osm_footprints", fail_cache)
+
+    result = run_obstruction_inventory(
+        ObstructionInventoryRequest(latitude=-33.86, longitude=151.21, radius_m=500)
+    )
+
+    assert result.data_source_status == "ok"
+    assert [item.source_id for item in result.obstructions] == ["osm-live"]
+    assert any("local outage cache could not be updated" in item for item in result.warnings)
+    assert "private" not in " ".join(result.warnings)
+
+
+def test_osm_cache_is_atomic_bounded_and_recovers_from_corruption(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    monkeypatch.setattr(obstructions_module, "MAX_OSM_CACHE_ENTRIES", 2)
+    footprints = [square_footprint("osm-cached", {"building": "yes"})]
+
+    for offset in range(3):
+        latitude = -33.86 + offset * 0.01
+        debug = obstructions_module.empty_overpass_debug(latitude, 151.21, 500)
+        obstructions_module.save_cached_osm_footprints(
+            latitude,
+            151.21,
+            500,
+            footprints,
+            debug,
+        )
+
+    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert not list(tmp_path.glob("*.part"))
+
+    current_latitude = -33.84
+    current_path = obstructions_module.osm_footprint_cache_file(
+        current_latitude,
+        151.21,
+        500,
+    )
+    assert current_path.read_text(encoding="utf-8").count("osm-cached") == 1
+    loaded = obstructions_module.load_cached_osm_footprints(
+        current_latitude,
+        151.21,
+        500,
+    )
+    assert loaded is not None
+    assert loaded[0][0]["source_id"] == "osm-cached"
+
+    current_path.write_text('{"footprints":[],"footprints":[}', encoding="utf-8")
+
+    assert obstructions_module.load_cached_osm_footprints(-33.84, 151.21, 500) is None
+    assert not current_path.exists()
+
+
+def test_osm_cache_rejects_oversized_and_mismatched_entries(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    footprints = [square_footprint("osm-cached", {"building": "yes"})]
+    debug = obstructions_module.empty_overpass_debug(-33.86, 151.21, 500)
+    monkeypatch.setattr(obstructions_module, "MAX_OSM_CACHE_FILE_BYTES", 100)
+
+    with pytest.raises(ValueError, match="exceeds"):
+        obstructions_module.save_cached_osm_footprints(
+            -33.86,
+            151.21,
+            500,
+            footprints,
+            debug,
+        )
+
+    path = obstructions_module.osm_footprint_cache_file(-33.86, 151.21, 500)
+    path.write_text(
+        json.dumps(
+            {
+                "latitude": -34.0,
+                "longitude": 151.21,
+                "radius_m": 500,
+                "footprints": [],
+                "debug": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(obstructions_module, "MAX_OSM_CACHE_FILE_BYTES", 10_000)
+
+    assert obstructions_module.load_cached_osm_footprints(-33.86, 151.21, 500) is None
+    assert not path.exists()
+
+
+def test_unremovable_corrupt_osm_cache_degrades_to_a_miss(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    path = obstructions_module.osm_footprint_cache_file(-33.86, 151.21, 500)
+    path.write_text('{"footprints":[],"footprints":[}', encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def deny_target_unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("read-only cache")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_target_unlink)
+
+    assert obstructions_module.load_cached_osm_footprints(-33.86, 151.21, 500) is None
+    assert path.exists()
+
+
+@pytest.mark.parametrize(
+    "invalid_member",
+    ["diagnostic_count", "footprint_tags", "polygon_position", "boolean_schema", "float_schema"],
+)
+def test_osm_cache_rejects_structurally_unsafe_valid_json(
+    monkeypatch,
+    tmp_path,
+    invalid_member,
+) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    latitude = -33.86
+    longitude = 151.21
+    radius_m = 500
+    footprints = [square_footprint("osm-cached", {"building": "yes"})]
+    debug = obstructions_module.empty_overpass_debug(latitude, longitude, radius_m)
+    obstructions_module.save_cached_osm_footprints(
+        latitude,
+        longitude,
+        radius_m,
+        footprints,
+        debug,
+    )
+    path = obstructions_module.osm_footprint_cache_file(latitude, longitude, radius_m)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if invalid_member == "diagnostic_count":
+        data["debug"]["parsed_counts"] = {"ways": "bad"}
+    elif invalid_member == "footprint_tags":
+        data["footprints"][0]["tags"] = ["bad"]
+    elif invalid_member == "polygon_position":
+        data["footprints"][0]["footprint_geometry"]["coordinates"][0][0] = ["bad", -33.86]
+    elif invalid_member == "boolean_schema":
+        data["schema_version"] = True
+    else:
+        data["schema_version"] = 1.0
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert obstructions_module.load_cached_osm_footprints(latitude, longitude, radius_m) is None
+    assert not path.exists()
+
+
+def test_deeply_nested_osm_cache_degrades_to_a_miss(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("OPENWIND_OSM_FOOTPRINT_CACHE", str(tmp_path))
+    path = obstructions_module.osm_footprint_cache_file(-33.86, 151.21, 500)
+    path.write_text("[" * 2_000 + "0" + "]" * 2_000, encoding="utf-8")
+
+    assert obstructions_module.load_cached_osm_footprints(-33.86, 151.21, 500) is None
+    assert not path.exists()
 
 
 def test_reviewed_geometry_has_priority_over_microsoft(monkeypatch) -> None:

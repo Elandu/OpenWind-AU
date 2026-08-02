@@ -29,6 +29,9 @@ For the consumer-readiness gap list, see
 - Packaged AS/NZS 1170.2:2021 regional wind speed `VR`, climate-change multiplier `Mc`, direction
   multiplier `Md`, terrain/height multiplier `Mz,cat`, and shielding multiplier `Ms` lookup data
   for review workflow support.
+- Clause 4.2.3 distance-weighted `Mz,cat` from supplied complete, ordered, contiguous,
+  source-referenced non-A0 terrain-transition profiles, with A0 profiles retained as evidence for
+  the mandatory terrain-independent result.
 - JSON export.
 - HTML report.
 - PDF report.
@@ -47,8 +50,8 @@ For the consumer-readiness gap list, see
 - Vegetation and non-building obstruction provenance placeholders.
 - Combined workflow map overlays for wind regions, terrain evidence, shielding sectors, and
   obstruction footprints.
-- MCP tools for traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` calculations over
-  stdio or Streamable HTTP.
+- MCP tools for traceable `VR`, `Mc`, `Md`, single-category and Clause 4.2.3 mixed-terrain
+  `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` calculations over stdio or Streamable HTTP.
 
 ## Not Implemented Or Certified
 
@@ -61,11 +64,15 @@ These items should not be described as certified OpenWind-AU outputs:
 - Calculated vegetation/canopy shielding from non-building obstruction sources.
 - AS 4055 wind classification support.
 - LiDAR acquisition or production-grade LiDAR integration.
+- Automatic detection of source-referenced Clause 4.2.3 terrain-transition distances from
+  aggregate GIS sector evidence.
 
 ## Near-Term Improvements
 
+- Expand independent Clause 2.3 validation for the implemented conversion from cardinal-direction
+  `Vsit,b` to building-orthogonal `Vdes,theta` before adding pressure calculations.
 - Complete independent reviewer/date metadata for packaged `Mz,cat` and `Ms` lookup assets, add
-  broader `Mt`regression cases, and build any future AS 4055 or other release-critical
+  broader `Mt` regression cases, and build any future AS 4055 or other release-critical
   coefficients from reviewed sources.
 - Add a reviewer sign-off and regression workflow for derived lookup assets without committing
   licensed standard text.
@@ -74,8 +81,9 @@ These items should not be described as certified OpenWind-AU outputs:
 - Better DEM cache management.
 - Clearer confidence scoring for preliminary topographic screening.
 - Profile filtering and directional sector summaries.
+- Reviewed GIS or survey import for ordered Clause 4.2.3 terrain-transition schedules.
 - More robust feature grouping across adjacent radials.
-- Better report layout with embedded maps and plots.
+- Add optional terrain-profile plot attachments to the existing map-enabled workflow report.
 - More tests with synthetic terrain fixtures.
 - More documented validation examples against known public terrain cases.
 - Contributor workflow for reviewing proposed validation examples.

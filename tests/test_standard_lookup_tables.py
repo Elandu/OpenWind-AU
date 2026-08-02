@@ -14,16 +14,22 @@ from openwind_au.mzcat import mzcat_lookup_issues
 from openwind_au.standard_calculations import shielding_lookup_issues
 from openwind_au.standard_lookup_tables import (
     MAX_LOOKUP_FILE_BYTES,
+    MD_DATA_FILE,
+    MD_EXPECTED_SHA256_ENV,
     MS_DATA_FILE,
     MS_EXPECTED_SHA256_ENV,
     MZCAT_DATA_FILE,
     MZCAT_EXPECTED_SHA256_ENV,
     PENDING_LOOKUP_REVIEW_STATUS,
     VERIFIED_LOOKUP_REVIEW_STATUS,
+    VR_DATA_FILE,
+    VR_EXPECTED_SHA256_ENV,
+    canonical_lookup_payload_sha256,
     canonical_values_sha256,
     load_lookup_data,
     load_packaged_lookup_data,
 )
+from openwind_au.wind_inputs import md_lookup_issues, vr_lookup_issues
 
 EXPECTED_REGIONAL_WIND_SPEEDS_2021 = {
     "A": {
@@ -246,8 +252,13 @@ def test_packaged_regional_wind_speed_table_matches_expected_2021_values() -> No
     assert data["source"]["standard"] == "AS/NZS 1170.2:2021"
     assert data["source"]["clause"] == "Section 3"
     assert data["source"]["table"] == "Table 3.1(A) - Regional wind speeds - Australia"
-    assert data["source"]["review_status"] == "verified_against_standard"
+    assert data["source"]["review_status"] == PENDING_LOOKUP_REVIEW_STATUS
     assert "licensed standard" in data["source"]["review_note"]
+    assert data["values_sha256"] == canonical_lookup_payload_sha256(
+        data,
+        payload_key="tables",
+    )
+    assert vr_lookup_issues(data, require_reviewed=False) == []
 
 
 def test_packaged_direction_multiplier_table_matches_expected_2021_values() -> None:
@@ -257,8 +268,13 @@ def test_packaged_direction_multiplier_table_matches_expected_2021_values() -> N
     assert data["source"]["standard"] == "AS/NZS 1170.2:2021"
     assert data["source"]["clause"] == "Section 3"
     assert data["source"]["table"] == "Table 3.2(A) - Wind direction multiplier (Md) - Australia"
-    assert data["source"]["review_status"] == "verified_against_standard"
+    assert data["source"]["review_status"] == PENDING_LOOKUP_REVIEW_STATUS
     assert "licensed standard" in data["source"]["review_note"]
+    assert data["values_sha256"] == canonical_lookup_payload_sha256(
+        data,
+        payload_key="tables",
+    )
+    assert md_lookup_issues(data, require_reviewed=False) == []
 
 
 def test_packaged_terrain_height_table_matches_independent_2021_snapshot() -> None:
@@ -304,6 +320,8 @@ def test_packaged_shielding_table_matches_independent_2021_snapshot() -> None:
 @pytest.mark.parametrize(
     ("filename", "validator"),
     [
+        (VR_DATA_FILE, vr_lookup_issues),
+        (MD_DATA_FILE, md_lookup_issues),
         (MZCAT_DATA_FILE, mzcat_lookup_issues),
         (MS_DATA_FILE, shielding_lookup_issues),
     ],
@@ -352,6 +370,36 @@ def test_changed_values_require_an_out_of_band_expected_digest(monkeypatch) -> N
     assert mzcat_lookup_issues(data, require_reviewed=False) == []
 
 
+@pytest.mark.parametrize(
+    ("filename", "validator", "expected_digest_env"),
+    [
+        (VR_DATA_FILE, vr_lookup_issues, VR_EXPECTED_SHA256_ENV),
+        (MD_DATA_FILE, md_lookup_issues, MD_EXPECTED_SHA256_ENV),
+    ],
+)
+def test_changed_table_values_require_an_out_of_band_expected_digest(
+    monkeypatch,
+    filename,
+    validator,
+    expected_digest_env,
+) -> None:
+    data = load_packaged_lookup_data(filename)
+    if filename == VR_DATA_FILE:
+        data["tables"]["A"]["ultimate"]["500"] = 46.0
+    else:
+        data["tables"]["A0"]["N"] = 0.91
+    replacement_digest = canonical_lookup_payload_sha256(data, payload_key="tables")
+    data["values_sha256"] = replacement_digest
+
+    assert "calculation values do not match the trusted expected digest" in validator(
+        data,
+        require_reviewed=False,
+    )
+
+    monkeypatch.setenv(expected_digest_env, replacement_digest)
+    assert validator(data, require_reviewed=False) == []
+
+
 def test_invalid_out_of_band_expected_digest_is_rejected(monkeypatch) -> None:
     data = load_packaged_lookup_data(MS_DATA_FILE)
     monkeypatch.setenv(MS_EXPECTED_SHA256_ENV, "not-a-sha256")
@@ -392,7 +440,7 @@ def test_normative_source_metadata_must_match_exactly() -> None:
     data = deepcopy(load_packaged_lookup_data(MZCAT_DATA_FILE))
     data["source"]["clause"] = "Clause 4"
 
-    assert "source.clause must be Clauses 4.2.2 and 4.2.3" in mzcat_lookup_issues(
+    assert "source.clause must be Clause 4.2.2" in mzcat_lookup_issues(
         data,
         require_reviewed=False,
     )

@@ -19,10 +19,11 @@ API process can answer requests.
 
 `/health` is a deployment-readiness probe. It returns HTTP 200 with `status: "ready"` only when a
 non-test wind-region dataset, reviewed and complete `VR`, `Md`, `Mz,cat`, and `Ms` lookup data,
-matching `Mz,cat`/`Ms` lookup digests, a durable `OPENWIND_RESULT_SIGNING_KEY`, and the configured DEM
-provider/cache are usable. Otherwise it returns HTTP 503 with `status: "not_ready"` and a
-consumer-safe `checks` object. Use `/health/live` for restart decisions and `/health` for routing
-assessment traffic.
+matching lookup digests, a durable `OPENWIND_RESULT_SIGNING_KEY`, and the configured DEM
+provider/cache are usable. `VR` and `Md` hash canonical `tables`; `Mz,cat` and `Ms` hash canonical
+`values`. Otherwise the endpoint returns HTTP 503 with `status: "not_ready"` and a consumer-safe
+`checks` object. Use `/health/live` for restart decisions and `/health` for routing assessment
+traffic.
 
 Assessment endpoints distinguish request failures from deployment and provider failures: malformed
 or unsupported request data returns HTTP 4xx, an unavailable required local dataset or invalid
@@ -158,7 +159,9 @@ and require competent engineering review.
 
 The obstruction inventory radius is independent from the terrain analysis radius. In the browser UI
 it defaults to 500 m so dense urban building-footprint queries do not inherit a 2 km or 4 km
-terrain radius. If the Microsoft cache is unavailable, the response reports
+terrain radius. When the common reference height is 25 m or less, the request must still provide
+`obstruction_radius_m >= 20h`; shorter requests are rejected because they cannot contain the full
+Clause 4.3.1 shielding sector. If the Microsoft cache is unavailable, the response reports
 `microsoft_source_status`, `microsoft_cache_status`, `osm_fallback_used`, source totals, and
 consumer-safe warnings. Server cache paths and filenames, raw source geometry, provider queries,
 sample source IDs, excluded source objects, and pipeline logs are not included in the public
@@ -194,10 +197,10 @@ coverage, open-terrain percentage, obstruction heights, obstruction density, spa
 density, directional fetch, shielding confidence, separate evidence scores, warnings, and a
 qualified suggested terrain category range.
 
-The API does not assign a final AS/NZS 1170.2 terrain category and does not calculate final
-design wind speeds. It reports indicative `Mz,cat` ranges from the suggested terrain category
-range for competent engineering review. Suggested ranges such as `TC2-TC2.5` or `TC2.5-TC3`
-are prompts for review, not confirmed categories.
+This terrain-category evidence endpoint does not assign a final AS/NZS 1170.2 terrain category or
+by itself calculate design wind speeds. It reports indicative `Mz,cat` ranges from the suggested
+terrain category range for competent engineering review. Suggested ranges such as `TC2-TC2.5` or
+`TC2.5-TC3` are prompts for review, not confirmed categories.
 
 For the human review workflow, see [`workflow.md`](workflow.md) and
 [`reviewer-checklist.md`](reviewer-checklist.md).
@@ -242,23 +245,110 @@ Generic Region A is also rejected by the combined workflow until A0, A1, A2, A3,
 confirmed. This is required because A0 has special terrain-height and topographic rules, A4 has a
 high-elevation topographic rule, and the direction multiplier requires a specific regional row.
 
+### Clause 4.2.3 Mixed Terrain Profiles
+
+Supply `mixed_terrain_profiles` when reviewed source material identifies the ordered terrain
+transitions for a wind direction. Distances are absolute upwind distances measured from the site.
+For a non-A0 assessment height `z`, the profile must continuously cover the complete averaging
+window `[xi, xi + xa)`, where `xi = 20z` and `xa = max(500 m, 40z)`. Segments must be ordered and
+contiguous, and every segment requires a non-empty `source_reference`. The workflow rejects gaps,
+overlaps, incomplete non-A0 coverage, duplicate profile directions, and a terrain-category or
+`Mz,cat` class override for the same direction.
+
+For non-A0 workflow requests, `average_roof_height_m` is required and may be used as Clause 4.2.3
+height `z` only when `h <= 25 m`. Higher buildings require a separate height-specific assessment;
+the workflow does not substitute `building_height_m`. Region A0 instead uses its mandatory
+terrain-independent Table 4.1 value at the workflow reference height
+(`average_roof_height_m`, falling back to `building_height_m`). Supplied A0 profiles are
+evidence-only, may be incomplete, and are not distance-weighted, although their supplied segments
+must remain ordered, contiguous, and source-referenced. Aggregate built-up, vegetation, and
+open-terrain sector percentages do not locate transitions and are never converted into a
+transition schedule.
+
+At `h = 10 m`, `xi = 200 m`, `xa = 500 m`, and the required averaging window is 200-700 m. This
+REST example supplies complete coverage for the north direction:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/wind-workflow \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latitude": -33.86,
+    "longitude": 151.21,
+    "building_height_m": 10,
+    "average_roof_height_m": 10,
+    "radius_m": 500,
+    "sample_interval_m": 100,
+    "obstruction_radius_m": 500,
+    "default_storey_height_m": 3.0,
+    "annual_exceedance_probability": "1/500",
+    "mixed_terrain_profiles": [{
+      "direction": "N",
+      "source_reference": "Reviewed transition schedule W-04 rev C",
+      "segments": [
+        {
+          "start_distance_m": 200,
+          "end_distance_m": 450,
+          "terrain_category": "TC2",
+          "source_reference": "W-04 rev C, N segment 1"
+        },
+        {
+          "start_distance_m": 450,
+          "end_distance_m": 700,
+          "terrain_category": "TC3",
+          "source_reference": "W-04 rev C, N segment 2"
+        }
+      ]
+    }]
+  }'
+```
+
+Supply one complete profile for each direction that needs mixed-terrain weighting. Directions
+without a profile continue to use one reviewed or recommended terrain category and return an
+explicit warning. The response exposes the traceable calculations in
+`mixed_terrain_assessments`.
+
 Mandatory standard values cannot be replaced through either override collection. In Region A0,
-the terrain-independent Table 4.1 Mz,cat value is retained. When average roof height h exceeds
-25 m, Clause 4.3.1 requires Ms = 1.0. Numeric overrides for either case are rejected.
+the mandatory Table 4.1 A0 rule is retained independently of terrain-category class, while still
+using the common reference height. When average roof height h exceeds 25 m, Clause 4.3.1 requires
+Ms = 1.0. Numeric overrides for either case are rejected.
 
 Use `average_roof_height_m` for the common AS/NZS reference height `h` used by
 `Mz,cat`, the Clause 4.3 shielding-height checks, and Clause 4.4 topographic calculations.
-When it is omitted, the workflow conservatively uses `building_height_m`. The request-only
-`average_height_m` alias remains accepted for migration, but responses and OpenAPI use the
-unambiguous `average_roof_height_m` name.
+When it is omitted, the workflow uses `building_height_m` as a continuity fallback. That fallback
+is an assumption, is not uniformly conservative across all multipliers, and requires confirmation
+of the actual average roof height. The request-only `average_height_m` alias remains accepted for
+migration, but responses and OpenAPI use the unambiguous `average_roof_height_m` name.
 
-`Mc` is a deterministic Table 3.3 mapping and is not overrideable. These overrides are reviewed engineering inputs. They preserve their reasons in result provenance
-and do not certify the automated GIS evidence or final design outcome.
+`annual_exceedance_probability` is the AEP/ARI input used to select `VR`.
+`importance_level` and `design_life_years` are optional report metadata only; they do not derive,
+select, or alter the AEP/ARI. The deprecated `building_dimensions` field remains available as
+legacy free-text request metadata only; it does not define the footprint or drive calculations.
+It cannot be combined with the structured `building_width_m` and `building_length_m` fields.
 
-`assessment_status` accepts only `draft` or `reviewed`. A reviewed preliminary assessment requires
-both `reviewed_by` and non-empty `engineer_notes`. `final` is rejected because this service does
-not issue certified assessments. HTML and PDF reports remain marked `PRELIMINARY - NOT FOR
-CERTIFICATION` in either state.
+`Mc` is a deterministic Table 3.3 mapping and is not overrideable. Other overrides are reviewed
+engineering inputs. They preserve their reasons in result provenance and do not certify the
+automated GIS evidence or final design outcome.
+
+`assessment_status`, `reviewed_by`, and `engineer_notes` are optional public request fields retained
+for legacy/backward compatibility and preserved in the normalized signed `input`. The browser does
+not expose review or issue-status controls and omits all three fields; the server defaults
+`assessment_status` to `draft`. API clients may still send `reviewed`, which requires both
+`reviewed_by` and non-empty `engineer_notes`; `final` is rejected by request validation. These
+fields do not create an HTML/PDF issue status, reviewer label, certification claim, or banner.
+When supplied, `engineer_notes` may appear only as a review note in the report.
+
+`structure_orientation_deg` is the engineering azimuth of the building's front, measured clockwise
+from North. It accepts `0 <= beta < 360`; `0`, `90`, `180`, and `270` therefore correspond to
+the front pointing North, East, South, and West respectively. The right, back, and left building
+axes are offset from that front azimuth by 90, 180, and 270 degrees. The browser map uses the same
+convention. `building_width_m` is the left-to-right breadth across the front and
+`building_length_m` is the front-to-back depth; supply both together when defining the editable
+footprint. When all eight final cardinal-direction `Vsit,b` rows are available, the workflow
+linearly interpolates between the 45-degree direction points and reports the maximum value within
+each plan face's plus-or-minus 45-degree sector as Clause 2.3 ultimate `Vdes,theta`. The Front,
+Right, Back, and Left result rows use relative `theta` values of 0, 90, 180, and 270 degrees and
+absolute `beta` bearings derived from the front orientation. The Clause 2.3 ultimate minimum of
+30 m/s is enforced. Design pressures remain outside this workflow.
 
 The response fields named `final_value` and `final_vsitb` are retained for API compatibility. They
 mean the selected calculated or explicitly overridden value used in the current preliminary

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
 import threading
-import time
 import uuid
 from collections import OrderedDict
 from copy import deepcopy
@@ -20,8 +20,13 @@ import requests
 from shapely.errors import ShapelyError
 from shapely.geometry import Point, shape
 
+from openwind_au.cache_io import (
+    atomic_replace_with_retry as replace_cache_file_with_retry,
+)
+from openwind_au.cache_io import cache_target_lock
 from openwind_au.http_client import APPLICATION_USER_AGENT
 
+LOGGER = logging.getLogger(__name__)
 MICROSOFT_AUSTRALIA_DATASET_URL = "https://github.com/microsoft/AustraliaBuildingFootprints"
 MICROSOFT_AUSTRALIA_DOWNLOAD_URL = (
     "https://usbuildingdata.blob.core.windows.net/australia-buildings/Australia.geojson.zip"
@@ -38,8 +43,6 @@ COORDINATE_PREFIX_RE = re.compile(
 )
 MICROSOFT_QUERY_CACHE: OrderedDict[tuple[Any, ...], MicrosoftFootprintResult] = OrderedDict()
 MICROSOFT_QUERY_CACHE_LOCK = threading.RLock()
-MICROSOFT_TARGET_LOCKS: dict[str, threading.Lock] = {}
-MICROSOFT_TARGET_LOCKS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -108,7 +111,14 @@ def query_microsoft_building_footprints(
             with microsoft_target_lock(path):
                 path_footprints = read_footprint_file(path, latitude, longitude, radius_m)
         except Exception as exc:
-            warnings.append(f"Microsoft footprint cache file could not be read: {path}: {exc}")
+            LOGGER.warning(
+                "Microsoft footprint cache file could not be read: %s",
+                path,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            warnings.append(
+                "One configured Microsoft footprint cache file could not be read and was skipped."
+            )
             continue
         if path_footprints:
             used_files.append(str(path))
@@ -306,12 +316,10 @@ def download_indexed_tiles(
     return downloaded
 
 
-def microsoft_target_lock(target: Path) -> threading.Lock:
-    """Return the process-local lock for an indexed cache target."""
+def microsoft_target_lock(target: Path) -> threading.RLock:
+    """Return a bounded process-local lock for an indexed cache target."""
 
-    key = normalized_path_for_comparison(Path(os.path.abspath(os.fspath(target))))
-    with MICROSOFT_TARGET_LOCKS_LOCK:
-        return MICROSOFT_TARGET_LOCKS.setdefault(key, threading.Lock())
+    return cache_target_lock(target)
 
 
 def safe_indexed_tile_target(cache_root: Path, relative_file: Any) -> Path:
@@ -391,14 +399,7 @@ def download_tile_response(
 def atomic_replace_with_retry(source: Path, target: Path) -> None:
     """Replace a cache target, tolerating brief Windows file-sharing races."""
 
-    for attempt in range(5):
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            if attempt == 4:
-                raise
-            time.sleep(0.02 * (2**attempt))
+    replace_cache_file_with_retry(source, target)
 
 
 def validate_cached_tile(path: Path, *, expected_sha256: str | None) -> None:

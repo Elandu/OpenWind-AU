@@ -10,7 +10,7 @@ from openwind_au.calculation_validation import run_calculation_validation_cases
 def test_calculation_validation_cases_pass() -> None:
     report = run_calculation_validation_cases()
 
-    assert report.summary == {"pass": 12, "fail": 0}
+    assert report.summary == {"pass": 14, "fail": 0}
     assert {result.calculation_area for result in report.results} == {
         "shielding",
         "topography",
@@ -36,6 +36,12 @@ def test_calculation_validation_includes_reference_formula_checks() -> None:
         check.field == "TC1.5 at 12.5 m" and check.actual == 1.0625 for check in mzcat.checks
     )
 
+    mixed = by_id["mixed-terrain-clause-4-2-3-reference"]
+    assert any(check.field == "weighted Mz,cat" and check.actual == 0.915 for check in mixed.checks)
+    assert any(
+        check.field == "A0 contribution count" and check.actual == 0 for check in mixed.checks
+    )
+
     site_wind = by_id["site-wind-speed-full-precision-product"]
     assert any(
         check.field == "reported Vsit,b at 3 decimals" and check.actual == 32.079
@@ -44,6 +50,15 @@ def test_calculation_validation_includes_reference_formula_checks() -> None:
     assert any(
         check.field == "Region B2 climate-change multiplier Mc" and check.actual == 1.05
         for check in site_wind.checks
+    )
+    design_wind = by_id["design-wind-speed-clause-2-3-reference"]
+    assert any(
+        check.field == "west-facing Front Vdes,theta" and check.actual == 41.3
+        for check in design_wind.checks
+    )
+    assert any(
+        check.field == "337.5-degree interpolated sector maximum" and check.actual == 40.3
+        for check in design_wind.checks
     )
 
     multiplier = by_id["topographic-multiplier-clause-4-4-reference"]
@@ -71,7 +86,7 @@ def test_calculation_validation_api() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["summary"] == {"pass": 12, "fail": 0}
+    assert body["summary"] == {"pass": 14, "fail": 0}
     assert "certify AS/NZS 1170.2 compliance" in body["disclaimer"]
     assert {result["calculation_area"] for result in body["results"]} == {
         "shielding",

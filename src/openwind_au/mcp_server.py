@@ -16,38 +16,51 @@ from pydantic import Field
 from typing_extensions import TypedDict
 
 from openwind_au import __version__
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
 from openwind_au.models import (
     ClimateChangeWindRegionLabel,
     ExposureWindRegionLabel,
+    MixedTerrainProfile,
+    MixedTerrainSegment,
     SpecificWindRegionLabel,
     TerrainCategoryLabel,
     WindDirection,
     WindDirectionMultiplierCase,
     WindRegionLabel,
 )
-from openwind_au.mzcat import indicative_mzcat, mzcat_lookup_warnings
+from openwind_au.mzcat import indicative_mzcat, load_mzcat_table, mzcat_lookup_warnings
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    MAX_DIRECTION_MULTIPLIER,
     climate_change_multiplier,
+    design_wind_speed,
     direction_multiplier_values,
+    load_ms_table,
     ms_from_shielding_parameter,
     shielding_lookup_warnings,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
-from openwind_au.standard_lookup_tables import lookup_metadata_warnings, source_reference
+from openwind_au.standard_lookup_tables import (
+    AS_NZS_1170_2_EDITION,
+    lookup_metadata_warnings,
+    lookup_provenance_snapshot,
+    source_reference,
+)
 from openwind_au.topographic_multiplier import (
     calculate_topographic_multiplier as calculate_mt,
 )
 from openwind_au.wind_inputs import (
+    MD_METADATA_WARNING,
     VR_EQUATION_REFERENCE,
     VR_METADATA_WARNING,
     VR_TABLE_ENV,
     configured_regional_wind_speed,
+    load_md_tables,
     load_vr_tables,
 )
 
-STANDARD = "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2"
+STANDARD = AS_NZS_1170_2_EDITION
 MCP_TRANSPORTS = ("stdio", "streamable-http")
 LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
 LOOPBACK_ALLOWED_ORIGINS = [
@@ -57,6 +70,7 @@ LOOPBACK_ALLOWED_ORIGINS = [
 ]
 
 FeatureType = Literal["hill", "ridge", "escarpment", "valley", "no significant feature"]
+StructureClass = Literal["building", "house", "monopole", "tower", "other"]
 AriYears = Annotated[
     int,
     Field(
@@ -72,6 +86,16 @@ TopographicDistance = Annotated[float, Field(strict=True, ge=0, le=1_000_000, al
 SiteElevation = Annotated[float, Field(strict=True, ge=-500, le=10_000, allow_inf_nan=False)]
 ShieldingParameter = Annotated[float, Field(strict=True, ge=0, le=1_000_000, allow_inf_nan=False)]
 PositiveWindValue = Annotated[float, Field(strict=True, gt=0, le=200, allow_inf_nan=False)]
+EngineeringAzimuth = Annotated[
+    float,
+    Field(
+        strict=True,
+        ge=0,
+        lt=360,
+        allow_inf_nan=False,
+        description="Engineering azimuth in degrees clockwise from true North.",
+    ),
+]
 PositiveMultiplier = Annotated[float, Field(strict=True, gt=0, le=10, allow_inf_nan=False)]
 ClimateChangeMultiplierValue = Annotated[
     float,
@@ -79,13 +103,18 @@ ClimateChangeMultiplierValue = Annotated[
 ]
 DirectionMultiplierValue = Annotated[
     float,
-    Field(strict=True, gt=0, le=2, allow_inf_nan=False),
+    Field(strict=True, gt=0, le=MAX_DIRECTION_MULTIPLIER, allow_inf_nan=False),
 ]
 ShieldingMultiplierValue = Annotated[
     float,
     Field(strict=True, gt=0, le=1, allow_inf_nan=False),
 ]
 StrictBoolean = Annotated[bool, Field(strict=True)]
+MixedTerrainSegments = Annotated[
+    list[MixedTerrainSegment],
+    Field(min_length=1, max_length=256),
+]
+ProfileSourceReference = Annotated[str | None, Field(max_length=1_000)]
 
 
 class CalculationResult(TypedDict):
@@ -102,8 +131,9 @@ class CalculationResult(TypedDict):
 mcp = FastMCP(
     "OpenWind-AU",
     instructions=(
-        "Traceable Australian site-wind calculations through Vsit,b. Inputs that depend on "
-        "site classification or survey evidence must be reviewed by a competent engineer."
+        "Traceable Australian site-wind calculations through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta. Inputs that depend on site classification or survey "
+        "evidence must be reviewed by a competent engineer."
     ),
     stateless_http=True,
     json_response=True,
@@ -181,6 +211,17 @@ def _regional_wind_speed(wind_region: str, ari_years: int) -> tuple[float, list[
     return vr, warnings, selected_source
 
 
+def _direction_multipliers(
+    wind_region: SpecificWindRegionLabel,
+) -> tuple[dict[str, float], list[str], str]:
+    """Resolve Md values and provenance from one validated lookup snapshot."""
+
+    data = load_md_tables()
+    multipliers = direction_multiplier_values(wind_region, data=data)
+    warnings = lookup_metadata_warnings(data, MD_METADATA_WARNING)
+    return multipliers, warnings, source_reference(data)
+
+
 @mcp.tool()
 def calculate_regional_wind_speed(
     wind_region: WindRegionLabel,
@@ -218,11 +259,16 @@ def calculate_climate_change_multiplier(
 def get_direction_multipliers(wind_region: SpecificWindRegionLabel) -> CalculationResult:
     """Return the eight Australian wind direction multipliers Md for a reviewed region."""
 
-    multipliers = direction_multiplier_values(wind_region)
+    multipliers, warnings, selected_source = _direction_multipliers(wind_region)
     return _result(
         clause="Table 3.2(A)",
         inputs={"wind_region": wind_region},
-        outputs={"md": multipliers, "any_direction_md": 1.0},
+        outputs={
+            "md": multipliers,
+            "any_direction_md": 1.0,
+            "source_reference": selected_source,
+        },
+        warnings=warnings,
     )
 
 
@@ -235,20 +281,78 @@ def calculate_terrain_height_multiplier(
     """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
 
     height_m = _finite_value("Height", height_m, minimum=0, maximum=200, minimum_inclusive=False)
-    mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
+    lookup = load_mzcat_table()
+    mzcat = indicative_mzcat(
+        terrain_category,
+        height_m,
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
     return _result(
-        clause="Clauses 4.2.2 and 4.2.3; Table 4.1",
+        clause="Clause 4.2.2; Table 4.1",
         inputs={
             "terrain_category": terrain_category,
             "height_m": height_m,
             "wind_region": wind_region,
         },
-        outputs={"mzcat": round(mzcat, 6)},
+        outputs={
+            "mzcat": round(mzcat, 6),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
         warnings=[
-            "The terrain category and any mixed-fetch weighted averaging must be "
-            "reviewed separately.",
-            *mzcat_lookup_warnings(),
+            "This single-category tool does not perform Clause 4.2.3 weighting; use "
+            "calculate_mixed_terrain_height_multiplier when a complete reviewed transition "
+            "schedule is available.",
+            *mzcat_lookup_warnings(lookup),
         ],
+    )
+
+
+@mcp.tool()
+def calculate_mixed_terrain_height_multiplier(
+    direction: WindDirection,
+    assessment_height_z_m: PositiveHeight,
+    wind_region: ExposureWindRegionLabel,
+    segments: MixedTerrainSegments,
+    profile_source_reference: ProfileSourceReference = None,
+) -> CalculationResult:
+    """Calculate Clause 4.2.3 Mz,cat from ordered upwind terrain transitions."""
+
+    height = _finite_value(
+        "Assessment height z",
+        assessment_height_z_m,
+        minimum=0,
+        maximum=200,
+        minimum_inclusive=False,
+    )
+    profile = MixedTerrainProfile(
+        direction=direction,
+        segments=segments,
+        source_reference=profile_source_reference,
+    )
+    lookup = load_mzcat_table()
+    assessment = calculate_mixed_terrain_assessment(
+        profile=profile,
+        assessment_height_z_m=height,
+        assessment_height_basis="explicit_height_z",
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
+    return _result(
+        clause="Clause 4.2.3; Table 4.1",
+        inputs={
+            "direction": direction,
+            "assessment_height_z_m": height,
+            "wind_region": wind_region,
+            "segments": [segment.model_dump(mode="json") for segment in segments],
+            "profile_source_reference": profile.source_reference,
+        },
+        outputs={
+            "mzcat": assessment.weighted_mzcat,
+            "mixed_terrain_assessment": assessment.model_dump(mode="json"),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
+        warnings=[*assessment.warnings, *mzcat_lookup_warnings(lookup)],
     )
 
 
@@ -272,20 +376,24 @@ def calculate_shielding_multiplier(
         maximum=200,
         minimum_inclusive=False,
     )
-    warnings = shielding_lookup_warnings()
-    height_limit_m = shielding_reduction_height_limit_m()
+    lookup = load_ms_table()
+    warnings = shielding_lookup_warnings(lookup)
+    height_limit_m = shielding_reduction_height_limit_m(lookup)
     if average_roof_height_m > height_limit_m:
         ms = 1.0
         warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     else:
-        ms = ms_from_shielding_parameter(shielding_parameter)
+        ms = ms_from_shielding_parameter(shielding_parameter, data=lookup)
     return _result(
         clause="Clause 4.3; Table 4.2",
         inputs={
             "shielding_parameter": shielding_parameter,
             "average_roof_height_m": average_roof_height_m,
         },
-        outputs={"ms": round(ms, 6)},
+        outputs={
+            "ms": round(ms, 6),
+            "ms_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
         warnings=warnings,
     )
 
@@ -369,7 +477,13 @@ def calculate_site_wind_speed(
             minimum_inclusive=False,
         ),
         "mc": _finite_value("Mc", mc, minimum=0, maximum=2, minimum_inclusive=False),
-        "md": _finite_value("Md", md, minimum=0, maximum=2, minimum_inclusive=False),
+        "md": _finite_value(
+            "Md",
+            md,
+            minimum=0,
+            maximum=MAX_DIRECTION_MULTIPLIER,
+            minimum_inclusive=False,
+        ),
         "mzcat": _finite_value(
             "Mz,cat",
             mzcat,
@@ -396,6 +510,130 @@ def calculate_site_wind_speed(
 
 
 @mcp.tool()
+def calculate_design_wind_speeds(
+    front_beta_deg: EngineeringAzimuth,
+    north_mps: PositiveWindValue,
+    northeast_mps: PositiveWindValue,
+    east_mps: PositiveWindValue,
+    southeast_mps: PositiveWindValue,
+    south_mps: PositiveWindValue,
+    southwest_mps: PositiveWindValue,
+    west_mps: PositiveWindValue,
+    northwest_mps: PositiveWindValue,
+) -> CalculationResult:
+    """Calculate four Clause 2.3 ultimate Vdes,theta values from cardinal Vsit,b."""
+
+    direction_speeds = {
+        "N": _finite_value(
+            "North Vsit,b", north_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "NE": _finite_value(
+            "Northeast Vsit,b",
+            northeast_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "E": _finite_value(
+            "East Vsit,b", east_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "SE": _finite_value(
+            "Southeast Vsit,b",
+            southeast_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "S": _finite_value(
+            "South Vsit,b", south_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "SW": _finite_value(
+            "Southwest Vsit,b",
+            southwest_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "W": _finite_value(
+            "West Vsit,b", west_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "NW": _finite_value(
+            "Northwest Vsit,b",
+            northwest_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+    }
+    front_beta = _finite_value(
+        "Front beta",
+        front_beta_deg,
+        minimum=0,
+        maximum=360,
+    )
+    if front_beta >= 360:
+        raise ValueError("Front beta must be less than 360 degrees.")
+    face_offsets = (("Front", 0.0), ("Right", 90.0), ("Back", 180.0), ("Left", 270.0))
+    rows = []
+    for face, theta_deg in face_offsets:
+        beta_deg = (front_beta + theta_deg) % 360.0
+        calculation = design_wind_speed(
+            theta_degrees=beta_deg,
+            direction_speeds=direction_speeds,
+            ultimate_limit_state=True,
+        )
+        rows.append(
+            {
+                "face": face,
+                "theta_deg": theta_deg,
+                "beta_deg": beta_deg,
+                "sector_start_beta_deg": calculation.sector_start_degrees,
+                "sector_end_beta_deg": calculation.sector_end_degrees,
+                "candidates": [
+                    {
+                        "beta_deg": candidate.bearing_degrees,
+                        "vsitb_mps": round(candidate.site_wind_speed_m_s, 6),
+                    }
+                    for candidate in calculation.candidates
+                ],
+                "raw_vdes_theta_mps": round(calculation.raw_maximum_m_s, 6),
+                "vdes_theta_mps": round(calculation.design_wind_speed_m_s, 6),
+                "minimum_uls_applied": calculation.minimum_applied,
+            }
+        )
+    governing_value = max(float(row["vdes_theta_mps"]) for row in rows)
+    governing_faces = [
+        str(row["face"])
+        for row in rows
+        if math.isclose(
+            float(row["vdes_theta_mps"]),
+            governing_value,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+    ]
+    return _result(
+        clause="Clause 2.3",
+        inputs={
+            "front_beta_deg": front_beta,
+            "directional_vsitb_mps": direction_speeds,
+            "limit_state": "ultimate",
+        },
+        outputs={
+            "design_wind_speeds": rows,
+            "governing_faces": governing_faces,
+            "governing_vdes_theta_mps": governing_value,
+        },
+        warnings=[
+            "Front beta is clockwise from true North; Right, Back, and Left are beta +90, "
+            "+180, and +270 degrees.",
+            "The 30 m/s Clause 2.3 minimum is applied because this tool returns ultimate "
+            "design wind speeds.",
+        ],
+    )
+
+
+@mcp.tool()
 def calculate_all_wind_variables(
     wind_region: SpecificWindRegionLabel,
     ari_years: AriYears,
@@ -411,6 +649,7 @@ def calculate_all_wind_variables(
     x_m: TopographicDistance,
     site_elevation_m: SiteElevation,
     site_is_downwind: StrictBoolean = True,
+    structure_class: StructureClass | None = None,
 ) -> CalculationResult:
     """Calculate VR, Mc, Md, Mz,cat, Ms, Mt, and Vsit,b from reviewed inputs."""
 
@@ -453,22 +692,34 @@ def calculate_all_wind_variables(
     mc = climate_change_multiplier(wind_region)
     mandatory_md = (
         wind_direction_multiplier_case == "circular_or_polygonal_chimney_tank_or_pole"
+        or structure_class == "monopole"
         or (
             wind_direction_multiplier_case == "cladding_or_immediate_support"
             and wind_region in {"B2", "C", "D"}
         )
     )
-    md = 1.0 if mandatory_md else direction_multiplier_values(wind_region)[direction]
+    md_warnings: list[str] = []
+    if mandatory_md:
+        md = 1.0
+        md_source = f"{STANDARD} Clause 3.3"
+        md_lookup_source = None
+    else:
+        multipliers, md_warnings, md_lookup_source = _direction_multipliers(wind_region)
+        md = multipliers[direction]
+        md_source = f"{STANDARD} Table 3.2(A)"
+    mzcat_lookup = load_mzcat_table()
     mzcat = indicative_mzcat(
         terrain_category,
         average_roof_height_m,
         wind_region=wind_region,
+        lookup_data=mzcat_lookup,
     )
-    height_limit_m = shielding_reduction_height_limit_m()
+    ms_lookup = load_ms_table()
+    height_limit_m = shielding_reduction_height_limit_m(ms_lookup)
     ms = (
         1.0
         if average_roof_height_m > height_limit_m
-        else ms_from_shielding_parameter(shielding_parameter)
+        else ms_from_shielding_parameter(shielding_parameter, data=ms_lookup)
     )
     mt_calculation = calculate_mt(
         feature_type=feature_type,
@@ -496,15 +747,17 @@ def calculate_all_wind_variables(
     )
     warnings = [
         *vr_warnings,
-        *mzcat_lookup_warnings(),
-        *shielding_lookup_warnings(),
+        *md_warnings,
+        *mzcat_lookup_warnings(mzcat_lookup),
+        *shielding_lookup_warnings(ms_lookup),
         *mt_calculation.warnings,
     ]
     if average_roof_height_m > height_limit_m:
         warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     if mandatory_md:
         warnings.append(
-            "Clause 3.3 requires Md = 1.0 for the selected design case and wind region."
+            "Clause 3.3 requires Md = 1.0 for the effective design case, structure class, "
+            "and wind region."
         )
     warnings.append(
         "Terrain, shielding, topographic geometry, wind region, and jurisdictional variations "
@@ -517,6 +770,7 @@ def calculate_all_wind_variables(
             "ari_years": ari_years,
             "direction": direction,
             "wind_direction_multiplier_case": wind_direction_multiplier_case,
+            "structure_class": structure_class,
             "terrain_category": terrain_category,
             "average_roof_height_m": average_roof_height_m,
             "shielding_parameter": shielding_parameter,
@@ -533,11 +787,12 @@ def calculate_all_wind_variables(
             "vr_source_reference": vr_source,
             "mc": mc,
             "md": md,
-            "md_source_reference": (
-                f"{STANDARD} Clause 3.3" if mandatory_md else f"{STANDARD} Table 3.2(A)"
-            ),
+            "md_source_reference": md_source,
+            "md_lookup_source_reference": md_lookup_source,
             "mzcat": round(mzcat, 6),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(mzcat_lookup),
             "ms": round(ms, 6),
+            "ms_lookup_provenance": lookup_provenance_snapshot(ms_lookup),
             "mt": round(mt_calculation.mt, 6),
             "vsitb_mps": round(vsitb, 6),
         },

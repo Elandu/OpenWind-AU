@@ -21,13 +21,18 @@ validation before non-expert users should rely on the output.
   metadata, canonical value digests, deployment overrides, deterministic snapshots, and readiness
   checks. Independent named reviewer/date sign-off is still required before a certified release.
 - `Mz,cat`, `Ms`, and `Mt` are still review workflows, not certified design outputs.
-- Workflow reports are always marked preliminary, reject a final/certified issue state, and require
-  reviewer identity plus notes before accepting `reviewed` status.
+- Workflow reports omit certification claims and do not display an issue status or reviewer label.
+  `assessment_status`, `reviewed_by`, and `engineer_notes` remain optional
+  legacy/API-compatibility request metadata; the browser has no review/status controls and omits
+  them, while the server defaults `assessment_status` to `draft`.
 - Completed-result report routes verify a server-issued HMAC token and deployment readiness
   requires a durable shared signing key, so a modified browser/API payload cannot be rendered as
   an authentic completed result.
 - Public assessment JSON omits local wind-region dataset paths and raw region geometry; diagnostic
   routes are hidden unless explicitly enabled for a trusted local session.
+- The OSM outage cache now uses coordinate-obscuring hashed filenames, strict payload validation,
+  atomic writes, 25 MiB per-entry and 256 MiB/512-entry quotas, and 30-day expiry. Cache payloads
+  still contain location and footprint data and require operator-controlled storage permissions.
 - Production mode now requires a trusted Host allowlist, disables interactive API documentation,
   bounds request bodies and request collections, rejects ambiguous JSON, sanitises validation
   errors, adds browser security headers, and fails assessment traffic closed on readiness.
@@ -55,7 +60,7 @@ third-party binary format.
 | Need | Current / Candidate Source | Consumer-Ready Requirement |
 | --- | --- | --- |
 | Terrain DEM | Geoscience Australia 1-second SRTM-derived DEM, NASA SRTM, or configured DEM rasters | Local cache with versioned metadata, datum notes, and fallback behaviour |
-| Wind lookup data | AS/NZS 1170.2:2021 and AS 4055:2021 verified tables | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
+| Wind lookup data | Derived AS/NZS 1170.2:2021 assets with named independent sign-off still pending; separate AS 4055 work remains | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
 | Point elevation | Configured DEM first; Open-Meteo opt-in fallback/comparison provider | Source provenance in every report and clear warnings for external API data |
 | Map context | OSM, MapTiler/Stadia, ESRI imagery, or project-configured tiles | Attribution, key management, and offline/error behaviour |
 | Address search | Photon autocomplete plus deliberate Nominatim single-address resolution | Self-hosted or contracted provider capacity, caching, attribution, and outage handling |
@@ -71,19 +76,23 @@ third-party binary format.
    categories, shielding states, heights, and topographic classes.
 4. Promote `Mz,cat`, `Ms`, and `Mt` from indicative to reviewed/certified only after the lookup
    tables, class selection logic, and edge cases have independent engineering sign-off.
-5. Complete consumer-facing guardrails beyond the implemented review states and report watermark:
-   add project setup, explicit standard/version selection, and blocked export when critical inputs
-   are missing.
+5. Complete consumer-facing guardrails beyond signed-result integrity and strict request
+   validation: add project setup, explicit standard/version selection, and blocked export when
+   critical inputs are missing.
 6. Replace live-network assumptions with cache-first data services and visible data-source health
    checks.
 7. Add licensing and attribution checks for all bundled and live data sources.
-8. Implement or reviewed-input-block the Clause 4.2.3 mixed-terrain weighted average, Cyclonic
-   C/D coastal interpolation, and the Clause 4.4.2 most-adverse cross-section/escarpment checks.
+8. Add production GIS detection and source referencing of ordered Clause 4.2.3 terrain-transition
+   distances; the non-A0 weighted calculation already accepts complete `mixed_terrain_profiles`,
+   while A0 profiles are evidence-only. Also complete cyclonic C/D coastal interpolation and the
+   Clause 4.4.2 most-adverse
+   cross-section/escarpment checks.
 9. Validate the production wind-region boundary dataset against an Amendment 2-reviewed edition
    and record a content digest in result provenance.
-10. Add provider redirect/SSRF controls, bounded response downloads and total deadlines,
-    concurrency/rate limits, cache quotas and atomic OSM cache writes before exposing live public
-    provider integrations at consumer scale.
+10. Complete consistent provider redirect/SSRF controls, bounded response downloads and total
+    deadlines, and concurrency/rate limits before exposing live public provider integrations at
+    consumer scale. OSM cache quotas, expiry, strict reads, and atomic writes are implemented, but
+    they do not replace those outstanding network controls.
 
 ## Release Gate
 

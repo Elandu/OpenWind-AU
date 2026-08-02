@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OpenWind-AU Site Wind Assessment</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260715-consumer-readiness-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260729-clause423-1" />
   </head>
   <body class="dashboard-page">
     <header class="dashboard-topbar">
@@ -25,6 +25,7 @@
               type="text"
               placeholder="Project number"
               title="Enter a project number to restore dragged map coordinates after reload."
+              maxlength="200"
               autocomplete="off"
             />
           </label>
@@ -39,6 +40,7 @@
                 form="workflow-form"
                 type="text"
                 placeholder="1 Macquarie Street, Sydney NSW"
+                maxlength="300"
                 autocomplete="off"
                 role="combobox"
                 aria-autocomplete="list"
@@ -98,11 +100,27 @@
               <div class="primary-control-grid">
             <label>
               Building height (m)
-              <input id="building_height_m" name="building_height_m" type="number" step="0.1" value="10" required />
+              <input
+                id="building_height_m"
+                name="building_height_m"
+                type="number"
+                min="0.1"
+                max="200"
+                step="0.1"
+                value="10"
+                required
+              />
             </label>
             <label>
               AEP / ARI
-              <input id="annual_exceedance_probability" name="annual_exceedance_probability" value="1/500" />
+              <input
+                id="annual_exceedance_probability"
+                name="annual_exceedance_probability"
+                value="1/500"
+                minlength="1"
+                maxlength="50"
+                required
+              />
             </label>
             <label>
               Wind direction multiplier use
@@ -112,35 +130,58 @@
                 <option value="circular_or_polygonal_chimney_tank_or_pole">Circular/polygonal chimney, tank or pole</option>
               </select>
             </label>
+            <div class="orientation-field">
+              <div class="field-label-row">
+                <label for="structure_orientation_deg">Orientation (deg clockwise from North)</label>
+                <span class="help-tooltip">
+                  <button
+                    class="help-tooltip-trigger"
+                    type="button"
+                    aria-label="Show orientation convention"
+                    aria-describedby="orientation-convention"
+                  >?</button>
+                  <span id="orientation-convention" class="help-tooltip-content" role="tooltip">
+                    Front &beta; is clockwise from true North: 0&deg; N, 90&deg; E,
+                    180&deg; S, 270&deg; W. Right, Back, and Left add 90&deg;, 180&deg;,
+                    and 270&deg;. A gable front is a long side; a hip or monoslope front
+                    faces down the roof slope, perpendicular to the ridge. This orientation
+                    drives the Clause 2.3 V<sub>des,&theta;</sub> calculation.
+                  </span>
+                </span>
+              </div>
+              <input
+                id="structure_orientation_deg"
+                name="structure_orientation_deg"
+                type="number"
+                min="0"
+                max="359.9"
+                step="0.1"
+                value="0"
+                required
+                aria-describedby="orientation-convention"
+              />
+            </div>
             <label>
-              Orientation (deg)
-              <select id="structure_orientation_deg" name="structure_orientation_deg">
-                <option value="-90">-90</option>
-                <option value="-78.75">-78.75</option>
-                <option value="-67.5">-67.5</option>
-                <option value="-56.25">-56.25</option>
-                <option value="-45">-45</option>
-                <option value="-33.75">-33.75</option>
-                <option value="-22.5">-22.5</option>
-                <option value="-11.25">-11.25</option>
-                <option value="0" selected>0</option>
-                <option value="11.25">11.25</option>
-                <option value="22.5">22.5</option>
-                <option value="33.75">33.75</option>
-                <option value="45">45</option>
-                <option value="56.25">56.25</option>
-                <option value="67.5">67.5</option>
-                <option value="78.75">78.75</option>
-                <option value="90">90</option>
-              </select>
+              Breadth (left to right) (m)
+              <input
+                id="building_width_m"
+                name="building_width_m"
+                type="number"
+                min="0.1"
+                max="5000"
+                step="0.1"
+              />
             </label>
             <label>
-              Width (m)
-              <input id="building_width_m" name="building_width_m" type="number" step="0.1" />
-            </label>
-            <label>
-              Length (m)
-              <input id="building_length_m" name="building_length_m" type="number" step="0.1" />
+              Depth (front to back) (m)
+              <input
+                id="building_length_m"
+                name="building_length_m"
+                type="number"
+                min="0.1"
+                max="5000"
+                step="0.1"
+              />
             </label>
               </div>
           <details class="form-details">
@@ -157,20 +198,43 @@
             </label>
             <label>
               Sample interval (m)
-              <input id="sample_interval_m" name="sample_interval_m" type="number" value="50" />
+              <input
+                id="sample_interval_m"
+                name="sample_interval_m"
+                type="number"
+                value="50"
+                min="5"
+                max="500"
+                step="any"
+                required
+              />
             </label>
             <label>
               Obstruction radius (m)
               <select id="obstruction_radius_m" name="obstruction_radius_m">
+                <option value="50">50</option>
                 <option value="100">100</option>
                 <option value="200">200</option>
                 <option value="500" selected>500</option>
                 <option value="1000">1000</option>
+                <option value="2000">2000</option>
+                <option value="4000">4000</option>
               </select>
+              <span class="note">
+                For average roof height h &le; 25 m, this must cover at least 20h.
+              </span>
             </label>
             <label>
               Storey height assumption (m)
-              <input id="default_storey_height_m" name="default_storey_height_m" type="number" step="0.1" value="3.0" />
+              <input
+                id="default_storey_height_m"
+                name="default_storey_height_m"
+                type="number"
+                min="0.1"
+                max="6"
+                step="0.1"
+                value="3.0"
+              />
             </label>
             <label>
               Structure class
@@ -198,68 +262,71 @@
             </label>
             <label>
               Average roof height (m)
-              <input id="average_roof_height_m" name="average_roof_height_m" type="number" step="0.1" />
+              <input
+                id="average_roof_height_m"
+                name="average_roof_height_m"
+                type="number"
+                min="0.1"
+                max="200"
+                step="0.1"
+              />
             </label>
             <label>
               Base RL (m)
-              <input id="base_rl_m" name="base_rl_m" type="number" step="0.1" />
+              <input
+                id="base_rl_m"
+                name="base_rl_m"
+                type="number"
+                min="-500"
+                max="10000"
+                step="0.1"
+              />
             </label>
             <label>
-              Return period / importance level
-              <input id="importance_level" name="importance_level" placeholder="e.g. IL2, 1:500 annual probability" />
+              Importance level (report metadata only)
+              <input
+                id="importance_level"
+                name="importance_level"
+                maxlength="100"
+                placeholder="e.g. IL2; does not select AEP / ARI"
+              />
             </label>
             </div>
-          </details>
-          <details class="form-details">
-            <summary>Review and issue status</summary>
-            <div class="workflow-review">
-              <label>
-                Assessment status
-                <select
-                  id="assessment_status"
-                  name="assessment_status"
-                  aria-controls="review-metadata-fields"
-                  aria-expanded="false"
-                >
-                  <option value="draft" selected>Draft preliminary</option>
-                  <option value="reviewed">Reviewed preliminary</option>
-                </select>
-              </label>
-              <div id="review-metadata-fields" class="workflow-review" hidden>
-                <label>
-                  Reviewed by
-                  <input
-                    id="reviewed_by"
-                    name="reviewed_by"
-                    type="text"
-                    maxlength="200"
-                    autocomplete="name"
-                    disabled
-                  />
-                </label>
-                <label>
-                  Engineer notes
-                  <textarea
-                    id="engineer_notes"
-                    name="engineer_notes"
-                    maxlength="5000"
-                    rows="4"
-                    disabled
-                  ></textarea>
-                </label>
-                <p class="note">
-                  Reviewed status records a human review of this preliminary assessment. It does
-                  not certify the result or issue final design pressures.
-                </p>
+            <section class="mixed-terrain-editor" aria-labelledby="mixed-terrain-heading">
+              <div class="mixed-terrain-editor-heading">
+                <div>
+                  <h3 id="mixed-terrain-heading">Clause 4.2.3 terrain transitions</h3>
+                  <p class="note">
+                    Optional. Add ordered distance intervals measured upwind from the site.
+                    The calculation ignores xi = 20z, then weights the following
+                    xa = max(500 m, 40z). Average roof height h may be used as z only when
+                    h &le; 25 m.
+                  </p>
+                </div>
+                <button id="mixed-terrain-add" type="button" class="secondary-action">
+                  Add terrain interval
+                </button>
               </div>
-            </div>
+              <div class="table-wrap">
+                <table class="mixed-terrain-input-table">
+                  <thead>
+                    <tr>
+                      <th>Direction</th><th>Start (m)</th><th>End (m)</th>
+                      <th>Terrain category</th><th>Source</th><th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="mixed-terrain-segments">
+                    <tr class="mixed-terrain-empty">
+                      <td colspan="6">No ordered mixed-terrain intervals supplied.</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p id="mixed-terrain-status" class="note" role="status" aria-live="polite"></p>
+            </section>
           </details>
           <button class="assessment-submit" type="submit">Run assessment</button>
             </form>
-            <p class="disclaimer">
-              Preliminary workflow only. The app does not calculate final design pressures and does
-              not certify AS/NZS 1170.2 compliance.
-            </p>
           </section>
           <div id="site-input-summary" class="workflow-card map-summary-card">
             <p class="note">Run the assessment to display resolved site inputs.</p>
@@ -279,15 +346,6 @@
               <span class="kicker">Building location</span>
               <strong id="map-coordinate-readout">Not positioned</strong>
             </div>
-            <div class="map-nudge-control" role="group" aria-label="Move the design building in one metre steps">
-              <span class="kicker">Move building 1 m</span>
-              <div class="map-nudge-buttons">
-                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="1" aria-label="Move building north one metre" title="Move north 1 m" disabled>&uarr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="-1" data-map-nudge-north="0" aria-label="Move building west one metre" title="Move west 1 m" disabled>&larr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="1" data-map-nudge-north="0" aria-label="Move building east one metre" title="Move east 1 m" disabled>&rarr;</button>
-                <button type="button" data-map-nudge data-map-nudge-east="0" data-map-nudge-north="-1" aria-label="Move building south one metre" title="Move south 1 m" disabled>&darr;</button>
-              </div>
-            </div>
           </div>
           <iframe
             id="workflow-map-frame"
@@ -305,11 +363,9 @@
         </section>
       </section>
 
-      <nav class="workspace-tabs" role="tablist" aria-label="Assessment views">
+      <nav class="workspace-tabs" role="tablist" aria-label="Map views">
         <button id="workspace-tab-map" class="workspace-tab is-active" type="button" role="tab" aria-controls="workspace-panel-map" aria-selected="true" tabindex="0" data-workspace-tab="map">Map</button>
         <button id="workspace-tab-profile" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-profile" aria-selected="false" tabindex="-1" data-workspace-tab="profile">Profile</button>
-        <button id="workspace-tab-raw-data" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-raw-data" aria-selected="false" tabindex="-1" data-workspace-tab="raw-data">Raw Data</button>
-        <button id="workspace-tab-documents" class="workspace-tab" type="button" role="tab" aria-controls="workspace-panel-documents" aria-selected="false" tabindex="-1" data-workspace-tab="documents">Documents</button>
       </nav>
 
       <section id="workspace-panel-map" class="workspace-panel is-active" role="tabpanel" aria-labelledby="workspace-tab-map" data-workspace-panel="map">
@@ -326,7 +382,45 @@
         </div>
       </section>
 
-      <section id="workspace-panel-raw-data" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-raw-data" data-workspace-panel="raw-data" hidden>
+      <section id="workspace-panel-raw-data" class="below-map-output" aria-labelledby="raw-data-heading">
+      <div class="below-map-output-heading">
+        <span class="kicker">Assessment output</span>
+        <h2 id="raw-data-heading">Raw Data</h2>
+      </div>
+      <div class="raw-data-toolbar">
+        <div class="raw-data-toolbar-copy">
+          <strong>Editable assessment values</strong>
+          <span>Edit values in place, add one audit reason, then save all changes together.</span>
+          <span id="raw-data-edit-status" class="note" role="status" aria-live="polite">Run the assessment to edit its values.</span>
+        </div>
+        <div class="raw-data-toolbar-actions">
+          <label for="raw-data-edit-reason">
+            Change reason
+            <input
+              id="raw-data-edit-reason"
+              type="text"
+              maxlength="2000"
+              placeholder="Optional; a standard audit note is used if blank"
+              disabled
+            />
+          </label>
+          <button
+            id="raw-data-use-calculated"
+            class="secondary-action"
+            type="button"
+            title="Replace every editable value with the latest calculation. Click Save all changes to apply."
+            disabled
+          >Reset to calculated values</button>
+          <button
+            id="raw-data-discard"
+            class="secondary-action"
+            type="button"
+            title="Return to the last saved values without recalculating or saving."
+            disabled
+          >Undo unsaved edits</button>
+          <button id="raw-data-save" type="button" disabled>Save all changes</button>
+        </div>
+      </div>
       <div class="workflow-column raw-results-layout">
 
       <section id="resolved-wind-inputs" class="panel workflow-step" data-step="2">
@@ -338,7 +432,7 @@
         <div class="assessment-basis-variable-grid">
           <section id="wind-region-vr" class="workflow-anchor assessment-basis-variable" data-step="4">
             <h3>Regional Wind Speed, VR</h3>
-            <p class="note">Calculated regional speed shown once, with an optional engineering override.</p>
+            <p class="note">Regional speed is editable in place and saved with the other Raw Data changes.</p>
           </section>
           <section id="climate-change-mc" class="workflow-anchor assessment-basis-variable" data-step="5">
             <h3>Climate Change Multiplier, Mc</h3>
@@ -350,6 +444,7 @@
       <section id="vsitb-summary" class="panel workflow-step" data-step="3">
         <h2>Directional Site Wind Speed, Vsit,b</h2>
         <p class="note">Selected calculation summary: VR x Mc x Md x Mz,cat x Ms x Mt. VR and Mc are non-directional and are shown once in the assessment basis.</p>
+        <p id="directional-edit-restrictions" class="note directional-edit-restrictions" hidden></p>
         <div class="table-wrap">
           <table>
             <thead>
@@ -369,30 +464,30 @@
         </div>
       </section>
 
-      <details class="raw-detail-group">
-        <summary>Engineering overrides</summary>
-        <div class="raw-detail-stack">
-      <section id="wind-direction-md" class="panel workflow-anchor workflow-step" data-step="6">
-        <h2>Wind Direction Multiplier, Md</h2>
-        <p class="note">Table-derived direction multipliers for the assessed wind region.</p>
-      </section>
-
-      <section id="terrain-category-mzcat" class="panel workflow-anchor workflow-step" data-step="7">
-        <h2>Terrain Category / Mz,cat</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
-
-      <section id="shielding-ms" class="panel workflow-anchor workflow-step" data-step="8">
-        <h2>Shielding Multiplier, Ms</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
-
-      <section id="topographic-mt" class="panel workflow-anchor workflow-step" data-step="9">
-        <h2>Topographic Multiplier, Mt</h2>
-        <p class="note">Directional calculated values with optional engineering overrides.</p>
-      </section>
+      <section id="vdes-summary" class="panel workflow-step" data-step="3">
+        <h2>Building-Orthogonal Design Wind Speed, Vdes,&theta;</h2>
+        <p class="note">
+          Clause 2.3 maximum linearly interpolated Vsit,b within &beta; =
+          &theta; &plusmn;45&deg;. Ultimate Vdes,&theta; is not less than 30 m/s.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Plan face</th>
+                <th>&theta;</th>
+                <th>Face &beta;</th>
+                <th>&beta; sector</th>
+                <th>Raw maximum</th>
+                <th>Vdes,&theta;</th>
+              </tr>
+            </thead>
+            <tbody id="vdes-table">
+              <tr><td colspan="6">Run the workflow to see the four design directions.</td></tr>
+            </tbody>
+          </table>
         </div>
-      </details>
+      </section>
 
       <details class="raw-detail-group">
         <summary>Calculation provenance and warnings</summary>
@@ -404,7 +499,11 @@
       </div>
       </section>
 
-      <section id="workspace-panel-documents" class="workspace-panel" role="tabpanel" aria-labelledby="workspace-tab-documents" data-workspace-panel="documents" hidden>
+      <section id="workspace-panel-documents" class="below-map-output" aria-labelledby="documents-heading">
+        <div class="below-map-output-heading">
+          <span class="kicker">Assessment output</span>
+          <h2 id="documents-heading">Documents</h2>
+        </div>
         <section id="workflow-reporting" class="panel workflow-step" data-step="10">
           <h2>Reports</h2>
           <p class="note">Generate a concise assessment summary without raw calculation repetition.</p>
@@ -421,6 +520,6 @@
       </section>
     </main>
 
-    <script src="/static/wind_workflow.js?v=20260715-location-contract-2-consumer-readiness-1"></script>
+    <script src="/static/wind_workflow.js?v=20260729-clause423-1"></script>
   </body>
 </html>

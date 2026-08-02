@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openwind_au.standard_calculations import MAX_DIRECTION_MULTIPLIER
+
 DISCLAIMER = (
     "OpenWind-AU provides preliminary terrain and topographic analysis only. "
     "Outputs must be reviewed by a competent engineer and are not a certified "
@@ -23,6 +25,9 @@ MAX_TOTAL_REVIEWED_GEOMETRY_POSITIONS = 20_000
 MAX_MZCAT_REVIEWS = 8
 MAX_CLASS_MULTIPLIER_OVERRIDES = 8
 MAX_WORKFLOW_OVERRIDES = 64
+MAX_MIXED_TERRAIN_PROFILES = 8
+MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE = 256
+MAX_MIXED_TERRAIN_DISTANCE_M = 100_000.0
 
 
 class StrictRequestModel(BaseModel):
@@ -316,8 +321,8 @@ class MzCatDirectionAssessment(BaseModel):
     azimuth_deg: float
     recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
     suggested_terrain_category_range: str
-    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
-    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
+    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
     assessment_height_m: float
     lower_indicative_mzcat: float
     upper_indicative_mzcat: float
@@ -326,7 +331,9 @@ class MzCatDirectionAssessment(BaseModel):
     recommended_mzcat: float | None = None
     recommendation_confidence: Literal["high", "medium", "low"] = "low"
     recommendation_reasoning: list[str] = Field(default_factory=list)
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
     final_mzcat: float | None = None
     reviewed_by: str | None = None
     review_notes: str | None = None
@@ -345,7 +352,9 @@ class MzCatReviewSelection(StrictRequestModel):
     """Engineer-selected final Mz,cat fields supplied for reviewed reports."""
 
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
     final_mzcat: float | None = Field(default=None, gt=0, le=10)
     reviewed_by: str | None = Field(default=None, max_length=200)
     review_notes: str | None = Field(default=None, max_length=5_000)
@@ -889,6 +898,15 @@ class CombinedMapRequest(SiteAnalysisRequest):
     @model_validator(mode="after")
     def validate_review_inputs(self) -> CombinedMapRequest:
         _validate_obstruction_review_inputs(self.manual_overrides, self.reviewed_footprints)
+        if (
+            self.reference_height_m <= 25.0
+            and self.obstruction_radius_m < 20.0 * self.reference_height_m
+        ):
+            raise ValueError(
+                "obstruction_radius_m must be at least 20 times average roof/reference "
+                "height h when h is 25 m or less, so the complete Clause 4.3.1 shielding "
+                "sector is assessed."
+            )
         return self
 
 
@@ -913,6 +931,7 @@ class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
 
 
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+BuildingPlanFace = Literal["Front", "Right", "Back", "Left"]
 WindWorkflowVariable = Literal["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 WindWorkflowOverrideVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
 WindDirectionMultiplierCase = Literal[
@@ -921,7 +940,7 @@ WindDirectionMultiplierCase = Literal[
     "circular_or_polygonal_chimney_tank_or_pole",
 ]
 AssessmentStatus = Literal["draft", "reviewed"]
-TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
 ShieldingClassLabel = Literal["FS", "PS", "NS"]
 TopographicClassLabel = Literal["T0", "T1", "T2", "T3", "T4", "T5"]
 WindRegionLabel = Literal[
@@ -978,6 +997,64 @@ ClimateChangeWindRegionLabel = Literal[
 ]
 
 
+class MixedTerrainSegment(StrictRequestModel):
+    """One ordered upwind terrain-category interval measured from the site."""
+
+    start_distance_m: float = Field(ge=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    end_distance_m: float = Field(gt=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    terrain_category: TerrainCategoryLabel
+    source_reference: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_source_reference(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_distance_order(self) -> MixedTerrainSegment:
+        if self.end_distance_m <= self.start_distance_m:
+            raise ValueError("end_distance_m must be greater than start_distance_m.")
+        return self
+
+
+class MixedTerrainProfile(StrictRequestModel):
+    """Reviewed or user-supplied ordered terrain transitions for one wind direction."""
+
+    direction: WindDirection
+    segments: list[MixedTerrainSegment] = Field(
+        min_length=1,
+        max_length=MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE,
+    )
+    source_reference: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_profile_source_reference(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_ordered_contiguous_segments(self) -> MixedTerrainProfile:
+        previous_end: float | None = None
+        for index, segment in enumerate(self.segments):
+            if previous_end is not None and not math.isclose(
+                segment.start_distance_m,
+                previous_end,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                relation = "overlap" if segment.start_distance_m < previous_end else "gap"
+                raise ValueError(
+                    f"segments[{index}] has a {relation}; mixed-terrain segments must be "
+                    "ordered and contiguous."
+                )
+            previous_end = segment.end_distance_m
+        return self
+
+
 class PublicWindRegionAssessment(BaseModel):
     """Serializable wind-region evidence included in completed workflow results."""
 
@@ -1028,7 +1105,13 @@ class RegionalWindSpeedAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     wind_region: WindRegionLabel
-    importance_level: str | None = None
+    importance_level: str | None = Field(
+        default=None,
+        description=(
+            "Optional report metadata copied from the workflow request. It does not select "
+            "or alter the annual exceedance probability or ARI."
+        ),
+    )
     ari_years: int
     annual_exceedance_probability: str
     vr_ult: float | None = None
@@ -1080,7 +1163,7 @@ class WindVariableOverride(StrictRequestModel):
             raise ValueError(f"direction is required for a {self.variable} override.")
         maximum_by_variable = {
             "VR": 200.0,
-            "Md": 2.0,
+            "Md": MAX_DIRECTION_MULTIPLIER,
             "Mzcat": 10.0,
             "Ms": 1.0,
             "Mt": 10.0,
@@ -1135,14 +1218,45 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     )
 
     project_number: str | None = Field(default=None, max_length=200)
-    annual_exceedance_probability: str = Field(default="1/500", min_length=1, max_length=50)
-    importance_level: str | None = Field(default=None, max_length=100)
+    annual_exceedance_probability: str = Field(
+        default="1/500",
+        min_length=1,
+        max_length=50,
+        description="User-selected AEP/ARI input used to select the regional wind speed.",
+    )
+    importance_level: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Optional report metadata only. It does not select or alter "
+            "annual_exceedance_probability."
+        ),
+    )
     user_assumptions: str | None = Field(default=None, max_length=5_000)
     structure_class: Literal["building", "house", "monopole", "tower", "other"] | None = None
     structure_type: str | None = Field(default=None, max_length=300)
     wind_direction_multiplier_case: WindDirectionMultiplierCase = "main_structure"
-    building_dimensions: str | None = Field(default=None, max_length=300)
-    structure_orientation_deg: float | None = Field(default=None, ge=-90, le=90)
+    building_dimensions: str | None = Field(
+        default=None,
+        max_length=300,
+        description=(
+            "Deprecated legacy free-text building dimension metadata retained for migration. "
+            "It does not define the structured footprint or drive calculations. Omit this field "
+            "when building_width_m and building_length_m are used."
+        ),
+        json_schema_extra={"deprecated": True},
+    )
+    structure_orientation_deg: float | None = Field(
+        default=None,
+        ge=0,
+        lt=360,
+        description=(
+            "Engineering azimuth beta for the building theta=0/front axis, in degrees "
+            "clockwise from true North in the range [0, 360). Right, back, and left "
+            "are beta + 90, + 180, and + 270 degrees respectively. The four axes drive "
+            "the Clause 2.3 building-orthogonal ultimate design wind speeds."
+        ),
+    )
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
     building_width_m: float | None = Field(default=None, gt=0, le=5000)
     building_length_m: float | None = Field(default=None, gt=0, le=5000)
@@ -1157,10 +1271,25 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         ),
     )
     base_rl_m: float | None = Field(default=None, ge=-500, le=10_000)
-    design_life_years: int | None = Field(default=None, gt=0, le=1000)
+    design_life_years: int | None = Field(
+        default=None,
+        gt=0,
+        le=1000,
+        description=(
+            "Optional report metadata only. It does not derive or alter the selected AEP/ARI."
+        ),
+    )
     assessment_status: AssessmentStatus = "draft"
     reviewed_by: str | None = Field(default=None, max_length=200)
     engineer_notes: str | None = Field(default=None, max_length=5000)
+    mixed_terrain_profiles: list[MixedTerrainProfile] = Field(
+        default_factory=list,
+        max_length=MAX_MIXED_TERRAIN_PROFILES,
+        description=(
+            "Optional ordered upwind terrain-category transitions used for Clause 4.2.3 "
+            "distance-weighted Mz,cat calculations. Distances are measured from the site."
+        ),
+    )
     class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(
         default_factory=list,
         max_length=MAX_CLASS_MULTIPLIER_OVERRIDES,
@@ -1175,8 +1304,7 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     def reject_final_issue_status(cls, value: Any) -> Any:
         if isinstance(value, str) and value.strip().lower() == "final":
             raise ValueError(
-                "Final or certified issue is not supported. Use draft or reviewed; all "
-                "OpenWind-AU workflow outputs remain preliminary."
+                "Final issue is not supported. Use draft or reviewed for this workflow."
             )
         return value
 
@@ -1188,23 +1316,94 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
         return value.strip() or None
 
     @model_validator(mode="after")
-    def validate_unique_overrides(self) -> WindWorkflowRequest:
+    def validate_workflow_contract(self) -> WindWorkflowRequest:
         workflow_keys = [(item.variable, item.direction) for item in self.workflow_overrides]
         if len(workflow_keys) != len(set(workflow_keys)):
             raise ValueError("workflow_overrides contains duplicate variable/direction entries.")
         class_directions = [item.direction for item in self.class_multiplier_overrides]
         if len(class_directions) != len(set(class_directions)):
             raise ValueError("class_multiplier_overrides contains duplicate directions.")
+        profile_directions = [item.direction for item in self.mixed_terrain_profiles]
+        if len(profile_directions) != len(set(profile_directions)):
+            raise ValueError("mixed_terrain_profiles contains duplicate directions.")
+        terrain_override_directions = {
+            item.direction
+            for item in self.class_multiplier_overrides
+            if item.terrain_category is not None or item.mzcat is not None
+        }
+        conflicting_directions = sorted(
+            set(profile_directions) & terrain_override_directions,
+            key=("N", "NE", "E", "SE", "S", "SW", "W", "NW").index,
+        )
+        if conflicting_directions:
+            raise ValueError(
+                "mixed_terrain_profiles cannot be combined with a terrain-category or "
+                "Mz,cat class override for the same direction: " + ", ".join(conflicting_directions)
+            )
         if self.assessment_status == "reviewed" and not self.reviewed_by:
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
             raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if self.building_dimensions is not None and (
+            self.building_width_m is not None or self.building_length_m is not None
+        ):
+            raise ValueError(
+                "Deprecated building_dimensions cannot be combined with structured "
+                "building_width_m or building_length_m."
+            )
+        if (self.building_width_m is None) != (self.building_length_m is None):
+            raise ValueError(
+                "building_width_m and building_length_m must be provided together, or both omitted."
+            )
         if (
             self.average_roof_height_m is not None
             and self.average_roof_height_m > self.building_height_m
         ):
             raise ValueError("Average roof height must not exceed the overall building height.")
         return self
+
+
+class MixedTerrainSegmentContribution(BaseModel):
+    """One Table 4.1 contribution inside a Clause 4.2.3 averaging window."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start_distance_m: float
+    end_distance_m: float
+    clipped_start_distance_m: float
+    clipped_end_distance_m: float
+    included_length_m: float
+    weight_fraction: float
+    terrain_category: TerrainCategoryLabel
+    table_mzcat: float
+    weighted_contribution: float
+    source_reference: str
+
+
+class MixedTerrainAssessment(BaseModel):
+    """Traceable Clause 4.2.3 calculation for one wind direction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    direction: WindDirection
+    reference_height_h_m: float | None = None
+    assessment_height_z_m: float
+    assessment_height_basis: Literal[
+        "average_roof_height_h",
+        "explicit_height_z",
+        "a0_workflow_reference_height",
+    ]
+    lag_distance_xi_m: float
+    averaging_distance_xa_m: float
+    window_start_distance_m: float
+    window_end_distance_m: float
+    covered_distance_m: float
+    mode: Literal["homogeneous", "mixed_weighted", "a0_mandatory"]
+    contributions: list[MixedTerrainSegmentContribution] = Field(default_factory=list)
+    weighted_mzcat: float
+    profile_source_reference: str | None = None
+    lookup_source_reference: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WindVariableAssessment(BaseModel):
@@ -1254,8 +1453,34 @@ class SiteWindSpeedRow(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DesignWindSpeedCandidate(BaseModel):
+    """One interpolated Vsit,b candidate inside a Clause 2.3 design sector."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    beta_deg: float
+    vsitb_mps: float
+
+
+class DesignWindSpeedRow(BaseModel):
+    """Building-orthogonal ultimate design wind speed for one plan face."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    face: BuildingPlanFace
+    theta_deg: float
+    beta_deg: float
+    sector_start_beta_deg: float
+    sector_end_beta_deg: float
+    candidates: list[DesignWindSpeedCandidate]
+    raw_vdes_theta_mps: float
+    vdes_theta_mps: float
+    minimum_uls_applied: bool = False
+    is_governing: bool = False
+
+
 class WindWorkflowResult(BaseModel):
-    """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
+    """AS/NZS 1170.2 workflow result through Vsit,b and Vdes,theta."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1266,8 +1491,17 @@ class WindWorkflowResult(BaseModel):
     direction_multiplier_assessment: DirectionMultiplierAssessment
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    mixed_terrain_assessments: list[MixedTerrainAssessment] = Field(default_factory=list)
+    design_wind_speeds: list[DesignWindSpeedRow] = Field(default_factory=list)
+    governing_directions: list[WindDirection] = Field(default_factory=list)
     governing_direction: WindDirection | None = None
     governing_vsitb: float | None = None
+    governing_vdes_faces: list[BuildingPlanFace] = Field(default_factory=list)
+    governing_vdes_mps: float | None = None
+    design_wind_speed_basis: str = (
+        "AS/NZS 1170.2:2021 Clause 2.3: maximum linearly interpolated Vsit,b "
+        "within beta = theta +/-45 degrees; ultimate Vdes,theta >= 30 m/s."
+    )
     integrity_token: str | None = Field(
         default=None,
         description="Server-issued integrity token required by completed-result report routes.",
@@ -1275,9 +1509,25 @@ class WindWorkflowResult(BaseModel):
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
-        "OpenWind-AU organises preliminary site wind evidence through Vsit,b for "
-        "engineering review. It does not calculate final pressures and does not certify "
-        "AS/NZS 1170.2 compliance."
+        "OpenWind-AU organises site wind evidence through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta for engineering review. Pressure coefficients and "
+        "design pressures are outside this workflow."
+    )
+
+
+class CompletedWindWorkflowPdfRequest(BaseModel):
+    """Signed workflow result plus a browser-captured presentation map."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    result: WindWorkflowResult
+    map_screenshot: str | None = Field(
+        default=None,
+        max_length=3_000_000,
+        description=(
+            "Optional browser-captured map as an exact base64 PNG or JPEG data URI. "
+            "The signed workflow result remains the source of numerical report values."
+        ),
     )
 
 

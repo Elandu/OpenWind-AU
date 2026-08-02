@@ -599,7 +599,7 @@ function engineerReviewCell(assessment) {
 }
 
 function terrainCategoryOptions(selected) {
-  const categories = ["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"];
+  const categories = ["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"];
   return categories.map((category) =>
     `<option value="${category}" ${category === selected ? "selected" : ""}>${category}</option>`
   ).join("");

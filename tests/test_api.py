@@ -16,6 +16,7 @@ import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
 from openwind_au.obstructions import run_obstruction_inventory
 from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
     MS_DATA_FILE,
     MZCAT_DATA_FILE,
     VERIFIED_LOOKUP_REVIEW_STATUS,
@@ -54,21 +55,7 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
             "available_region_names": production_regions,
         },
     )
-    monkeypatch.setattr(
-        api_module,
-        "load_md_tables",
-        lambda: {
-            "source": {
-                "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
-                "reviewed_by": "Independent Test Engineer",
-                "reviewed_on": "2026-07-12",
-            },
-            "tables": {
-                region: {direction: 1.0 for direction in api_module.DIRECTIONS}
-                for region in production_regions
-            },
-        },
-    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: reviewed_lookup(MD_DATA_FILE))
     monkeypatch.setattr(api_module, "load_mzcat_table", lambda: reviewed_lookup(MZCAT_DATA_FILE))
     monkeypatch.setattr(api_module, "load_ms_table", lambda: reviewed_lookup(MS_DATA_FILE))
     monkeypatch.setattr(api_module, "load_vr_tables", lambda: reviewed_lookup(VR_DATA_FILE))
@@ -86,6 +73,8 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
     assert ready.json()["checks"]["shielding_multiplier_table"]["reviewed"] is True
     assert len(ready.json()["checks"]["terrain_height_multiplier_table"]["values_sha256"]) == 64
     assert len(ready.json()["checks"]["shielding_multiplier_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["regional_wind_speed_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["direction_multiplier_table"]["values_sha256"]) == 64
 
 
 def test_health_reports_missing_production_inputs(monkeypatch) -> None:
@@ -153,6 +142,51 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch, caplog) -> N
     assert "inspect the server logs" in response.text
     assert "Direction multiplier readiness check failed" in caplog.text
     assert "Regional wind speed readiness check failed" in caplog.text
+
+
+def test_health_rejects_out_of_range_direction_multiplier(monkeypatch) -> None:
+    regions = ["A2"]
+    data = reviewed_lookup(MD_DATA_FILE)
+    data["tables"]["A2"]["N"] = 5.0
+    monkeypatch.setattr(
+        api_module,
+        "dataset_metadata",
+        lambda: {
+            "dataset_name": "production-wind-regions",
+            "polygon_count": 1,
+            "is_test_fixture": False,
+            "available_region_names": regions,
+        },
+    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: data)
+
+    report = api_module.readiness_report()
+    check = report["checks"]["direction_multiplier_table"]
+
+    assert check["ready"] is False
+    assert check["missing_regions"] == ["A2"]
+    assert "not greater than 2" in " ".join(check["issues"]["A2"])
+
+
+def test_health_rejects_noncanonical_vr_ari_key(monkeypatch) -> None:
+    data = reviewed_lookup(VR_DATA_FILE)
+    data["tables"]["A"]["ultimate"]["garbage"] = 45.0
+    monkeypatch.setattr(api_module, "load_vr_tables", lambda: data)
+
+    report = api_module.readiness_report()
+    check = report["checks"]["regional_wind_speed_table"]
+
+    assert check["ready"] is False
+    assert "A" in check["missing_regions"]
+
+
+def test_health_rejects_invalid_boundary_warning_distance(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_WIND_REGION_BOUNDARY_WARNING_M", "NaN")
+
+    report = api_module.readiness_report()
+
+    assert report["checks"]["wind_region_dataset"]["ready"] is False
+    assert "inspect the server logs" in report["checks"]["wind_region_dataset"]["message"]
 
 
 def test_lookup_readiness_logs_loader_failures(caplog) -> None:
@@ -643,6 +677,9 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
         "sample_interval_m": 100,
         "obstruction_radius_m": 500,
         "annual_exceedance_probability": "1/500",
+        "structure_orientation_deg": 270.5,
+        "building_width_m": 15,
+        "building_length_m": 12,
     }
 
     response = client.post("/api/wind-workflow/stream", json=payload)
@@ -664,6 +701,10 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
     map_event = next(event for event in events if event["stage"] == "map")
     assert workflow_event["data"]["workflow"]["wind_region_assessment"]["wind_region"] == "A2"
     assert workflow_event["data"]["workflow"]["regional_wind_speed_assessment"]["vr_ult"] == 45.0
+    workflow_input = workflow_event["data"]["workflow"]["input"]
+    assert workflow_input["structure_orientation_deg"] == 270.5
+    assert workflow_input["building_width_m"] == 15
+    assert workflow_input["building_length_m"] == 12
     assert "L.control.layers" in map_event["data"]["map_html"]
 
 

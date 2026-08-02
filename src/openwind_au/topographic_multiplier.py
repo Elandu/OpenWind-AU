@@ -14,6 +14,7 @@ SUPPORTED_FEATURE_TYPES = {
     "valley",
     "no significant feature",
 }
+MIN_TOPOGRAPHIC_FEATURE_HEIGHT_M = 10.0
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ def calculate_topographic_multiplier(
     slope_parameter = 0.0
     l1_m: float | None = None
     l2_m: float | None = None
-    minimum_feature_height_m = min(0.4 * average_roof_height_m, 5.0)
+    minimum_feature_height_m = MIN_TOPOGRAPHIC_FEATURE_HEIGHT_M
     geometry_resolved = True
     equation = "Mh = 1.0 (no qualifying local topographic speed-up)"
 
@@ -95,10 +96,8 @@ def calculate_topographic_multiplier(
     elif feature_type == "no significant feature":
         pass
     elif h_m < minimum_feature_height_m:
-        warnings.append(
-            "Feature height H is less than min(0.4h, 5 m); Clause 4.4.2 sets Mh to 1.0."
-        )
-        equation = "Mh = 1.0 because H < min(0.4h, 5 m)"
+        warnings.append("Feature height H is less than 10 m; Clause 4.4.2 sets Mh to 1.0.")
+        equation = "Mh = 1.0 because H < 10 m"
     elif lu_m <= 0:
         geometry_resolved = False
         warnings.append("Lu is unavailable; Mh cannot exceed 1.0 without resolved geometry.")

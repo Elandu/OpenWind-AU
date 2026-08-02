@@ -125,7 +125,12 @@ def test_open_meteo_elevation_provider_falls_back_to_curl(monkeypatch) -> None:
         stdout = '{"elevation":[37]}'
         stderr = ""
 
-    def fake_run(command, check, capture_output, text, timeout):
+    def fake_run(command, check, capture_output, text, encoding, errors, timeout):
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        assert encoding == "utf-8"
+        assert errors == "replace"
         commands.append(command)
         return Completed()
 

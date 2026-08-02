@@ -2,7 +2,7 @@
 
 All notable project milestones are documented here.
 
-## v0.8.0 (unreleased) - Standards Provenance And Preliminary-Issue Guardrails
+## v0.8.0 (unreleased) - Standards Provenance And Workflow Guardrails
 
 - Corrected the mandatory Clause 2.2 site-wind product to include the Clause 3.4/Table 3.3
   climate-change multiplier `Mc`. B2, C and D now receive the required 1.05 multiplier, generic
@@ -14,9 +14,15 @@ All notable project milestones are documented here.
   combined MCP tool now distinguishes average roof height from overall building height.
 - Moved Table 4.1 `Mz,cat` and Table 4.2 `Ms` values into structured, digest-protected packaged
   lookup assets with deployment overrides, explicit pending-review status, and readiness checks.
+- Added Clause 4.2.3 distance-weighted `Mz,cat` for complete ordered, contiguous,
+  source-referenced non-A0 terrain-transition profiles, including signed workflow results, REST
+  and MCP entry points, report contribution tables, and fail-closed coverage validation. A0 keeps
+  its mandatory terrain-independent value; supplied A0 profiles are evidence-only, may be
+  incomplete, use the workflow reference height, and are not distance-weighted. Aggregate GIS
+  sector evidence is not used to infer transition distances.
 - Centralised `Vsit,b` multiplication across the web workflow and MCP tools, preserving full
-  multiplier and product precision for governing-direction selection while formatting reports
-  to three decimal places.
+  multiplier and product precision for governing-direction selection, retaining every tied
+  governing direction, and formatting reports to three decimal places.
 - Corrected Clause 4.4 screening to use `H >= min(0.4h, 5 m)`, applied one reference height to
   `Mz,cat` and `Mt`, rejected out-of-scope heights above 200 m, and blocked unresolved qualifying
   topographic geometry instead of returning a complete site wind speed.
@@ -24,13 +30,17 @@ All notable project milestones are documented here.
   when the upwind building top exceeds the subject building, with an explicit review warning.
 - Rejected unknown wind regions in direct `Mz,cat` and `Mt` calculations instead of silently
   applying the ordinary Australian-region path.
-- Restricted workflow issue states to draft or reviewed preliminary output. Reviewed output now
-  requires a reviewer and notes; final/certified status is rejected on calculation and report
-  routes.
-- Added prominent preliminary/not-for-certification markings to HTML and PDF reports and removed
-  duplicated status, notes, and override collections from workflow result payloads.
-- Added browser reviewer/notes controls and server-issued integrity tokens for completed-result
-  report routes, preventing modified workflow payloads from being rendered as authentic results.
+- Retained optional `assessment_status`, `reviewed_by`, and `engineer_notes` as
+  legacy/API-compatibility request metadata. The browser has no review or issue-status controls and
+  omits these fields; the server defaults `assessment_status` to `draft`. `reviewed` API input still
+  requires a reviewer and notes, while `final` is rejected by request validation. These fields do
+  not create a report issue status or certification label.
+- Removed certification and issue-status wording from HTML and PDF reports and removed duplicated
+  status, notes, and override collections from workflow result payloads. Reports distinguish
+  calculated `Vsit,b` from a reviewed direct override, show effective `VR`, disclose numeric
+  class-multiplier overrides, and state the common reference height and reviewed base RL.
+- Added server-issued integrity tokens for completed-result report routes, preventing modified
+  browser/API payloads from being rendered as authentic results.
 - Removed the unused legacy workflow report renderer and documented the breaking completed-result
   payload transition from `0.7.x`; clients must rerun workflows before using `0.8.0` report routes.
 - Hid all wind-region and obstruction diagnostic routes by default, removed local GIS paths and
@@ -52,10 +62,23 @@ All notable project milestones are documented here.
 - Removed source-only `openwind` compatibility shims that were never included in consumer wheels
   but leaked into source distributions.
 - Added browser-state regression tests and corrected saved-location invalidation so editing an
-  address immediately clears the previous map, autocomplete can adopt the replacement site, and
-  fallback workflow reports bind to the resolved coordinates.
+  address immediately clears the previous map, autocomplete can adopt the replacement site,
+  dragged coordinates persist, and follow-up maps and profiles bind to the resolved coordinates.
+  Blank project numbers are explicitly session-only, while adding a project number later saves
+  the current site.
+- Replaced the limited orientation selector with a full `0 <= beta < 360` engineering azimuth
+  measured clockwise from North. Both map renderers now show fixed compass references, allow
+  continuous front-direction dragging, and expose draggable footprint corners that write updated
+  breadth and depth back to the assessment form and project-scoped saved state.
+- Added browser-side field and cross-field validation with actionable error details, and filtered
+  terrain-profile follow-up requests to their strict site-analysis schema instead of sending
+  wind-workflow-only fields that caused a misleading HTTP 422 after a successful assessment.
+- Kept signed workflow and report controls available when optional streamed maps fail, and added
+  visible browser download fallbacks for HTML or PDF output when the report viewer window cannot
+  be opened.
 - Removed repeated calculated values from Raw Data override cells while retaining one calculated
-  column and the complete optional override controls.
+  column and the complete optional override controls. Browser requests now require bounded AEP,
+  radius, and sample-interval values instead of silently replacing blank fields with defaults.
 - Verified Python 3.13 and 3.14 support and normalised Windows extended-path aliases so concurrent
   Microsoft footprint requests share one download lock on current Python releases.
 - Made every public request location unambiguous: clients now send either an address to geocode or
@@ -72,8 +95,20 @@ All notable project milestones are documented here.
   streaming the size check instead of buffering an unbounded request.
 - Unified configured `VR` selection between FastAPI and MCP, added MCP source provenance and
   application-version handshakes, published bounded enum/result schemas, and validated all MCP
-  engineering types without coercion. Streamable HTTP now retains DNS-rebinding protection and
-  requires explicit Host allowlists for wildcard binds.
+  engineering types without coercion. Each MCP Table 3.2(A) `Md` calculation now uses one
+  validated lookup snapshot and returns its source and metadata warnings; the combined tool
+  applies the Clause 3.3 pole case when `structure_class` is `monopole`. Streamable HTTP retains
+  DNS-rebinding protection and requires explicit Host allowlists for wildcard binds.
+- Made configured `VR` and `Md` rows fail closed on unexpected fields, missing values,
+  non-canonical recurrence keys, duplicate normalized keys, non-finite values, and implausible
+  numeric bounds. Invalid wind-region boundary-warning configuration is now a readiness failure.
+- Hardened the OSM outage cache with coordinate-obscuring SHA-256 filenames, strict payload
+  validation, atomic durable writes, a 25 MiB entry cap, 256 MiB/512-entry quota, and 30-day
+  expiry. Cache and provider failures expose stable public warnings while detailed diagnostics
+  remain in server logs.
+- Bounded provider-supplied obstruction heights and building levels, ignoring implausible values
+  and retaining explicit review notes instead of allowing extreme derived heights into shielding
+  evidence.
 - Added bounded and ambiguity-safe HTTP request parsing, finite/bounded public models, trusted Host
   enforcement, production readiness gating, sanitized validation errors, browser security headers,
   conservative dynamic caching, and a shared versioned outbound User-Agent.
@@ -87,6 +122,9 @@ All notable project milestones are documented here.
 - Anonymized the bundled class-level reference fixture and endpoint by translating its coordinates,
   removing original project and OSM feature identifiers/tags, and adding explicit OpenStreetMap
   attribution and ODbL 1.0 licensing metadata.
+- Corrected runtime, MCP, and lookup provenance to identify the base AS/NZS 1170.2:2021 edition
+  actually available for verification. Amendment 1/2 incorporation is no longer claimed and
+  remains an explicit independent-review release requirement.
 
 ## v0.7.0 - Interactive Wind Workflow, MCP API, And AS/NZS Calculation Audit
 

@@ -1,8 +1,9 @@
-"""Wind-region lookup from configured Geoscience Australia GIS data."""
+"""Wind-region lookup from a configured GIS dataset."""
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 from functools import lru_cache
@@ -72,33 +73,31 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
     point = Point(site.longitude, site.latitude)
     matches = gdf[gdf.geometry.covers(point)]
     if matches.empty:
-        nearest_index, distance_to_boundary_m = nearest_region_index_and_distance(
+        _nearest_index, distance_to_boundary_m = nearest_region_index_and_distance(
             gdf,
             site.latitude,
             site.longitude,
         )
-        row = gdf.loc[nearest_index]
-        confidence = "low"
-        near_boundary = True
-        selection_rule = "No polygon covered the site; selected nearest polygon."
-        warnings = [
-            "Site was not inside a wind-region polygon; nearest region returned for manual review.",
-        ]
-    else:
-        row = select_matching_polygon(matches)
-        distance_to_boundary_m = distance_to_geometry_boundary_m(
-            row.geometry,
-            site.latitude,
-            site.longitude,
+        raise ValueError(
+            "Site is not covered by any configured wind-region polygon "
+            f"(nearest polygon boundary is {distance_to_boundary_m / 1000.0:.1f} km away). "
+            "Automatic wind-region selection is blocked; verify the coordinates and configured "
+            "dataset coverage."
         )
-        near_boundary = distance_to_boundary_m <= boundary_warning_distance_m()
-        confidence = "medium" if near_boundary else "high"
-        selection_rule = (
-            "Selected the covering polygon with the smallest projected area."
-            if len(matches) > 1
-            else "Selected the only polygon covering the site."
-        )
-        warnings = []
+    row = select_matching_polygon(matches)
+    distance_to_boundary_m = distance_to_geometry_boundary_m(
+        row.geometry,
+        site.latitude,
+        site.longitude,
+    )
+    near_boundary = distance_to_boundary_m <= boundary_warning_distance_m()
+    confidence = "medium" if near_boundary else "high"
+    selection_rule = (
+        "Selected the covering polygon with the smallest projected area."
+        if len(matches) > 1
+        else "Selected the only polygon covering the site."
+    )
+    warnings: list[str] = []
 
     region = extract_region_label(row, gdf.columns)
     if region is None:
@@ -110,15 +109,23 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
         warnings.append(
             "Site is near a wind-region boundary; manual engineering review is required."
         )
-    warnings.append(
-        "Wind region is derived from Geoscience Australia's GIS interpretation. Professional "
-        "designers must confirm the wind region against AS/NZS 1170.2 for the project."
-    )
+    metadata = dataset_metadata()
+    if metadata["dataset_source"] == GA_WIND_REGION_SOURCE:
+        warnings.append(
+            "Wind region is derived from Geoscience Australia's GIS interpretation. "
+            "Professional designers must confirm the wind region against AS/NZS 1170.2 "
+            "for the project."
+        )
+    else:
+        warnings.append(
+            "Wind region is derived from a configured local GIS dataset whose upstream "
+            "provenance is not asserted by OpenWind-AU. Confirm the dataset and wind region "
+            "for the project."
+        )
     if dataset_is_test_fixture(dataset_path):
         warnings.append(
             "Configured wind-region dataset is a test fixture and must not be used for production."
         )
-    metadata = dataset_metadata()
     return WindRegionAssessment(
         latitude=site.latitude,
         longitude=site.longitude,
@@ -127,7 +134,7 @@ def assess_wind_region(site: SiteLocation) -> WindRegionAssessment:
         dataset_name=metadata["dataset_name"],
         polygon_count=metadata["polygon_count"],
         available_region_names=metadata["available_region_names"],
-        source=GA_WIND_REGION_SOURCE,
+        source=metadata["dataset_source"],
         confidence=confidence,
         distance_to_boundary_m=round(distance_to_boundary_m, 1),
         near_boundary=near_boundary,
@@ -203,7 +210,7 @@ def dataset_metadata() -> dict[str, Any]:
     return {
         "dataset_path": str(path),
         "dataset_name": dataset_name(path),
-        "dataset_source": GA_WIND_REGION_SOURCE,
+        "dataset_source": dataset_source(path),
         "configured_by": DATASET_ENV if configured else "local production cache",
         "polygon_count": int(len(gdf)),
         "available_region_names": regions,
@@ -391,6 +398,20 @@ def dataset_name(path: Path) -> str:
     return path.stem
 
 
+def dataset_source(path: Path) -> str:
+    """Return honest upstream attribution for the active wind-region dataset."""
+
+    if path.name.lower() == "as1170windzones.shp":
+        return GA_WIND_REGION_SOURCE
+    name = dataset_name(path)
+    if dataset_is_test_fixture(path):
+        return f"Configured test wind-region GIS fixture ({name}); not production data"
+    return (
+        f"Configured local wind-region GIS dataset ({name}); "
+        "upstream provenance must be verified by the operator"
+    )
+
+
 def region_sort_key(region: str) -> tuple[str, int, str]:
     """Sort region labels in a natural A0, A1, A2, B1 order."""
 
@@ -436,9 +457,16 @@ def boundary_warning_distance_m() -> float:
     if value is None:
         return BOUNDARY_WARNING_DISTANCE_M
     try:
-        return float(value)
-    except ValueError:
-        return BOUNDARY_WARNING_DISTANCE_M
+        distance = float(value)
+    except ValueError as exc:
+        raise ServiceNotReadyError(
+            f"{BOUNDARY_WARNING_DISTANCE_ENV} must be a finite number greater than 0."
+        ) from exc
+    if not math.isfinite(distance) or distance <= 0:
+        raise ServiceNotReadyError(
+            f"{BOUNDARY_WARNING_DISTANCE_ENV} must be a finite number greater than 0."
+        )
+    return distance
 
 
 def distance_to_geometry_boundary_m(geometry: Any, latitude: float, longitude: float) -> float:

@@ -212,6 +212,7 @@ test("geometry-only reviewed records remain missing instead of becoming manual o
   assert.equal(imported.footprint_source, "manual_reviewed");
 });
 
-test("legacy app cache revision includes the state-safe obstruction review flow", () => {
-  assert.match(indexSource, /app\.js\?v=20260715-state-safety-1/);
+test("legacy app cache revision includes the TC3.5 terrain review option", () => {
+  assert.match(indexSource, /app\.js\?v=20260729-tc35-1/);
+  assert.match(source, /"TC3", "TC3\.5", "TC4"/);
 });

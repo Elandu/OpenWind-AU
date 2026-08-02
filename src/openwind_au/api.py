@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -45,6 +44,7 @@ from openwind_au.models import (
     ApiErrorResponse,
     ApiValidationErrorResponse,
     CombinedMapRequest,
+    CompletedWindWorkflowPdfRequest,
     FullAnalysisResult,
     GeocodeQueryRequest,
     GeocodeResult,
@@ -93,7 +93,7 @@ from openwind_au.result_integrity import (
     verify_workflow_result,
 )
 from openwind_au.standard_calculations import (
-    DIRECTIONS,
+    direction_multiplier_row_issues,
     load_ms_table,
     shielding_lookup_issues,
     table_region_key,
@@ -117,13 +117,17 @@ from openwind_au.wind_inputs import (
     direction_multiplier_assessment,
     load_md_tables,
     load_vr_tables,
+    md_lookup_issues,
     regional_wind_speed_assessment,
     run_wind_region_validation_cases,
+    vr_lookup_issues,
+    vr_table_issues,
     wind_region_map_html,
 )
 from openwind_au.wind_region import (
     REGION_LABELS,
     assess_wind_region,
+    boundary_warning_distance_m,
     dataset_metadata,
     wind_region_debug,
 )
@@ -603,11 +607,19 @@ def create_app() -> FastAPI:
             **PDF_FAILURE_RESPONSE,
         },
     )
-    def wind_workflow_result_report_pdf(result: WindWorkflowResult) -> Response:
+    def wind_workflow_result_report_pdf(
+        request: WindWorkflowResult | CompletedWindWorkflowPdfRequest,
+    ) -> Response:
         """Render an already completed workflow without repeating external data calls."""
 
+        if isinstance(request, CompletedWindWorkflowPdfRequest):
+            result = request.result
+            map_screenshot = request.map_screenshot
+        else:
+            result = request
+            map_screenshot = None
         _verify_completed_workflow_result(result)
-        return _wind_workflow_pdf_response(result)
+        return _wind_workflow_pdf_response(result, map_screenshot=map_screenshot)
 
     def _verify_completed_workflow_result(result: WindWorkflowResult) -> None:
         try:
@@ -615,9 +627,19 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    def _wind_workflow_pdf_response(result: WindWorkflowResult) -> Response:
+    def _wind_workflow_pdf_response(
+        result: WindWorkflowResult,
+        *,
+        map_screenshot: str | None = None,
+    ) -> Response:
         try:
-            content = render_wind_workflow_pdf_report(result)
+            content = (
+                render_wind_workflow_pdf_report(result)
+                if map_screenshot is None
+                else render_wind_workflow_pdf_report(result, map_screenshot=map_screenshot)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
             LOGGER.exception("Failed to generate site-wind workflow PDF")
             raise HTTPException(
@@ -1187,6 +1209,7 @@ def readiness_report() -> dict[str, Any]:
     configured_region_names: list[str] = []
     try:
         metadata = dataset_metadata()
+        boundary_warning_distance_m()
         region_names = metadata.get("available_region_names")
         dataset_ready = (
             isinstance(metadata, dict)
@@ -1236,30 +1259,25 @@ def readiness_report() -> dict[str, Any]:
             "C",
             "D",
         ]
-        missing_regions = [
-            region
+        md_region_issues = {
+            region: direction_multiplier_row_issues(tables.get(table_region_key(region, tables)))
             for region in required_md_regions
-            if not all(
-                _valid_lookup_number(
-                    tables.get(table_region_key(region, tables), {}).get(direction)
-                    if isinstance(tables.get(table_region_key(region, tables)), dict)
-                    else None,
-                    minimum=0,
-                    maximum=10,
-                )
-                for direction in DIRECTIONS
-            )
-        ]
+        }
+        missing_regions = [region for region, issues in md_region_issues.items() if issues]
         metadata_reviewed = lookup_is_reviewed(md_data)
-        md_ready = metadata_reviewed and not missing_regions
+        lookup_issues = md_lookup_issues(md_data, require_reviewed=True)
+        md_ready = not lookup_issues and not missing_regions
         checks["direction_multiplier_table"] = {
             "ready": md_ready,
             "reviewed": metadata_reviewed,
+            "values_sha256": md_data.get("values_sha256"),
             "missing_regions": missing_regions,
+            "lookup_issues": lookup_issues,
+            "issues": {region: issues for region, issues in md_region_issues.items() if issues},
             "message": (
-                "Reviewed Md rows cover every configured wind-region label."
+                "Reviewed, digest-protected Md rows cover every configured wind-region label."
                 if md_ready
-                else "Reviewed Md rows are missing for one or more configured wind regions."
+                else "Md lookup review, digest, or regional coverage is incomplete."
             ),
         }
     except Exception:
@@ -1278,15 +1296,18 @@ def readiness_report() -> dict[str, Any]:
         missing_vr_regions = [
             region for region in ("A", "B", "C", "D") if not _valid_vr_table(vr_tables.get(region))
         ]
-        vr_ready = vr_reviewed and not missing_vr_regions
+        vr_lookup_failures = vr_lookup_issues(vr_data, require_reviewed=True)
+        vr_ready = not vr_lookup_failures and not missing_vr_regions
         checks["regional_wind_speed_table"] = {
             "ready": vr_ready,
             "reviewed": vr_reviewed,
+            "values_sha256": vr_data.get("values_sha256"),
             "missing_regions": missing_vr_regions,
+            "lookup_issues": vr_lookup_failures,
             "message": (
-                "Reviewed VR tables cover Australian regions A-D."
+                "Reviewed, digest-protected VR tables cover Australian regions A-D."
                 if vr_ready
-                else "Reviewed VR lookup data is missing or invalid."
+                else "VR lookup review, digest, or regional coverage is incomplete."
             ),
         }
     except Exception:
@@ -1336,15 +1357,6 @@ def readiness_report() -> dict[str, Any]:
     }
 
 
-def _valid_lookup_number(value: Any, *, minimum: float, maximum: float) -> bool:
-    return (
-        isinstance(value, int | float)
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-        and minimum < float(value) <= maximum
-    )
-
-
 def _standards_lookup_readiness(
     *,
     loader: Callable[[], dict[str, Any]],
@@ -1381,20 +1393,7 @@ def _standards_lookup_readiness(
 
 
 def _valid_vr_table(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    ultimate = value.get("ultimate")
-    serviceability = value.get("serviceability")
-    return (
-        isinstance(ultimate, dict)
-        and bool(ultimate)
-        and all(_valid_lookup_number(item, minimum=0, maximum=200) for item in ultimate.values())
-        and isinstance(serviceability, dict)
-        and bool(serviceability)
-        and all(
-            _valid_lookup_number(item, minimum=0, maximum=200) for item in serviceability.values()
-        )
-    )
+    return not vr_table_issues(value)
 
 
 def _obstruction_request_from_combined(

@@ -17,6 +17,8 @@ from openwind_au.mcp_server import (
     _transport_security_settings,
     calculate_all_wind_variables,
     calculate_climate_change_multiplier,
+    calculate_design_wind_speeds,
+    calculate_mixed_terrain_height_multiplier,
     calculate_regional_wind_speed,
     calculate_shielding_multiplier,
     calculate_site_wind_speed,
@@ -26,9 +28,20 @@ from openwind_au.mcp_server import (
     main,
     mcp,
 )
-from openwind_au.models import WindRegionAssessment
-from openwind_au.standard_lookup_tables import VR_DATA_FILE, load_packaged_lookup_data
+from openwind_au.models import MixedTerrainSegment, WindRegionAssessment
+from openwind_au.standard_lookup_tables import (
+    VR_DATA_FILE,
+    VR_EXPECTED_SHA256_ENV,
+    canonical_lookup_payload_sha256,
+    load_packaged_lookup_data,
+)
 from openwind_au.wind_inputs import regional_wind_speed_assessment
+
+
+def trust_vr_override(monkeypatch, table: dict) -> None:
+    digest = canonical_lookup_payload_sha256(table, payload_key="tables")
+    table["values_sha256"] = digest
+    monkeypatch.setenv(VR_EXPECTED_SHA256_ENV, digest)
 
 
 def test_mcp_registers_traceable_wind_calculation_tools() -> None:
@@ -39,9 +52,11 @@ def test_mcp_registers_traceable_wind_calculation_tools() -> None:
         "calculate_climate_change_multiplier",
         "get_direction_multipliers",
         "calculate_terrain_height_multiplier",
+        "calculate_mixed_terrain_height_multiplier",
         "calculate_shielding_multiplier",
         "calculate_topographic_wind_multiplier",
         "calculate_site_wind_speed",
+        "calculate_design_wind_speeds",
         "calculate_all_wind_variables",
     }
 
@@ -60,8 +75,10 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
     combined_schema = tools["calculate_all_wind_variables"].inputSchema
     direction_schema = tools["get_direction_multipliers"].inputSchema
     terrain_schema = tools["calculate_terrain_height_multiplier"].inputSchema
+    mixed_terrain_schema = tools["calculate_mixed_terrain_height_multiplier"].inputSchema
     topographic_schema = tools["calculate_topographic_wind_multiplier"].inputSchema
     site_speed_schema = tools["calculate_site_wind_speed"].inputSchema
+    design_speed_schema = tools["calculate_design_wind_speeds"].inputSchema
     output_schema = tools["calculate_regional_wind_speed"].outputSchema
 
     assert regional_schema["properties"]["wind_region"]["enum"] == [
@@ -109,6 +126,21 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
     assert direction_schema["properties"]["wind_region"]["enum"] == specific_regions
     assert combined_schema["properties"]["wind_region"]["enum"] == specific_regions
     assert terrain_schema["properties"]["wind_region"]["enum"] == exposure_regions
+    assert mixed_terrain_schema["properties"]["wind_region"]["enum"] == exposure_regions
+    assert mixed_terrain_schema["properties"]["direction"]["enum"] == [
+        "N",
+        "NE",
+        "E",
+        "SE",
+        "S",
+        "SW",
+        "W",
+        "NW",
+    ]
+    assert mixed_terrain_schema["properties"]["segments"]["minItems"] == 1
+    assert mixed_terrain_schema["properties"]["segments"]["maxItems"] == 256
+    profile_reference_schema = mixed_terrain_schema["properties"]["profile_source_reference"]
+    assert any(item.get("maxLength") == 1000 for item in profile_reference_schema["anyOf"])
     assert topographic_schema["properties"]["wind_region"]["enum"] == exposure_regions
     assert combined_schema["properties"]["direction"]["enum"] == [
         "N",
@@ -126,6 +158,7 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         "TC2",
         "TC2.5",
         "TC3",
+        "TC3.5",
         "TC4",
     ]
     assert combined_schema["properties"]["wind_direction_multiplier_case"]["enum"] == [
@@ -133,9 +166,29 @@ def test_mcp_tool_schemas_publish_supported_values_and_result_envelope() -> None
         "cladding_or_immediate_support",
         "circular_or_polygonal_chimney_tank_or_pole",
     ]
+    assert combined_schema["properties"]["structure_class"]["anyOf"][0]["enum"] == [
+        "building",
+        "house",
+        "monopole",
+        "tower",
+        "other",
+    ]
     assert "average_roof_height_m" in combined_schema["required"]
     assert "height_m" not in combined_schema["properties"]
     assert "mc" in site_speed_schema["required"]
+    assert design_speed_schema["properties"]["front_beta_deg"]["minimum"] == 0
+    assert design_speed_schema["properties"]["front_beta_deg"]["exclusiveMaximum"] == 360
+    assert set(design_speed_schema["required"]) == {
+        "front_beta_deg",
+        "north_mps",
+        "northeast_mps",
+        "east_mps",
+        "southeast_mps",
+        "south_mps",
+        "southwest_mps",
+        "west_mps",
+        "northwest_mps",
+    }
     assert output_schema is not None
     assert set(output_schema["required"]) == {
         "standard",
@@ -203,15 +256,161 @@ def test_mcp_individual_tools_return_structured_traceability() -> None:
     assert "regional equation" in vr["outputs"]["source_reference"]
     assert mc["outputs"]["mc"] == 1.0
     assert md["outputs"]["md"]["N"] == 0.85
+    assert "Table 3.2(A)" in md["outputs"]["source_reference"]
+    assert any("reviewer/date metadata" in warning for warning in md["warnings"])
     assert mzcat["outputs"]["mzcat"] == 0.83
+    assert len(mzcat["outputs"]["mzcat_lookup_provenance"]["values_sha256"]) == 64
+    assert mzcat["outputs"]["mzcat_lookup_provenance"]["independent_review_recorded"] is False
     assert ms["outputs"]["ms"] == 0.85
+    assert len(ms["outputs"]["ms_lookup_provenance"]["values_sha256"]) == 64
+    assert ms["outputs"]["ms_lookup_provenance"]["independent_review_recorded"] is False
     assert vsitb["outputs"]["vsitb_mps"] == pytest.approx(26.985375)
     assert all(result["engineering_review_required"] for result in (vr, mc, md, mzcat, ms, vsitb))
+
+
+def test_mcp_mixed_terrain_tool_applies_clause_423_weighting() -> None:
+    result = calculate_mixed_terrain_height_multiplier(
+        "N",
+        10.0,
+        "A2",
+        [
+            MixedTerrainSegment(
+                start_distance_m=200.0,
+                end_distance_m=450.0,
+                terrain_category="TC2",
+                source_reference="Survey segment A",
+            ),
+            MixedTerrainSegment(
+                start_distance_m=450.0,
+                end_distance_m=700.0,
+                terrain_category="TC3",
+                source_reference="Survey segment B",
+            ),
+        ],
+        "Reviewed transition schedule",
+    )
+
+    assert result["clause"] == "Clause 4.2.3; Table 4.1"
+    assert result["outputs"]["mzcat"] == pytest.approx(0.915)
+    assessment = result["outputs"]["mixed_terrain_assessment"]
+    assert assessment["lag_distance_xi_m"] == 200
+    assert assessment["averaging_distance_xa_m"] == 500
+    assert [item["weight_fraction"] for item in assessment["contributions"]] == [0.5, 0.5]
+    assert len(result["outputs"]["mzcat_lookup_provenance"]["values_sha256"]) == 64
+
+
+def test_mcp_mixed_terrain_tool_normalizes_profile_source_reference() -> None:
+    segments = [
+        MixedTerrainSegment(
+            start_distance_m=200.0,
+            end_distance_m=700.0,
+            terrain_category="TC2",
+            source_reference="Reviewed survey segment",
+        )
+    ]
+
+    trimmed = calculate_mixed_terrain_height_multiplier(
+        "N",
+        10.0,
+        "A2",
+        segments,
+        "  Reviewed transition schedule  ",
+    )
+    empty = calculate_mixed_terrain_height_multiplier(
+        "N",
+        10.0,
+        "A2",
+        segments,
+        "   ",
+    )
+
+    assert trimmed["inputs"]["profile_source_reference"] == "Reviewed transition schedule"
+    assert (
+        trimmed["outputs"]["mixed_terrain_assessment"]["profile_source_reference"]
+        == "Reviewed transition schedule"
+    )
+    assert empty["inputs"]["profile_source_reference"] is None
+    assert empty["outputs"]["mixed_terrain_assessment"]["profile_source_reference"] is None
+
+    with pytest.raises(ValueError, match="at most 1000 characters"):
+        calculate_mixed_terrain_height_multiplier(
+            "N",
+            10.0,
+            "A2",
+            segments,
+            "x" * 1001,
+        )
+
+
+def test_mcp_mixed_terrain_tool_rejects_incomplete_profile_and_keeps_a0_unweighted() -> None:
+    with pytest.raises(ValueError, match="cover|coverage|ends before"):
+        calculate_mixed_terrain_height_multiplier(
+            "N",
+            10.0,
+            "A2",
+            [
+                MixedTerrainSegment(
+                    start_distance_m=200.0,
+                    end_distance_m=699.0,
+                    terrain_category="TC2",
+                    source_reference="Incomplete reviewed survey segment",
+                )
+            ],
+            "Incomplete reviewed transition schedule",
+        )
+
+    a0 = calculate_mixed_terrain_height_multiplier(
+        "N",
+        10.0,
+        "A0",
+        [
+            MixedTerrainSegment(
+                start_distance_m=0.0,
+                end_distance_m=100.0,
+                terrain_category="TC4",
+                source_reference="Incomplete A0 evidence segment",
+            )
+        ],
+        "A0 evidence schedule",
+    )
+    assessment = a0["outputs"]["mixed_terrain_assessment"]
+    assert assessment["mode"] == "a0_mandatory"
+    assert assessment["covered_distance_m"] == 0.0
+    assert assessment["contributions"] == []
+
+
+def test_mcp_design_wind_speeds_match_clause_2_3_face_convention() -> None:
+    result = calculate_design_wind_speeds(
+        270.0,
+        35.1,
+        31.0,
+        35.1,
+        39.3,
+        39.3,
+        39.3,
+        41.3,
+        39.3,
+    )
+
+    assert result["clause"] == "Clause 2.3"
+    rows = result["outputs"]["design_wind_speeds"]
+    assert [row["face"] for row in rows] == ["Front", "Right", "Back", "Left"]
+    assert [row["theta_deg"] for row in rows] == [0.0, 90.0, 180.0, 270.0]
+    assert [row["beta_deg"] for row in rows] == [270.0, 0.0, 90.0, 180.0]
+    assert [row["vdes_theta_mps"] for row in rows] == [41.3, 39.3, 39.3, 39.3]
+    assert result["outputs"]["governing_faces"] == ["Front"]
+    assert result["outputs"]["governing_vdes_theta_mps"] == 41.3
+    assert [candidate["beta_deg"] for candidate in rows[0]["candidates"]] == [
+        225.0,
+        270.0,
+        315.0,
+    ]
 
 
 def test_mcp_regional_speed_matches_api_configured_table(monkeypatch, tmp_path) -> None:
     table = load_packaged_lookup_data(VR_DATA_FILE)
     table["tables"]["A"]["ultimate"]["500"] = 52.0
+    trust_vr_override(monkeypatch, table)
     table_path = tmp_path / "regional-wind-speeds.json"
     table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
@@ -264,7 +463,7 @@ def test_mcp_identical_configured_table_attributes_equation_fallback(monkeypatch
 
     assert result["outputs"]["vr_mps"] == 38.0
     assert result["outputs"]["source_reference"] == (
-        "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
+        "AS/NZS 1170.2:2021 Table 3.1(A) regional equation"
     )
     assert any("regional equation" in warning for warning in result["warnings"])
 
@@ -272,6 +471,7 @@ def test_mcp_identical_configured_table_attributes_equation_fallback(monkeypatch
 def test_mcp_configured_vr_table_missing_value_fails_closed(monkeypatch, tmp_path) -> None:
     table = load_packaged_lookup_data(VR_DATA_FILE)
     table["tables"]["A"]["ultimate"] = {"25": 37.0}
+    trust_vr_override(monkeypatch, table)
     table_path = tmp_path / "regional-wind-speeds.json"
     table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
@@ -297,19 +497,30 @@ def test_mcp_all_variables_matches_component_product() -> None:
         site_elevation_m=100.0,
     )
 
-    assert result["outputs"] == {
+    outputs = dict(result["outputs"])
+    md_lookup_source = outputs.pop("md_lookup_source_reference")
+    mzcat_lookup_provenance = outputs.pop("mzcat_lookup_provenance")
+    ms_lookup_provenance = outputs.pop("ms_lookup_provenance")
+    assert outputs == {
         "vr_mps": 45.0,
-        "vr_source_reference": (
-            "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.1(A) regional equation"
-        ),
+        "vr_source_reference": ("AS/NZS 1170.2:2021 Table 3.1(A) regional equation"),
         "mc": 1.0,
         "md": 0.85,
-        "md_source_reference": ("AS/NZS 1170.2:2021 incorporating Amendments 1 and 2 Table 3.2(A)"),
+        "md_source_reference": ("AS/NZS 1170.2:2021 Table 3.2(A)"),
         "mzcat": 0.83,
         "ms": 0.85,
         "mt": 1.0,
         "vsitb_mps": pytest.approx(26.985375),
     }
+    assert "Table 3.2(A)" in md_lookup_source
+    standalone_mzcat = calculate_terrain_height_multiplier("TC3", 10.0, "A2")
+    standalone_ms = calculate_shielding_multiplier(4.5, 10.0)
+    assert mzcat_lookup_provenance == standalone_mzcat["outputs"]["mzcat_lookup_provenance"]
+    assert ms_lookup_provenance == standalone_ms["outputs"]["ms_lookup_provenance"]
+    assert len(mzcat_lookup_provenance["values_sha256"]) == 64
+    assert len(ms_lookup_provenance["values_sha256"]) == 64
+    assert mzcat_lookup_provenance["independent_review_recorded"] is False
+    assert ms_lookup_provenance["independent_review_recorded"] is False
 
 
 def test_mcp_all_variables_uses_full_precision_mt_before_rounding_vsitb() -> None:
@@ -405,6 +616,30 @@ def test_mcp_clause_3_3_circular_case_forces_md_one_in_every_region(wind_region:
     )
 
     assert result["outputs"]["md"] == 1.0
+    assert "Clause 3.3" in result["outputs"]["md_source_reference"]
+
+
+def test_mcp_monopole_structure_class_forces_effective_clause_3_3_md() -> None:
+    result = calculate_all_wind_variables(
+        wind_region="A2",
+        ari_years=500,
+        direction="N",
+        wind_direction_multiplier_case="main_structure",
+        structure_class="monopole",
+        terrain_category="TC3",
+        average_roof_height_m=10.0,
+        shielding_parameter=4.5,
+        building_height_m=10.0,
+        feature_type="no significant feature",
+        h_m=0.0,
+        lu_m=0.0,
+        x_m=0.0,
+        site_elevation_m=100.0,
+    )
+
+    assert result["inputs"]["structure_class"] == "monopole"
+    assert result["outputs"]["md"] == 1.0
+    assert result["outputs"]["md_lookup_source_reference"] is None
     assert "Clause 3.3" in result["outputs"]["md_source_reference"]
 
 

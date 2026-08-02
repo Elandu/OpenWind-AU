@@ -16,9 +16,42 @@ street segment, suburb, or other public-map reference.
 OpenWind-AU also accepts structured building inputs for review workflows:
 
 - structure class: `building`, `house`, `monopole`, `tower`, or `other`;
-- orientation from `-90` to `90` degrees;
+- front-face orientation as an engineering azimuth in the range `0 <= beta < 360` degrees,
+  measured clockwise from North (`0`, `90`, `180`, and `270` point the front North, East, South,
+  and West respectively);
 - roof shape: `gable`, `hip`, or `monoslope`;
-- width, length, roof pitch, average roof height, and base RL.
+- breadth/width measured left-to-right across the front, depth/length measured front-to-back,
+  roof pitch, average roof height, and base RL.
+
+The Design building on the map uses the same coordinate, orientation, and dimension values as the
+assessment request. Drag the footprint to move it, drag the orientation handle to set any
+full-circle azimuth at 0.1-degree precision, or drag a corner handle to resize it. Map edits
+update the visible form controls, invalidate any earlier signed result, and are saved with the
+selected project number.
+Projects without a project number remain session-only. Entering a new address clears the saved
+coordinate override so autocomplete can resolve the replacement site.
+
+Orientation identifies the front/right/back/left building axes and drives the Clause 2.3
+building-orthogonal ultimate `Vdes,theta` calculation. For each face, the workflow linearly
+interpolates between the eight cardinal/intercardinal `Vsit,b` points, takes the maximum within
+the face bearing plus or minus 45 degrees, and applies the 30 m/s ultimate minimum. It does not
+calculate design pressures.
+For a front azimuth `beta`, the right, back, and left axes are `beta + 90`, `beta + 180`, and
+`beta + 270` degrees, normalized back into the same full-circle range.
+
+Both building dimensions are optional, but when one is entered the other is required. Average roof
+height must not exceed overall building height. The browser validates these relationships and the
+published numeric bounds before sending the request; server validation remains authoritative and
+returns the affected field when a request is rejected.
+
+The deprecated `building_dimensions` field is retained as legacy free-text request metadata only.
+It does not define the editable footprint or drive calculations. Use it only when the structured
+`building_width_m` and `building_length_m` fields are absent; requests that combine the legacy and
+structured representations are rejected.
+
+`annual_exceedance_probability` is the AEP/ARI input that selects the regional wind speed.
+`importance_level` and `design_life_years` are optional report metadata only; they do not derive,
+select, or alter the AEP/ARI.
 
 ## 2. Terrain Profiles
 
@@ -88,11 +121,35 @@ The terrain category evidence engine summarises directional built-up coverage, v
 coverage, open terrain, obstruction height statistics, density, spacing, fetch, shielding
 confidence, evidence scores, and suggested category ranges.
 
-Suggested ranges are prompts for review only. OpenWind-AU does not assign a final terrain category
-and does not calculate final `Mz,cat` design values. It provides indicative Mz,cat ranges as
-supporting evidence for engineer review.
+Suggested ranges are prompts for review only. The aggregate terrain-evidence engine does not assign
+a final terrain category by itself; it provides indicative Mz,cat ranges as supporting evidence.
+The explicit single-category and Clause 4.2.3 paths described below do calculate the directional
+`Mz,cat` values used by the workflow.
 
-## 8. Engineer Review
+## 8. Clause 4.2.3 Mixed-Terrain Calculation
+
+When reviewed survey, mapping, or other source material identifies terrain transition distances,
+add an ordered profile for each affected wind direction. Distances are measured upwind from the
+site. Every segment needs its own source reference. For non-A0 weighting, the segments must
+continuously cover the complete Clause 4.2.3 averaging window: from `xi = 20z` to `xi + xa`, where
+`xa = max(500 m, 40z)`.
+
+For non-A0 wind-workflow requests, average roof height supplies `z` only when `h <= 25 m`. Missing
+average roof height, heights above 25 m, gapped or overlapping segments, and incomplete coverage
+are blocked. Region A0 instead retains the mandatory terrain-independent Table 4.1 value at the
+workflow reference height (`average_roof_height_m`, falling back to `building_height_m`). Supplied
+A0 profiles may be incomplete and are retained as unweighted evidence only; their supplied
+segments must still be ordered, contiguous, and source-referenced. Aggregate sector percentages
+are useful classification evidence, but they do not establish transition locations and are not
+used to fabricate a profile.
+
+For non-A0 profiles, the calculated result records the averaging geometry, the clipped length and
+weight of every segment, its Table 4.1 value, weighted contribution, source reference, and final
+directional weighted `Mz,cat`. For A0, it records the mandatory terrain-independent value and keeps
+any supplied segment data as unweighted evidence. Non-A0 directions without supplied profiles
+continue to use one reviewed or recommended category and are identified in the warnings.
+
+## 9. Engineer Review
 
 Before using any output in project work, a competent engineer should confirm:
 
@@ -101,6 +158,7 @@ Before using any output in project work, a competent engineer should confirm:
 - obstruction heights and shielding relevance;
 - topographic effects;
 - terrain category;
+- supplied Clause 4.2.3 transition distances, categories, coverage, and source references;
 - all code calculations independently.
 
 The wind workflow API also accepts reviewed directional class inputs via
@@ -129,19 +187,23 @@ variable/direction pairs are rejected. `Mc` is deterministic and cannot be overr
 The visible `wind_direction_multiplier_case` input distinguishes main-structure calculations from
 cladding/immediate-support and circular/polygonal chimney, tank or pole cases. The workflow
 enforces the mandatory Clause 3.3 `Md = 1.0` cases, selects one non-directional `Mc` from Clause
-3.4/Table 3.3, and calculates `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`.
+3.4/Table 3.3, calculates `Vsit,b = VR x Mc x Md x Mz,cat x Ms x Mt`, and then derives the four
+Clause 2.3 ultimate `Vdes,theta` rows when a front orientation is supplied.
 
 `average_roof_height_m` is the common AS/NZS reference height used for `Mz,cat`,
 shielding-height checks, and `Mt`. It defaults to `building_height_m` when omitted.
+That fallback is a continuity assumption, is not uniformly conservative across all multipliers,
+and requires confirmation of the actual average roof height.
 The legacy request alias `average_height_m` is accepted only for migration; normalized
 workflow inputs use `average_roof_height_m`.
 
-Mandatory standard values remain fail-closed. Region A0 uses its terrain-independent Table 4.1
-Mz,cat value even when a terrain class is recorded for provenance, and numeric Mz,cat overrides are
-rejected. When average roof height h exceeds 25 m, Clause 4.3.1 requires Ms = 1.0 and numeric Ms
-overrides are rejected. Calculated values remain separate from reviewed override values in the
-result audit trail.
+Mandatory standard values remain fail-closed. Region A0 uses the mandatory Table 4.1 A0 rule,
+independent of the selected terrain-category class but still dependent on reference height, even
+when a terrain class is recorded for provenance; numeric Mz,cat overrides are rejected. When
+average roof height h exceeds 25 m, Clause 4.3.1 requires Ms = 1.0 and numeric Ms overrides are
+rejected. Calculated values remain separate from reviewed override values in the result audit
+trail.
 
 The wind workflow request rejects unknown fields. Legacy fields that previously appeared to
-override a result but were ignored—`wind_region`, `regional_wind_speed_mps`,
-`wind_direction_multipliers`, and `workflow_reviews`—are no longer accepted.
+override a result but were ignored (`wind_region`, `regional_wind_speed_mps`,
+`wind_direction_multipliers`, and `workflow_reviews`) are no longer accepted.

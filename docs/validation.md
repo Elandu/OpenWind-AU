@@ -84,13 +84,17 @@ Overpass data. They validate covered implementation details such as:
 
 - indicative `Ms` interpolation thresholds;
 - Table 4.1 nodes, combined height/category interpolation, and Region A0 rules;
+- Clause 4.2.3 `xi`/`xa` geometry, complete-window validation, segment clipping, distance weights,
+  mixed and homogeneous profiles, A0 handling, REST/MCP results, and signed-result tamper checks;
 - a synthetic Region A2 serviceability regional wind speed check of 37 m/s;
 - Clause 4.4 `Mt` calculations including Region A0 and high-elevation Region A4 adjustments;
 - the Table 3.3 `Mc` mapping and a full-precision
   `VR x Mc x Md x Mz,cat x Ms x Mt` product that rounds only the reported `Vsit,b`;
+- Clause 2.3 circular linear interpolation, sector maxima, front/right/back/left bearing
+  conversion, and the 30 m/s ultimate `Vdes,theta` minimum;
 - shielding-sector inclusion, rejection counts, `hs`, `bs`, `ls`, `s`, and indicative `Ms`;
 - topographic feature screening for flat, ridge, hill, escarpment, and valley synthetic profiles;
-- threshold behaviour where sub-5 m relief is screened out.
+- threshold behaviour where feature relief below 10 m is screened out.
 
 Passing deterministic calculation validation confirms that the covered formulas and screening
 rules are internally consistent. It does not certify AS/NZS 1170.2 compliance, public dataset

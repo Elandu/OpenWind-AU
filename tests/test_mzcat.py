@@ -80,7 +80,7 @@ def evidence(
 
 def test_category_range_mapping_and_indicative_values() -> None:
     assert category_bounds("TC2.5-TC3") == ("TC2.5", "TC3")
-    assert category_bounds("TC3.5-TC4") == ("TC4", "TC4")
+    assert category_bounds("TC3.5-TC4") == ("TC3.5", "TC4")
     assert indicative_mzcat("TC2.5", 10) == pytest.approx(0.92)
     assert indicative_mzcat("TC3", 10) == pytest.approx(0.83)
 
@@ -168,6 +168,7 @@ def test_mzcat_uses_linear_height_interpolation() -> None:
 
 def test_mzcat_uses_linear_category_interpolation() -> None:
     assert indicative_mzcat("TC1.5", 10) == pytest.approx(1.04)
+    assert indicative_mzcat("TC3.5", 10) == pytest.approx(0.79)
 
 
 def test_mzcat_uses_combined_height_and_category_interpolation() -> None:

@@ -15,6 +15,7 @@ from openwind_au.mzcat import indicative_mzcat
 from openwind_au.standard_calculations import (
     DIRECTIONS,
     climate_change_multiplier,
+    design_wind_speed,
     shielding_reduction_height_limit_m,
     site_wind_speed,
 )
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
 RESULT_SIGNING_KEY_ENV = "OPENWIND_RESULT_SIGNING_KEY"
 TOKEN_PREFIX = "owau-hmac-sha256-v1:"
 _EPHEMERAL_SIGNING_KEY = secrets.token_bytes(32)
+BUILDING_PLAN_FACE_OFFSETS = (
+    ("Front", 0.0),
+    ("Right", 90.0),
+    ("Back", 180.0),
+    ("Left", 270.0),
+)
 
 
 def result_signing_key_is_configured() -> bool:
@@ -88,7 +95,20 @@ def verify_workflow_result(result: WindWorkflowResult) -> None:
             hashlib.sha256,
         ).hexdigest()
     )
-    if not hmac.compare_digest(token, expected):
+    valid = hmac.compare_digest(token, expected)
+    if not valid:
+        legacy_payload = _legacy_canonical_result_bytes(result)
+        if legacy_payload is not None:
+            legacy_expected = (
+                TOKEN_PREFIX
+                + hmac.new(
+                    _signing_key(),
+                    legacy_payload,
+                    hashlib.sha256,
+                ).hexdigest()
+            )
+            valid = hmac.compare_digest(token, legacy_expected)
+    if not valid:
         raise ValueError(
             "Completed workflow result failed integrity verification; rerun the workflow "
             "before generating a report."
@@ -234,6 +254,8 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
             ):
                 raise ValueError("Region A0 mandatory Mz,cat assessment is inconsistent.")
 
+    _validate_mixed_terrain_assessments(result, variables)
+
     vr = variables[("VR", None)].final_value
     mc = variables[("Mc", None)].final_value
     for direction in DIRECTIONS:
@@ -281,9 +303,26 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
     calculated = [row for row in result.directional_vsitb if row.final_vsitb is not None]
     governing_rows = [row for row in calculated if row.is_governing]
     if calculated:
-        expected_governing = max(calculated, key=lambda row: float(row.final_vsitb or 0.0))
-        if len(governing_rows) != 1 or governing_rows[0].direction != expected_governing.direction:
+        governing_value = max(float(row.final_vsitb or 0.0) for row in calculated)
+        expected_governing_rows = [
+            row
+            for row in calculated
+            if math.isclose(
+                float(row.final_vsitb or 0.0),
+                governing_value,
+                rel_tol=1e-12,
+                abs_tol=1e-9,
+            )
+        ]
+        expected_directions = [row.direction for row in expected_governing_rows]
+        if [row.direction for row in governing_rows] != expected_directions:
             raise ValueError("Workflow result governing direction is inconsistent.")
+        if result.governing_directions != expected_directions:
+            raise ValueError("Workflow result governing directions are inconsistent.")
+        expected_governing = max(
+            calculated,
+            key=lambda row: float(row.final_vsitb or 0.0),
+        )
         if result.governing_direction != expected_governing.direction or not _optional_float_equal(
             result.governing_vsitb,
             expected_governing.final_vsitb,
@@ -291,14 +330,287 @@ def validate_workflow_result_structure(result: WindWorkflowResult) -> None:
             raise ValueError("Workflow result governing summary is inconsistent.")
     elif (
         governing_rows
+        or result.governing_directions
         or result.governing_direction is not None
         or result.governing_vsitb is not None
     ):
         raise ValueError("Blocked workflow result must not identify a governing wind speed.")
 
+    _validate_design_wind_speeds(result)
+
+
+def _validate_design_wind_speeds(result: WindWorkflowResult) -> None:
+    """Verify the signed Clause 2.3 building-orthogonal design-speed rows."""
+
+    complete_vsitb = all(row.final_vsitb is not None for row in result.directional_vsitb)
+    orientation = result.input.structure_orientation_deg
+    if orientation is None or not complete_vsitb:
+        if (
+            result.design_wind_speeds
+            or result.governing_vdes_faces
+            or result.governing_vdes_mps is not None
+        ):
+            raise ValueError(
+                "Blocked Clause 2.3 design wind speeds must not identify calculated results."
+            )
+        return
+
+    if [row.face for row in result.design_wind_speeds] != [
+        face for face, _offset in BUILDING_PLAN_FACE_OFFSETS
+    ]:
+        raise ValueError(
+            "Workflow result must contain Front, Right, Back, and Left design wind speeds."
+        )
+    direction_speeds = {
+        row.direction: float(row.final_vsitb)
+        for row in result.directional_vsitb
+        if row.final_vsitb is not None
+    }
+    expected_design_speeds: list[float] = []
+    for row, (face, theta_deg) in zip(
+        result.design_wind_speeds,
+        BUILDING_PLAN_FACE_OFFSETS,
+        strict=True,
+    ):
+        beta_deg = (float(orientation) + theta_deg) % 360.0
+        calculation = design_wind_speed(
+            theta_degrees=beta_deg,
+            direction_speeds=direction_speeds,
+            ultimate_limit_state=True,
+        )
+        if row.face != face or not _optional_float_equal(row.theta_deg, theta_deg):
+            raise ValueError(f"Clause 2.3 plan-face definition is inconsistent for {face}.")
+        numeric_pairs = (
+            (row.beta_deg, beta_deg),
+            (row.sector_start_beta_deg, calculation.sector_start_degrees),
+            (row.sector_end_beta_deg, calculation.sector_end_degrees),
+            (row.raw_vdes_theta_mps, calculation.raw_maximum_m_s),
+            (row.vdes_theta_mps, calculation.design_wind_speed_m_s),
+        )
+        if any(not _optional_float_equal(actual, expected) for actual, expected in numeric_pairs):
+            raise ValueError(f"Clause 2.3 design wind speed is inconsistent for {face}.")
+        if row.minimum_uls_applied != calculation.minimum_applied:
+            raise ValueError(f"Clause 2.3 ULS minimum status is inconsistent for {face}.")
+        if len(row.candidates) != len(calculation.candidates) or any(
+            not _optional_float_equal(actual.beta_deg, expected.bearing_degrees)
+            or not _optional_float_equal(actual.vsitb_mps, expected.site_wind_speed_m_s)
+            for actual, expected in zip(row.candidates, calculation.candidates, strict=True)
+        ):
+            raise ValueError(f"Clause 2.3 interpolation candidates are inconsistent for {face}.")
+        expected_design_speeds.append(calculation.design_wind_speed_m_s)
+
+    governing_value = max(expected_design_speeds)
+    expected_governing_faces = [
+        row.face
+        for row in result.design_wind_speeds
+        if math.isclose(
+            row.vdes_theta_mps,
+            governing_value,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+    ]
+    actual_governing_faces = [row.face for row in result.design_wind_speeds if row.is_governing]
+    if (
+        actual_governing_faces != expected_governing_faces
+        or result.governing_vdes_faces != expected_governing_faces
+        or not _optional_float_equal(result.governing_vdes_mps, governing_value)
+    ):
+        raise ValueError("Clause 2.3 governing design wind speed is inconsistent.")
+
+
+def _validate_mixed_terrain_assessments(
+    result: WindWorkflowResult,
+    variables: dict[tuple[str, str | None], WindVariableAssessment],
+) -> None:
+    """Verify signed Clause 4.2.3 geometry, arithmetic, and Mz,cat linkage."""
+
+    profiles = result.input.mixed_terrain_profiles
+    assessments = result.mixed_terrain_assessments
+    profile_directions = [profile.direction for profile in profiles]
+    assessment_directions = [assessment.direction for assessment in assessments]
+    expected_order = [direction for direction in DIRECTIONS if direction in profile_directions]
+    if len(profile_directions) != len(set(profile_directions)):
+        raise ValueError("Workflow result contains duplicate mixed-terrain profile directions.")
+    if assessment_directions != expected_order:
+        raise ValueError(
+            "Workflow result mixed-terrain assessments do not match the supplied profiles."
+        )
+    profiles_by_direction = {profile.direction: profile for profile in profiles}
+    wind_region = result.wind_region_assessment.wind_region
+    if profiles and wind_region != "A0":
+        if result.input.average_roof_height_m is None:
+            raise ValueError(
+                "Mixed-terrain workflow results require an explicit average roof height."
+            )
+        if result.input.average_roof_height_m > 25.0:
+            raise ValueError(
+                "Mixed-terrain workflow results cannot use average roof height as z above 25 m."
+            )
+
+    for assessment in assessments:
+        profile = profiles_by_direction[assessment.direction]
+        height = (
+            result.input.reference_height_m
+            if wind_region == "A0"
+            else float(result.input.average_roof_height_m or 0.0)
+        )
+        expected_basis = (
+            "a0_workflow_reference_height" if wind_region == "A0" else "average_roof_height_h"
+        )
+        lag_distance = 20.0 * height
+        averaging_distance = max(500.0, 40.0 * height)
+        window_end = lag_distance + averaging_distance
+        scalar_pairs = (
+            (assessment.assessment_height_z_m, height),
+            (assessment.lag_distance_xi_m, lag_distance),
+            (assessment.averaging_distance_xa_m, averaging_distance),
+            (assessment.window_start_distance_m, lag_distance),
+            (assessment.window_end_distance_m, window_end),
+        )
+        if any(not _optional_float_equal(actual, expected) for actual, expected in scalar_pairs):
+            raise ValueError(
+                f"Mixed-terrain assessment geometry is inconsistent for {assessment.direction}."
+            )
+        if assessment.assessment_height_basis != expected_basis:
+            raise ValueError(
+                f"Mixed-terrain assessment height basis is inconsistent for {assessment.direction}."
+            )
+        if not _optional_float_equal(
+            assessment.reference_height_h_m,
+            result.input.average_roof_height_m,
+        ):
+            raise ValueError(
+                f"Mixed-terrain reference height is inconsistent for {assessment.direction}."
+            )
+        if assessment.profile_source_reference != profile.source_reference:
+            raise ValueError(
+                f"Mixed-terrain profile provenance is inconsistent for {assessment.direction}."
+            )
+        if not assessment.lookup_source_reference.strip():
+            raise ValueError(
+                f"Mixed-terrain lookup provenance is missing for {assessment.direction}."
+            )
+
+        if wind_region == "A0":
+            if assessment.mode != "a0_mandatory":
+                raise ValueError("Region A0 mixed-terrain assessment mode is inconsistent.")
+            if assessment.contributions or not _optional_float_equal(
+                assessment.covered_distance_m,
+                0.0,
+            ):
+                raise ValueError(
+                    "Region A0 terrain evidence must not contain weighted contributions."
+                )
+            mandatory_mzcat = indicative_mzcat("TC2", height, wind_region="A0")
+            if not _optional_float_equal(assessment.weighted_mzcat, mandatory_mzcat):
+                raise ValueError("Region A0 mandatory Mz,cat is inconsistent.")
+        else:
+            expected_segments = []
+            for segment in profile.segments:
+                clipped_start = max(float(segment.start_distance_m), lag_distance)
+                clipped_end = min(float(segment.end_distance_m), window_end)
+                if clipped_end > clipped_start:
+                    expected_segments.append((segment, clipped_start, clipped_end))
+            if len(assessment.contributions) != len(expected_segments):
+                raise ValueError(
+                    f"Mixed-terrain contributions are incomplete for {assessment.direction}."
+                )
+            for contribution, (segment, clipped_start, clipped_end) in zip(
+                assessment.contributions,
+                expected_segments,
+                strict=True,
+            ):
+                included_length = clipped_end - clipped_start
+                weight_fraction = included_length / averaging_distance
+                if (
+                    contribution.terrain_category != segment.terrain_category
+                    or contribution.source_reference != segment.source_reference
+                    or any(
+                        not _optional_float_equal(actual, expected)
+                        for actual, expected in (
+                            (contribution.start_distance_m, segment.start_distance_m),
+                            (contribution.end_distance_m, segment.end_distance_m),
+                            (contribution.clipped_start_distance_m, clipped_start),
+                            (contribution.clipped_end_distance_m, clipped_end),
+                            (contribution.included_length_m, included_length),
+                            (contribution.weight_fraction, weight_fraction),
+                            (
+                                contribution.weighted_contribution,
+                                contribution.table_mzcat * weight_fraction,
+                            ),
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        f"Mixed-terrain contribution is inconsistent for {assessment.direction}."
+                    )
+
+            covered_distance = math.fsum(
+                contribution.included_length_m for contribution in assessment.contributions
+            )
+            if not _optional_float_equal(assessment.covered_distance_m, covered_distance):
+                raise ValueError(
+                    f"Mixed-terrain covered distance is inconsistent for {assessment.direction}."
+                )
+            if not _optional_float_equal(covered_distance, averaging_distance):
+                raise ValueError(
+                    f"Mixed-terrain coverage is incomplete for {assessment.direction}."
+                )
+            categories = {
+                contribution.terrain_category for contribution in assessment.contributions
+            }
+            expected_mode = "homogeneous" if len(categories) == 1 else "mixed_weighted"
+            if assessment.mode != expected_mode:
+                raise ValueError(
+                    f"Mixed-terrain calculation mode is inconsistent for {assessment.direction}."
+                )
+            weighted_mzcat = (
+                math.fsum(
+                    contribution.table_mzcat * contribution.included_length_m
+                    for contribution in assessment.contributions
+                )
+                / covered_distance
+            )
+            if not _optional_float_equal(assessment.weighted_mzcat, weighted_mzcat):
+                raise ValueError(
+                    f"Mixed-terrain weighted Mz,cat is inconsistent for {assessment.direction}."
+                )
+
+        mzcat_variable = variables[("Mzcat", assessment.direction)]
+        if any(
+            not _optional_float_equal(value, assessment.weighted_mzcat)
+            for value in (
+                mzcat_variable.recommended_value,
+                mzcat_variable.calculated_value,
+            )
+        ):
+            raise ValueError(
+                f"Mixed-terrain Mz,cat variable is inconsistent for {assessment.direction}."
+            )
+
 
 def _canonical_result_bytes(result: WindWorkflowResult) -> bytes:
     payload = result.model_dump(mode="json", exclude={"integrity_token"})
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+
+def _legacy_canonical_result_bytes(result: WindWorkflowResult) -> bytes | None:
+    """Project empty post-v1 fields out so previously issued v1 tokens remain valid."""
+
+    if result.input.mixed_terrain_profiles or result.mixed_terrain_assessments:
+        return None
+    payload = result.model_dump(mode="json", exclude={"integrity_token"})
+    input_payload = payload.get("input")
+    if isinstance(input_payload, dict):
+        input_payload.pop("mixed_terrain_profiles", None)
+    payload.pop("mixed_terrain_assessments", None)
     return json.dumps(
         payload,
         ensure_ascii=False,
