@@ -7,10 +7,20 @@ from pathlib import Path
 
 import pytest
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import SiteLocation, WindRegionAssessment
+from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
+    MD_EXPECTED_SHA256_ENV,
+    VR_DATA_FILE,
+    VR_EXPECTED_SHA256_ENV,
+    canonical_lookup_payload_sha256,
+    load_packaged_lookup_data,
+)
 from openwind_au.wind_inputs import (
     MD_METADATA_WARNING,
     VR_METADATA_WARNING,
+    configured_regional_wind_speed,
     direction_multiplier_assessment,
     lookup_vr,
     parse_ari_years,
@@ -18,7 +28,12 @@ from openwind_au.wind_inputs import (
     regional_wind_speed_assessment,
     wind_region_map_html,
 )
-from openwind_au.wind_region import assess_wind_region, dataset_metadata, wind_region_debug
+from openwind_au.wind_region import (
+    assess_wind_region,
+    boundary_warning_distance_m,
+    dataset_metadata,
+    wind_region_debug,
+)
 
 
 def sample_wind_regions_path() -> Path:
@@ -45,15 +60,28 @@ def site(latitude: float, longitude: float, name: str = "test") -> SiteLocation:
     )
 
 
+def trust_table_override(monkeypatch, table: dict, expected_digest_env: str) -> None:
+    digest = canonical_lookup_payload_sha256(table, payload_key="tables")
+    table["values_sha256"] = digest
+    monkeypatch.setenv(expected_digest_env, digest)
+
+
 def test_region_polygon_lookup_from_configured_geojson(monkeypatch) -> None:
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
 
     assessment = assess_wind_region(site(-33.86, 151.21, "Sydney"))
 
     assert assessment.wind_region == "A2"
-    assert "Geoscience Australia 1170.2 Wind Regions" in assessment.source
+    assert "Configured test wind-region GIS fixture" in assessment.source
     assert assessment.confidence == "high"
     assert assessment.region_polygon is not None
+
+
+def test_region_lookup_blocks_when_no_polygon_covers_site(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+
+    with pytest.raises(ValueError, match="not covered by any configured wind-region polygon"):
+        assess_wind_region(site(-30.0, 130.0, "Outside fixture coverage"))
 
 
 def test_dataset_metadata_flags_sample_fixture(monkeypatch) -> None:
@@ -100,6 +128,14 @@ def test_region_boundary_warning(monkeypatch) -> None:
     assert assessment.near_boundary is True
     assert assessment.confidence == "medium"
     assert any("near a wind-region boundary" in warning for warning in assessment.warnings)
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-1", "0", "not-a-number"])
+def test_invalid_boundary_warning_distance_blocks_calculation(monkeypatch, value) -> None:
+    monkeypatch.setenv("OPENWIND_WIND_REGION_BOUNDARY_WARNING_M", value)
+
+    with pytest.raises(ServiceNotReadyError, match="finite number greater than 0"):
+        boundary_warning_distance_m()
 
 
 @pytest.mark.skipif(
@@ -205,18 +241,22 @@ def test_vr_lookup_from_editable_data(monkeypatch) -> None:
         importance_level="IL2",
         annual_exceedance_probability="1/500",
     )
-    interpolated, note = lookup_vr({25: 37, 100: 41, 500: 45}, 250)
+    exact, exact_note = lookup_vr({25: 37, 100: 41, 500: 45}, 100)
+    missing, note = lookup_vr({25: 37, 100: 41, 500: 45}, 250)
 
     assert speed.wind_region == "A2"
     assert speed.ari_years == 500
     assert speed.vr_ult == 45.0
     assert speed.vr_serv == 37.0
-    assert "Editable regional wind speed" in speed.selected_table
+    assert "regional equation" in speed.selected_table
     assert parse_ari_years("1:1000") == 1000
     assert parse_ari_years("1 in 500") == 500
     assert parse_ari_years("ARI 500 years") == 500
-    assert interpolated == pytest.approx(43.2, abs=0.1)
-    assert "Interpolated" in note
+    assert exact == 41.0
+    assert exact_note is None
+    assert missing is None
+    assert note is not None
+    assert "not an exact configured VR row" in note
 
 
 @pytest.mark.parametrize(
@@ -243,6 +283,103 @@ def test_regional_equation_rejects_undefined_short_recurrence_interval() -> None
     with pytest.raises(ValueError, match="R must be 1 or at least 5"):
         regional_wind_speed("A2", 2)
 
+    with pytest.raises(ValueError, match="R must be 1 or at least 5"):
+        lookup_vr({1: 30.0, 5: 32.0}, 2)
+
+
+def test_identical_configured_packaged_vr_table_keeps_equation_result(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
+    table_path = tmp_path / "regional-wind-speeds.json"
+    table_path.write_text(json.dumps(table), encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
+    region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
+
+    speed = regional_wind_speed_assessment(
+        region,
+        importance_level="IL2",
+        annual_exceedance_probability="1/30",
+    )
+
+    assert speed.vr_ult == regional_wind_speed("A2", 30) == 38.0
+    assert "regional equation" in (speed.interpolation or "")
+    assert speed.selected_table == ("AS/NZS 1170.2:2021 Table 3.1(A) regional equation")
+
+
+def test_configured_vr_table_rejects_undefined_short_recurrence_interval(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
+    table_path = tmp_path / "regional-wind-speeds.json"
+    table_path.write_text(json.dumps(table), encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
+    region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
+
+    with pytest.raises(ValueError, match="R must be 1 or at least 5"):
+        regional_wind_speed_assessment(
+            region,
+            importance_level="IL2",
+            annual_exceedance_probability="1/2",
+        )
+
+
+def test_configured_vr_table_preserves_explicit_exact_override_row(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
+    table["tables"]["A"]["ultimate"]["30"] = 52.0
+    trust_table_override(monkeypatch, table, VR_EXPECTED_SHA256_ENV)
+    table_path = tmp_path / "regional-wind-speeds.json"
+    table_path.write_text(json.dumps(table), encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
+    region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
+
+    speed = regional_wind_speed_assessment(
+        region,
+        importance_level="IL2",
+        annual_exceedance_probability="1/30",
+    )
+
+    assert speed.vr_ult == 52.0
+    assert speed.interpolation is None
+
+
+@pytest.mark.parametrize("wind_region", ["C", "D"])
+def test_default_cyclonic_vr_is_explicitly_labelled_as_regional_maximum(
+    wind_region: str,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENWIND_VR_TABLE_PATH", raising=False)
+    region = WindRegionAssessment(
+        latitude=-12.46,
+        longitude=130.85,
+        wind_region=wind_region,  # type: ignore[arg-type]
+        source="cyclonic maximum regression fixture",
+        confidence="high",
+    )
+
+    speed = regional_wind_speed_assessment(
+        region,
+        importance_level="IL2",
+        annual_exceedance_probability="1/500",
+    )
+
+    assert any(
+        f"Region {wind_region} maximum" in warning and "smoothed coastline" in warning
+        for warning in speed.warnings
+    )
+    assert any(
+        f"Region {wind_region} maximum" in item and "interpolation not applied" in item
+        for item in speed.lookup_values
+    )
+
 
 def test_parse_ari_rejects_missing_years() -> None:
     with pytest.raises(ValueError, match="positive ARI"):
@@ -258,45 +395,28 @@ def test_parse_ari_rejects_ambiguous_trailing_numbers(value) -> None:
         parse_ari_years(value)
 
 
-def test_missing_vr_table_value_warns(monkeypatch, tmp_path) -> None:
+def test_missing_vr_table_value_blocks_calculation(monkeypatch, tmp_path) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
+    table["tables"]["A"]["serviceability"] = {}
+    trust_table_override(monkeypatch, table, VR_EXPECTED_SHA256_ENV)
     table_path = tmp_path / "vr.json"
-    table_path.write_text(
-        json.dumps(
-            {
-                "source": {"title": "test VR", "standard_reference": "test", "status": "test"},
-                "tables": {"A": {"ultimate": {"25": 37.0}, "serviceability": {}}},
-            }
-        ),
-        encoding="utf-8",
-    )
+    table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
     monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
     region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
 
-    speed = regional_wind_speed_assessment(
-        region,
-        importance_level="IL2",
-        annual_exceedance_probability="1/500",
-    )
-
-    assert speed.vr_ult is None
-    assert speed.vr_serv is None
-    assert any("manual input required" in warning for warning in speed.warnings)
+    with pytest.raises(ServiceNotReadyError, match="serviceability must be a non-empty object"):
+        regional_wind_speed_assessment(
+            region,
+            importance_level="IL2",
+            annual_exceedance_probability="1/500",
+        )
 
 
 def test_unverified_vr_table_metadata_warns(monkeypatch, tmp_path) -> None:
+    table = load_packaged_lookup_data(VR_DATA_FILE)
     table_path = tmp_path / "vr.json"
-    table_path.write_text(
-        json.dumps(
-            {
-                "source": {"title": "test VR", "standard_reference": "test", "status": "test"},
-                "tables": {
-                    "A": {"ultimate": {"500": 45.0}, "serviceability": {"25": 37.0}},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
     monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", str(table_path))
     region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
@@ -324,70 +444,88 @@ def test_md_lookup_and_governing_rows(monkeypatch) -> None:
     assert "Editable direction multiplier" in md.source_table
 
 
-def test_missing_md_table_value_warns(monkeypatch, tmp_path) -> None:
+def test_missing_md_table_value_blocks_calculation(monkeypatch, tmp_path) -> None:
+    table = load_packaged_lookup_data(MD_DATA_FILE)
+    del table["tables"]["A2"]["NE"]
+    trust_table_override(monkeypatch, table, MD_EXPECTED_SHA256_ENV)
     table_path = tmp_path / "md.json"
-    table_path.write_text(
-        json.dumps(
-            {
-                "source": {"title": "test Md", "standard_reference": "test", "status": "test"},
-                "tables": {"A": {"N": 1.0}},
-            }
-        ),
-        encoding="utf-8",
-    )
+    table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
     monkeypatch.setenv("OPENWIND_MD_TABLE_PATH", str(table_path))
     region = assess_wind_region(site(-33.86, 151.21, "Sydney"))
 
-    md = direction_multiplier_assessment(region)
-
-    assert md.highest_md == 1.0
-    assert next(row for row in md.directions if row.direction == "NE").md is None
-    assert any("directions NE, E, SE, S, SW, W, NW" in warning for warning in md.warnings)
+    with pytest.raises(ServiceNotReadyError, match="missing directions"):
+        direction_multiplier_assessment(region)
 
 
-def test_md_lookup_blocks_custom_region_without_reviewed_table_row() -> None:
+@pytest.mark.parametrize(
+    "table",
+    [
+        {"1": 30.0, "garbage": 45.0},
+        {"1": 30.0, "01": 30.0},
+        {"1": 30.0, "2": 31.0},
+        {"1": 30.0, "5": True},
+        {"1": 30.0, "5": 201.0},
+    ],
+)
+def test_vr_lookup_rejects_malformed_configured_rows(table) -> None:
+    with pytest.raises(ServiceNotReadyError):
+        lookup_vr(table, 5)
+
+
+def test_vr_lookup_quarantines_oversized_keys_and_values() -> None:
+    with pytest.raises(ServiceNotReadyError, match="canonical positive integer"):
+        lookup_vr({"9" * 5_000: 45.0}, 500)
+    with pytest.raises(ServiceNotReadyError, match="finite number"):
+        lookup_vr({"500": 10**10_000}, 500)
+
+
+def test_configured_vr_rejects_unexpected_region_members(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", "synthetic-reviewed-table.json")
+    data = {
+        "tables": {
+            "A": {
+                "ultimate": {"1": 30.0, "5": 32.0},
+                "serviceability": {"25": 37.0},
+                "duplicate": {"5": 32.0},
+            }
+        }
+    }
+
+    with pytest.raises(ServiceNotReadyError, match="unexpected members"):
+        configured_regional_wind_speed("A2", 5, lookup_data=data)
+
+
+def test_configured_vr_rejects_non_object_table_container(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_VR_TABLE_PATH", "synthetic-reviewed-table.json")
+    with pytest.raises(ServiceNotReadyError, match="tables must be an object"):
+        configured_regional_wind_speed("A2", 500, lookup_data={"tables": []})
+
+
+@pytest.mark.parametrize(
+    ("wind_region", "required_subregion"),
+    [("A", "A0, A1, A2, A3, A4, or A5"), ("B", "B1 or B2")],
+)
+def test_md_lookup_rejects_ambiguous_generic_region(
+    wind_region: str,
+    required_subregion: str,
+) -> None:
     region = WindRegionAssessment(
         latitude=-33.86,
         longitude=151.21,
-        wind_region="A",
+        wind_region=wind_region,
         source="custom generic region",
         confidence="low",
     )
 
-    md = direction_multiplier_assessment(region)
-
-    assert region.wind_region == "A"
-    assert md.highest_md is None
-    assert all(row.md is None for row in md.directions)
-    assert any(
-        "unavailable for A directions N, NE, E, SE, S, SW, W, NW" in warning
-        for warning in md.warnings
-    )
+    with pytest.raises(ValueError, match=required_subregion):
+        direction_multiplier_assessment(region)
 
 
 def test_unverified_md_table_metadata_warns(monkeypatch, tmp_path) -> None:
+    table = load_packaged_lookup_data(MD_DATA_FILE)
     table_path = tmp_path / "md.json"
-    table_path.write_text(
-        json.dumps(
-            {
-                "source": {"title": "test Md", "standard_reference": "test", "status": "test"},
-                "tables": {
-                    "A2": {
-                        "N": 0.85,
-                        "NE": 0.75,
-                        "E": 0.85,
-                        "SE": 0.95,
-                        "S": 0.95,
-                        "SW": 0.95,
-                        "W": 1.0,
-                        "NW": 0.95,
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    table_path.write_text(json.dumps(table), encoding="utf-8")
     monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(sample_wind_regions_path()))
     monkeypatch.setenv("OPENWIND_MD_TABLE_PATH", str(table_path))
     region = assess_wind_region(site(-33.86, 151.21, "Sydney"))

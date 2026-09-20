@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,6 +15,7 @@ from openwind_au.microsoft_footprints import (
     MAX_MICROSOFT_TILE_BYTES,
     MICROSOFT_FOOTPRINT_SOURCE,
     load_tile_index,
+    microsoft_target_lock,
     query_microsoft_building_footprints,
 )
 
@@ -78,6 +80,26 @@ def test_microsoft_provider_reports_cache_miss(tmp_path) -> None:
     assert result.source_status == "unavailable"
     assert result.cache_status == "miss"
     assert "cache not found" in result.warnings[0]
+
+
+def test_microsoft_cache_read_warning_does_not_expose_local_path(tmp_path) -> None:
+    cache = tmp_path / "private-consumer-cache"
+    cache.mkdir()
+    tile = cache / "-34_151.geojson"
+    tile.write_text("{not valid JSON", encoding="utf-8")
+
+    result = query_microsoft_building_footprints(
+        latitude=-33.86,
+        longitude=151.21,
+        radius_m=500,
+        cache_dir=cache,
+        allow_download=False,
+    )
+
+    assert result.cache_status == "hit_empty"
+    assert any("could not be read" in warning for warning in result.warnings)
+    assert str(tmp_path) not in " ".join(result.warnings)
+    assert "private-consumer-cache" not in " ".join(result.warnings)
 
 
 def test_microsoft_provider_reads_geojsonl_cache(tmp_path) -> None:
@@ -168,7 +190,8 @@ def test_microsoft_provider_downloads_required_index_tile(tmp_path, monkeypatch)
             del chunk_size
             yield self.content
 
-    def fake_get(url: str, timeout: int, stream: bool):
+    def fake_get(url: str, headers: dict[str, str], timeout: int, stream: bool):
+        assert headers["User-Agent"].startswith("OpenWind-AU/")
         assert stream is True
         requested_urls.append(url)
         return FakeResponse()
@@ -413,6 +436,16 @@ def test_concurrent_microsoft_queries_download_an_indexed_tile_once(
     assert request_count == 1
     assert all(len(result.footprints) == 1 for result in results)
     assert not list(cache.rglob("*.part"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths are platform-specific")
+def test_microsoft_target_lock_normalizes_windows_extended_path_aliases(
+    tmp_path,
+) -> None:
+    ordinary_target = tmp_path / "microsoft" / "tiles" / "-34_151.geojsonl"
+    extended_target = type(ordinary_target)(f"\\\\?\\{ordinary_target}")
+
+    assert microsoft_target_lock(ordinary_target) is microsoft_target_lock(extended_target)
 
 
 @pytest.mark.parametrize(

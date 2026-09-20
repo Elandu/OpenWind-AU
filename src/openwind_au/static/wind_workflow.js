@@ -5,7 +5,15 @@ const windInputsSummary = document.getElementById("wind-inputs-summary");
 const workflowMapFrame = document.getElementById("workflow-map-frame");
 const terrainProfileFrame = document.getElementById("terrain-profile-frame");
 const vsitbTable = document.getElementById("vsitb-table");
+const vdesTable = document.getElementById("vdes-table");
+const directionalEditRestrictions = document.getElementById("directional-edit-restrictions");
 const rawProvenance = document.getElementById("raw-provenance");
+const rawDataPanel = document.getElementById("workspace-panel-raw-data");
+const rawDataSave = document.getElementById("raw-data-save");
+const rawDataUseCalculated = document.getElementById("raw-data-use-calculated");
+const rawDataDiscard = document.getElementById("raw-data-discard");
+const rawDataEditReason = document.getElementById("raw-data-edit-reason");
+const rawDataEditStatus = document.getElementById("raw-data-edit-status");
 const workflowReport = document.getElementById("workflow-report");
 const workflowPdf = document.getElementById("workflow-pdf");
 const reportStatus = document.getElementById("report-status");
@@ -20,45 +28,55 @@ const workflowProgressPercent = document.getElementById("workflow-progress-perce
 const workflowProgressTrack = document.getElementById("workflow-progress-track");
 const workflowProgressBar = document.getElementById("workflow-progress-bar");
 const workspaceTitle = document.querySelector(".map-toolbar strong");
+const buildingHeightControl = document.getElementById("building_height_m");
 const orientationControl = document.getElementById("structure_orientation_deg");
 const orientationReadout = document.getElementById("orientation-readout");
 const mapCoordinateReadout = document.getElementById("map-coordinate-readout");
 const buildingWidthControl = document.getElementById("building_width_m");
 const buildingLengthControl = document.getElementById("building_length_m");
+const sampleIntervalControl = document.getElementById("sample_interval_m");
+const obstructionRadiusControl = document.getElementById("obstruction_radius_m");
+const defaultStoreyHeightControl = document.getElementById("default_storey_height_m");
+const roofPitchControl = document.getElementById("roof_pitch_deg");
+const averageRoofHeightControl = document.getElementById("average_roof_height_m");
+const baseRlControl = document.getElementById("base_rl_m");
+const mixedTerrainSegmentsBody = document.getElementById("mixed-terrain-segments");
+const mixedTerrainAdd = document.getElementById("mixed-terrain-add");
+const mixedTerrainStatus = document.getElementById("mixed-terrain-status");
 const addressSuggestionsList = document.getElementById("dashboard-address-suggestions");
+const windDirectionMultiplierCaseControl = document.getElementById("wind_direction_multiplier_case");
 const DESIGN_LOCATION_STORAGE_KEY = "openwindDesignBuildingLocation";
 const PROJECT_NUMBER_STORAGE_KEY = "openwindProjectNumber";
+const WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY = "openwindWindDirectionMultiplierCase";
 const DESIGN_LOCATION_STORAGE_VERSION = 1;
+const SUPPORTED_LATITUDE_RANGE = [-44.5, -9.0];
+const SUPPORTED_LONGITUDE_RANGE = [112.0, 154.5];
 
-const orientationOptions = [
-  -90,
-  -78.75,
-  -67.5,
-  -56.25,
-  -45,
-  -33.75,
-  -22.5,
-  -11.25,
-  0,
-  11.25,
-  22.5,
-  33.75,
-  45,
-  56.25,
-  67.5,
-  78.75,
-  90,
-];
+const orientationOptions = [0, 45, 90, 135, 180, 225, 270, 315];
 const directionOrder = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-const variableOrder = ["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
+const variableOrder = ["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"];
 const variableAnchors = {
   VR: "wind-region-vr",
   Md: "wind-direction-md",
   Mzcat: "terrain-category-mzcat",
   Ms: "shielding-ms",
   Mt: "topographic-mt",
+  Mc: "climate-change-mc",
   Vsitb: "vsitb-summary",
 };
+const workflowOverrideMaximums = Object.freeze({
+  VR: 200,
+  Md: 2,
+  Mzcat: 10,
+  Ms: 1,
+  Mt: 10,
+  Vsitb: 500,
+});
+const workflowOverrideReasonMaximum = 2000;
+const rawDataDisplayDecimals = 6;
+const rawDataDisplayTolerance = 0.5 * (10 ** -rawDataDisplayDecimals);
+const mapScreenshotTimeoutMs = 10000;
+const maxMapScreenshotDataUrlCharacters = 2800000;
 
 const hiddenWindInputWarningPatterns = [
   /GIS interpretation/i,
@@ -73,7 +91,11 @@ let activeWorkflowController = null;
 let workflowRunId = 0;
 let activeReportController = null;
 let reportRequestId = 0;
+let mapScreenshotRequestId = 0;
+const pendingMapScreenshotRequests = new Map();
 let workflowOverrides = [];
+let rawDataEditorDirty = false;
+let rawDataEditorSaving = false;
 let addressSuggestionTimer = null;
 let addressSuggestionController = null;
 let addressSuggestions = [];
@@ -84,12 +106,17 @@ let addressResolveController = null;
 let addressResolveRequestId = 0;
 let designBuildingState = null;
 let coordinateOverride = null;
+let designLocationProjectNumber = "";
 let locationMode = "address";
+let mixedTerrainRowId = 0;
 let currentMapSite = {
   latitude: -33.8688,
   longitude: 151.2093,
   display_name: "Sydney CBD",
 };
+
+restoreWindDirectionMultiplierCase();
+windDirectionMultiplierCaseControl?.addEventListener("change", persistWindDirectionMultiplierCase);
 
 if (dashboardProjectNumber) {
   try {
@@ -103,7 +130,44 @@ if (dashboardProjectNumber) {
     } catch (_error) {
       // Project changes must still invalidate state when persistence is unavailable.
     }
+    const projectNumber = dashboardProjectNumber.value.trim();
+    if (locationMode === "coordinates" && coordinateOverride && !designLocationProjectNumber) {
+      const persistence = saveDesignLocation(coordinateOverride);
+      cancelActiveWorkflow();
+      updateReportAvailability();
+      if (persistence.saved) {
+        setWorkflowProgress(
+          100,
+          "Current building location saved to the new project number; rerun the assessment when ready",
+          "complete",
+        );
+      } else if (persistence.reason === "storage-unavailable") {
+        setWorkflowProgress(
+          100,
+          "Project number updated, but browser storage is unavailable; the location remains session-only",
+          "complete",
+        );
+      }
+      return;
+    }
+    if (projectNumber === designLocationProjectNumber) {
+      cancelActiveWorkflow();
+      updateReportAvailability();
+      return;
+    }
     invalidateDesignLocationForProject();
+  });
+  dashboardProjectNumber.addEventListener("change", () => {
+    const projectNumber = dashboardProjectNumber.value.trim();
+    if (
+      projectNumber
+      && locationMode === "coordinates"
+      && coordinateOverride
+      && !designLocationProjectNumber
+    ) {
+      designLocationProjectNumber = projectNumber;
+      saveDesignLocation(coordinateOverride);
+    }
   });
 }
 
@@ -132,8 +196,32 @@ workspaceTabs.forEach((button) => {
 
 window.addEventListener("message", (event) => {
   if (event.source !== workflowMapFrame?.contentWindow) return;
-  if (event.data?.type !== "openwind-design-building-change") return;
-  updateDesignBuildingState(event.data.state, { source: "map" });
+  if (event.data?.type === "openwind-design-building-change") {
+    updateDesignBuildingState(event.data.state, { source: "map" });
+    return;
+  }
+  if (event.data?.type !== "openwind-map-screenshot") return;
+  const requestId = String(event.data.request_id || "");
+  const pending = pendingMapScreenshotRequests.get(requestId);
+  if (!pending) return;
+  if (event.data.result_integrity_token !== pending.resultIntegrityToken) {
+    pending.reject(new Error("The map screenshot did not match the current assessment."));
+    return;
+  }
+  if (event.data.error) {
+    pending.reject(new Error(`Map screenshot failed: ${event.data.error}`));
+    return;
+  }
+  const dataUrl = String(event.data.data_url || "");
+  if (!/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
+    pending.reject(new Error("The map did not return a valid PNG or JPEG screenshot."));
+    return;
+  }
+  if (dataUrl.length > maxMapScreenshotDataUrlCharacters) {
+    pending.reject(new Error("The captured map is too large for the PDF report."));
+    return;
+  }
+  pending.resolve(dataUrl);
 });
 
 function endMapDesignInteraction() {
@@ -154,13 +242,43 @@ workflowForm.addEventListener("submit", async (event) => {
 });
 
 workflowForm.addEventListener("input", () => {
+  validateWorkflowInputs();
   cancelActiveWorkflow();
   updateReportAvailability();
 });
 
-workflowForm.addEventListener("change", updateReportAvailability);
+workflowForm.addEventListener("change", () => {
+  validateWorkflowInputs();
+  cancelActiveWorkflow();
+  updateReportAvailability();
+});
 
-renderInitialMapFrame("Run an assessment to load the project site map.");
+mixedTerrainAdd?.addEventListener("click", () => addMixedTerrainSegmentRow());
+mixedTerrainSegmentsBody?.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const removeButton = event.target.closest("[data-mixed-remove]");
+  if (!removeButton) return;
+  removeButton.closest("[data-mixed-row]")?.remove();
+  renderMixedTerrainEmptyState();
+  validateWorkflowInputs();
+  cancelActiveWorkflow();
+  updateReportAvailability();
+});
+
+rawDataPanel?.addEventListener("input", (event) => {
+  if (event.target?.dataset?.rawValue === undefined) return;
+  refreshRawDataEditorState();
+});
+
+rawDataSave?.addEventListener("click", saveRawDataEdits);
+rawDataUseCalculated?.addEventListener("click", stageCalculatedRawDataValues);
+rawDataDiscard?.addEventListener("click", discardRawDataEdits);
+
+if (locationMode === "coordinates" && coordinateOverride) {
+  renderInitialMapFrame("Saved project site restored.");
+} else {
+  renderPendingMapFrame("Enter an address and select a suggestion to position the building.");
+}
 syncDesignBuildingOverlay();
 
 workflowMapFrame?.addEventListener("load", () => {
@@ -173,6 +291,8 @@ workflowMapFrame?.addEventListener("load", () => {
   control?.addEventListener("input", syncDesignBuildingOverlay);
   control?.addEventListener("change", syncDesignBuildingOverlay);
 });
+
+validateWorkflowInputs();
 
 dashboardAddress?.addEventListener("input", () => {
   invalidateDesignLocationForAddress();
@@ -229,6 +349,8 @@ workflowReport?.addEventListener("click", async () => {
   const { requestId, controller } = startReportRequest();
   const reportWindow = window.open("about:blank", "_blank");
   if (reportWindow) reportWindow.document.body.textContent = "Generating HTML report...";
+  workflowReport.disabled = true;
+  if (reportStatus) reportStatus.textContent = "Generating HTML from the completed assessment...";
   try {
     const response = await postJson(
       "/api/wind-workflow/result/report/html",
@@ -241,14 +363,26 @@ workflowReport?.addEventListener("click", async () => {
       return;
     }
     const reportUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
-    if (reportWindow) reportWindow.location.replace(reportUrl);
-    else window.open(reportUrl, "_blank", "noopener,noreferrer");
+    if (reportWindow) {
+      reportWindow.location.replace(reportUrl);
+    } else {
+      const link = document.createElement("a");
+      link.href = reportUrl;
+      link.download = "openwind-au-site-wind-assessment.html";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+    if (reportStatus) {
+      reportStatus.textContent = "HTML report generated. Use the report window or download to save it.";
+    }
     setTimeout(() => URL.revokeObjectURL(reportUrl), 300000);
   } catch (error) {
     reportWindow?.close();
     if (error.name === "AbortError" || !reportRequestIsCurrent(requestId, reportFingerprint)) {
       return;
     }
+    if (reportStatus) reportStatus.textContent = `HTML report failed: ${error.message}`;
     workflowSummary.textContent = `Workflow report failed: ${error.message}`;
   } finally {
     finishReportRequest(requestId);
@@ -267,11 +401,24 @@ workflowPdf?.addEventListener("click", async () => {
   const reportWindow = window.open("about:blank", "_blank");
   if (reportWindow) reportWindow.document.body.textContent = "Generating PDF report...";
   workflowPdf.disabled = true;
-  if (reportStatus) reportStatus.textContent = "Generating PDF from the completed assessment...";
+  if (reportStatus) reportStatus.textContent = "Capturing the current map for the PDF...";
   try {
+    const mapScreenshot = await captureWorkflowMapScreenshot(
+      reportPayload,
+      controller.signal,
+    );
+    if (!reportRequestIsCurrent(requestId, reportFingerprint)) {
+      reportWindow?.close();
+      return;
+    }
+    if (reportWindow) reportWindow.document.body.textContent = "Generating PDF report...";
+    if (reportStatus) reportStatus.textContent = "Generating PDF from the completed assessment...";
     const response = await postJson(
       "/api/wind-workflow/result/report/pdf",
-      reportPayload,
+      {
+        result: reportPayload,
+        map_screenshot: mapScreenshot,
+      },
       { signal: controller.signal },
     );
     const pdf = await response.blob();
@@ -307,30 +454,357 @@ workflowPdf?.addEventListener("click", async () => {
   }
 });
 
-async function runWorkflow() {
+async function runWorkflow(options = {}) {
+  const validationMessages = validateWorkflowInputs();
+  const formIsValid = workflowForm.reportValidity();
+  if (validationMessages.length || !formIsValid) {
+    const detail = validationMessages[0] || "Complete the highlighted required assessment inputs.";
+    setWorkflowProgress(0, `Check assessment inputs: ${detail}`, "error");
+    workflowSummary.textContent = validationMessages.length
+      ? `Assessment inputs need attention: ${validationMessages.join(" ")}`
+      : "Complete the highlighted required assessment inputs before running the assessment.";
+    return false;
+  }
+  if (options.workflowOverrides === undefined) {
+    removeNowRestrictedWorkflowOverrides();
+  }
   cancelAddressResolution();
   closeAddressSuggestions();
   cancelActiveWorkflow();
   const runId = workflowRunId;
   const controller = new AbortController();
   activeWorkflowController = controller;
-  const requestPayload = workflowPayload();
+  const requestPayload = workflowPayload(options.workflowOverrides ?? workflowOverrides);
   activeWorkflowPayload = requestPayload;
   setWorkflowProgress(4, "Resolving site location and elevation", "running");
   workflowSummary.textContent = "Resolving site location and elevation...";
   resetWorkflowSections();
   try {
     await runWorkflowStream(requestPayload, runId, controller.signal);
+    if (runId !== workflowRunId) return false;
+    if (!currentWorkflow || !currentWorkflowFingerprint) {
+      renderWorkflowFailure(new Error("Workflow stream ended without a completed assessment result."));
+      return false;
+    }
+    return true;
   } catch (error) {
-    if (error.name === "AbortError" || runId !== workflowRunId) return;
+    if (error.name === "AbortError" || runId !== workflowRunId) return false;
     if (error.allowWorkflowFallback) {
-      await runWorkflowFallback(error, requestPayload, runId, controller.signal);
+      return await runWorkflowFallback(error, requestPayload, runId, controller.signal);
     } else {
       renderWorkflowFailure(error);
+      return false;
     }
   } finally {
     if (runId === workflowRunId) activeWorkflowController = null;
   }
+}
+
+function numberControlError(control, label, constraints = {}) {
+  if (!control) return "";
+  const raw = String(control.value ?? "").trim();
+  if (!raw) return constraints.required ? `${label} is required.` : "";
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return `${label} must be a finite number.`;
+  if (constraints.integer && !Number.isInteger(value)) {
+    return `${label} must be a whole number.`;
+  }
+  if (constraints.minExclusive !== undefined && value <= constraints.minExclusive) {
+    return `${label} must be greater than ${constraints.minExclusive}.`;
+  }
+  if (constraints.min !== undefined && value < constraints.min) {
+    return `${label} must be at least ${constraints.min}.`;
+  }
+  if (constraints.maxExclusive !== undefined && value >= constraints.maxExclusive) {
+    return `${label} must be less than ${constraints.maxExclusive}.`;
+  }
+  if (constraints.max !== undefined && value > constraints.max) {
+    return `${label} must not exceed ${constraints.max}.`;
+  }
+  return "";
+}
+
+function mixedTerrainRows() {
+  return Array.from(mixedTerrainSegmentsBody?.querySelectorAll("[data-mixed-row]") || []);
+}
+
+function renderMixedTerrainEmptyState() {
+  if (!mixedTerrainSegmentsBody) return;
+  const empty = mixedTerrainSegmentsBody.querySelector(".mixed-terrain-empty");
+  if (mixedTerrainRows().length) {
+    empty?.remove();
+  } else if (!empty) {
+    mixedTerrainSegmentsBody.innerHTML = `
+      <tr class="mixed-terrain-empty">
+        <td colspan="6">No ordered mixed-terrain intervals supplied.</td>
+      </tr>
+    `;
+  }
+}
+
+function addMixedTerrainSegmentRow(initial = {}) {
+  if (!mixedTerrainSegmentsBody) return;
+  mixedTerrainSegmentsBody.querySelector(".mixed-terrain-empty")?.remove();
+  const referenceHeight = parseOptionalNumber(averageRoofHeightControl?.value)
+    ?? parseOptionalNumber(buildingHeightControl?.value)
+    ?? 10;
+  const lagDistance = 20 * referenceHeight;
+  const averagingDistance = Math.max(500, 40 * referenceHeight);
+  const rowId = ++mixedTerrainRowId;
+  const direction = directionOrder.includes(initial.direction) ? initial.direction : "N";
+  const category = ["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
+    .includes(initial.terrain_category)
+    ? initial.terrain_category
+    : "TC2";
+  mixedTerrainSegmentsBody.insertAdjacentHTML("beforeend", `
+    <tr data-mixed-row="${rowId}">
+      <td>
+        <select data-mixed-direction aria-label="Mixed-terrain direction">
+          ${directionOrder.map((item) => `
+            <option value="${item}" ${item === direction ? "selected" : ""}>${item}</option>
+          `).join("")}
+        </select>
+      </td>
+      <td>
+        <input data-mixed-start type="number" min="0" max="100000" step="any" required
+          value="${escapeHtml(initial.start_distance_m ?? lagDistance)}"
+          aria-label="Terrain interval start distance" />
+      </td>
+      <td>
+        <input data-mixed-end type="number" min="0.001" max="100000" step="any" required
+          value="${escapeHtml(initial.end_distance_m ?? lagDistance + averagingDistance)}"
+          aria-label="Terrain interval end distance" />
+      </td>
+      <td>
+        <select data-mixed-category aria-label="Terrain interval category">
+          ${["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"].map((item) => `
+            <option value="${item}" ${item === category ? "selected" : ""}>${item}</option>
+          `).join("")}
+        </select>
+      </td>
+      <td>
+        <input data-mixed-source maxlength="1000" required
+          value="${escapeHtml(initial.source_reference || "")}"
+          placeholder="survey, drawing or GIS review reference"
+          aria-label="Terrain interval source reference" />
+      </td>
+      <td><button type="button" class="mixed-terrain-remove" data-mixed-remove>Remove</button></td>
+    </tr>
+  `);
+  validateWorkflowInputs();
+  cancelActiveWorkflow();
+  updateReportAvailability();
+}
+
+function mixedTerrainProfilesFromEditor() {
+  const grouped = new Map();
+  mixedTerrainRows().forEach((row) => {
+    const direction = row.querySelector("[data-mixed-direction]")?.value || "N";
+    const segment = {
+      start_distance_m: mixedTerrainDistanceValue(row.querySelector("[data-mixed-start]")),
+      end_distance_m: mixedTerrainDistanceValue(row.querySelector("[data-mixed-end]")),
+      terrain_category: row.querySelector("[data-mixed-category]")?.value || "TC2",
+      source_reference: row.querySelector("[data-mixed-source]")?.value.trim() || "",
+    };
+    if (!grouped.has(direction)) grouped.set(direction, []);
+    grouped.get(direction).push(segment);
+  });
+  return directionOrder
+    .filter((direction) => grouped.has(direction))
+    .map((direction) => ({
+      direction,
+      segments: grouped
+        .get(direction)
+        .sort((first, second) => first.start_distance_m - second.start_distance_m),
+    }));
+}
+
+function mixedTerrainDistanceValue(control) {
+  const raw = String(control?.value ?? "").trim();
+  return raw === "" ? null : Number(raw);
+}
+
+function validateMixedTerrainInputs() {
+  const rows = mixedTerrainRows();
+  if (!rows.length) {
+    if (mixedTerrainStatus) mixedTerrainStatus.textContent = "";
+    return [];
+  }
+  const messages = [];
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const direction = row.querySelector("[data-mixed-direction]")?.value || "N";
+    const startControl = row.querySelector("[data-mixed-start]");
+    const endControl = row.querySelector("[data-mixed-end]");
+    const sourceControl = row.querySelector("[data-mixed-source]");
+    [startControl, endControl, sourceControl].forEach((control) => control?.setCustomValidity(""));
+    const start = mixedTerrainDistanceValue(startControl);
+    const end = mixedTerrainDistanceValue(endControl);
+    let message = "";
+    if (start === null) {
+      message = `${direction} terrain interval start is required.`;
+      startControl?.setCustomValidity(message);
+    } else if (!Number.isFinite(start) || start < 0) {
+      message = `${direction} terrain interval start must be a non-negative finite distance.`;
+      startControl?.setCustomValidity(message);
+    } else if (end === null) {
+      message = `${direction} terrain interval end is required.`;
+      endControl?.setCustomValidity(message);
+    } else if (!Number.isFinite(end) || end <= start) {
+      message = `${direction} terrain interval end must be greater than its start.`;
+      endControl?.setCustomValidity(message);
+    } else if (!sourceControl?.value.trim()) {
+      message = `${direction} terrain interval needs a source reference.`;
+      sourceControl?.setCustomValidity(message);
+    }
+    if (message) messages.push(message);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      if (!grouped.has(direction)) grouped.set(direction, []);
+      grouped.get(direction).push({ row, start, end });
+    }
+  });
+  grouped.forEach((segments, direction) => {
+    const ordered = segments.sort((first, second) => first.start - second.start);
+    for (let index = 1; index < ordered.length; index += 1) {
+      if (Math.abs(ordered[index].start - ordered[index - 1].end) > 1e-6) {
+        const message = `${direction} terrain intervals must be contiguous without gaps or overlaps.`;
+        ordered[index].row.querySelector("[data-mixed-start]")?.setCustomValidity(message);
+        messages.push(message);
+        break;
+      }
+    }
+  });
+  const uniqueMessages = [...new Set(messages)];
+  if (mixedTerrainStatus) {
+    mixedTerrainStatus.textContent = uniqueMessages[0]
+      || `${rows.length} ordered terrain interval(s) ready for calculation.`;
+  }
+  return uniqueMessages;
+}
+
+function validateWorkflowInputs() {
+  const controls = [
+    [
+      buildingHeightControl,
+      numberControlError(buildingHeightControl, "Building height", {
+        required: true,
+        minExclusive: 0,
+        max: 200,
+      }),
+    ],
+    [
+      orientationControl,
+      numberControlError(orientationControl, "Orientation", {
+        required: true,
+        min: 0,
+        maxExclusive: 360,
+      }),
+    ],
+    [
+      buildingWidthControl,
+      numberControlError(buildingWidthControl, "Building breadth", {
+        minExclusive: 0,
+        max: 5000,
+      }),
+    ],
+    [
+      buildingLengthControl,
+      numberControlError(buildingLengthControl, "Building depth", {
+        minExclusive: 0,
+        max: 5000,
+      }),
+    ],
+    [
+      sampleIntervalControl,
+      numberControlError(sampleIntervalControl, "Sample interval", {
+        required: true,
+        min: 5,
+        max: 500,
+      }),
+    ],
+    [
+      obstructionRadiusControl,
+      numberControlError(obstructionRadiusControl, "Obstruction radius", {
+        required: true,
+        integer: true,
+        min: 50,
+        max: 4000,
+      }),
+    ],
+    [
+      defaultStoreyHeightControl,
+      numberControlError(defaultStoreyHeightControl, "Storey height assumption", {
+        minExclusive: 0,
+        max: 6,
+      }),
+    ],
+    [
+      roofPitchControl,
+      numberControlError(roofPitchControl, "Roof pitch", {
+        min: 0,
+        max: 90,
+      }),
+    ],
+    [
+      averageRoofHeightControl,
+      numberControlError(averageRoofHeightControl, "Average roof height", {
+        minExclusive: 0,
+        max: 200,
+      }),
+    ],
+    [
+      baseRlControl,
+      numberControlError(baseRlControl, "Base RL", {
+        min: -500,
+        max: 10000,
+      }),
+    ],
+  ];
+  const errorByControl = new Map(controls.map(([control, error]) => [control, error]));
+  const widthPresent = String(buildingWidthControl?.value ?? "").trim() !== "";
+  const lengthPresent = String(buildingLengthControl?.value ?? "").trim() !== "";
+  if (widthPresent !== lengthPresent) {
+    const pairMessage = "Enter both building breadth and building depth, or leave both blank.";
+    if (!errorByControl.get(buildingWidthControl)) {
+      errorByControl.set(buildingWidthControl, pairMessage);
+    }
+    if (!errorByControl.get(buildingLengthControl)) {
+      errorByControl.set(buildingLengthControl, pairMessage);
+    }
+  }
+  const buildingHeight = parseOptionalNumber(buildingHeightControl?.value);
+  const averageRoofHeight = parseOptionalNumber(averageRoofHeightControl?.value);
+  if (
+    buildingHeight !== null
+    && averageRoofHeight !== null
+    && averageRoofHeight > buildingHeight
+    && !errorByControl.get(averageRoofHeightControl)
+  ) {
+    errorByControl.set(
+      averageRoofHeightControl,
+      "Average roof height must not exceed the overall building height.",
+    );
+  }
+  const referenceHeight = averageRoofHeight ?? buildingHeight;
+  const obstructionRadius = parseOptionalNumber(obstructionRadiusControl?.value);
+  if (
+    referenceHeight !== null
+    && referenceHeight <= 25
+    && obstructionRadius !== null
+    && obstructionRadius < 20 * referenceHeight
+    && !errorByControl.get(obstructionRadiusControl)
+  ) {
+    errorByControl.set(
+      obstructionRadiusControl,
+      `Obstruction radius must be at least ${(20 * referenceHeight).toFixed(0)} m `
+        + "to cover the full 20h shielding sector.",
+    );
+  }
+  for (const [control] of controls) {
+    control?.setCustomValidity(errorByControl.get(control) || "");
+  }
+  const mixedTerrainErrors = validateMixedTerrainInputs();
+  return [...new Set([...errorByControl.values()].filter(Boolean).concat(mixedTerrainErrors))];
 }
 
 async function runWorkflowStream(requestPayload, runId, signal) {
@@ -343,6 +817,7 @@ async function runWorkflowStream(requestPayload, runId, signal) {
   if (!response.ok || !response.body) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
     const streamError = new Error(formatApiError(error.detail || response.statusText));
+    streamError.status = response.status;
     streamError.allowWorkflowFallback = !response.body || [404, 405, 501].includes(response.status);
     throw streamError;
   }
@@ -369,6 +844,20 @@ async function runWorkflowStream(requestPayload, runId, signal) {
 
 function handleWorkflowStreamEvent(event, runId, requestPayload, signal) {
   if (runId !== workflowRunId) return;
+  if (event.stage === "error" && currentWorkflow && currentWorkflowFingerprint) {
+    const mapMessage = formatApiError(event.label || "Combined map rendering failed");
+    setWorkflowProgress(100, "Assessment complete; combined map unavailable", "complete");
+    workflowSummary.textContent = `Combined map unavailable: ${mapMessage}\n${workflowSummary.textContent}`;
+    if (workflowMapFrame) {
+      setIframeHtml(workflowMapFrame, `<p>Combined map failed: ${escapeHtml(mapMessage)}</p>`);
+    }
+    updateReportAvailability();
+    renderTerrainProfileGraph(
+      resolvedSiteRequestPayload(requestPayload, currentWorkflow),
+      { runId, signal },
+    );
+    return;
+  }
   setWorkflowProgress(event.percent, event.label, event.stage === "error" ? "error" : "running");
   workflowSummary.textContent = `${event.label}\n${workflowSummary.textContent}`;
   if (event.stage === "error") {
@@ -394,6 +883,8 @@ function handleWorkflowStreamEvent(event, runId, requestPayload, signal) {
     currentWorkflow = event.data.workflow;
     renderWorkflow(currentWorkflow);
     currentWorkflowFingerprint = acceptedWorkflowFingerprint(requestPayload, currentWorkflow);
+    activeWorkflowPayload = resolvedSiteRequestPayload(requestPayload, currentWorkflow);
+    if (reportStatus) reportStatus.textContent = "";
     updateReportAvailability();
   }
   if (event.data?.map_html && workflowMapFrame) {
@@ -401,7 +892,10 @@ function handleWorkflowStreamEvent(event, runId, requestPayload, signal) {
     setTimeout(() => {
       if (runId === workflowRunId) syncDesignBuildingOverlay();
     }, 80);
-    renderTerrainProfileGraph(requestPayload, { runId, signal });
+    renderTerrainProfileGraph(
+      resolvedSiteRequestPayload(requestPayload, currentWorkflow),
+      { runId, signal },
+    );
   }
   if (event.stage === "complete") {
     setWorkflowProgress(100, event.label, "complete");
@@ -413,37 +907,56 @@ async function runWorkflowFallback(originalError, requestPayload, runId, signal)
     const reason = originalError?.message ? ` (${originalError.message})` : "";
     setWorkflowProgress(32, `Live progress unavailable${reason}; calculating full workflow`, "running");
     const response = await postJson("/api/wind-workflow", requestPayload, { signal });
-    if (runId !== workflowRunId) return;
+    if (runId !== workflowRunId) return false;
     currentWorkflow = await response.json();
+    renderSiteAnalysisProgress({
+      input: currentWorkflow.input,
+      site: currentWorkflow.site,
+    });
     renderWorkflow(currentWorkflow);
     currentWorkflowFingerprint = acceptedWorkflowFingerprint(requestPayload, currentWorkflow);
+    activeWorkflowPayload = resolvedSiteRequestPayload(requestPayload, currentWorkflow);
+    if (reportStatus) reportStatus.textContent = "";
     updateReportAvailability();
     setWorkflowProgress(78, "Rendering combined map layers", "running");
-    await renderWorkflowMap(requestPayload, { runId, signal });
-    await renderTerrainProfileGraph(requestPayload, { runId, signal });
-    if (runId !== workflowRunId) return;
-    setWorkflowProgress(100, "Assessment complete", "complete");
+    const mapRendered = await renderWorkflowMap(activeWorkflowPayload, { runId, signal });
+    await renderTerrainProfileGraph(activeWorkflowPayload, { runId, signal });
+    if (runId !== workflowRunId) return false;
+    setWorkflowProgress(
+      100,
+      mapRendered ? "Assessment complete" : "Assessment complete; combined map unavailable",
+      "complete",
+    );
+    return true;
   } catch (fallbackError) {
-    if (fallbackError.name === "AbortError" || runId !== workflowRunId) return;
+    if (fallbackError.name === "AbortError" || runId !== workflowRunId) return false;
     renderWorkflowFailure(fallbackError.message ? fallbackError : originalError);
+    return false;
   }
 }
 
-function workflowPayload() {
+function workflowPayload(overrides = workflowOverrides) {
   const data = new FormData(workflowForm);
   const optionalNumber = (name) => {
     const value = data.get(name);
     return value === null || value === "" ? null : Number(value);
+  };
+  const requiredNumber = (name) => {
+    const value = data.get(name);
+    return value === null || String(value).trim() === "" ? null : Number(value);
   };
   const payload = {
     address: data.get("address") || null,
     project_number: dashboardProjectNumber?.value.trim() || null,
     building_height_m: Number(data.get("building_height_m")),
     radius_m: Number(data.get("radius_m")),
-    sample_interval_m: Number(data.get("sample_interval_m")),
+    sample_interval_m: requiredNumber("sample_interval_m"),
     obstruction_radius_m: Number(data.get("obstruction_radius_m") || 500),
     default_storey_height_m: Number(data.get("default_storey_height_m") || 3),
-    annual_exceedance_probability: data.get("annual_exceedance_probability") || "1/500",
+    annual_exceedance_probability: String(
+      data.get("annual_exceedance_probability") ?? "",
+    ).trim(),
+    wind_direction_multiplier_case: data.get("wind_direction_multiplier_case") || "main_structure",
     importance_level: data.get("importance_level") || null,
     structure_class: data.get("structure_class") || null,
     structure_orientation_deg: optionalNumber("structure_orientation_deg"),
@@ -451,16 +964,20 @@ function workflowPayload() {
     building_width_m: optionalNumber("building_width_m"),
     building_length_m: optionalNumber("building_length_m"),
     roof_pitch_deg: optionalNumber("roof_pitch_deg"),
-    average_height_m: optionalNumber("average_height_m"),
+    average_roof_height_m: optionalNumber("average_roof_height_m"),
     base_rl_m: optionalNumber("base_rl_m"),
     mzcat_recommendation_mode: "conservative",
-    workflow_overrides: workflowOverrides,
+    mixed_terrain_profiles: mixedTerrainProfilesFromEditor(),
+    workflow_overrides: overrides,
   };
   if (locationMode === "coordinates" && coordinateOverride) {
     payload.latitude = coordinateOverride.latitude;
     payload.longitude = coordinateOverride.longitude;
+    payload.site_label = payload.address || coordinateOverride.display_name || null;
+    delete payload.address;
   }
   if (!payload.address) delete payload.address;
+  if (!payload.site_label) delete payload.site_label;
   if (!payload.project_number) delete payload.project_number;
   if (payload.importance_level === null) delete payload.importance_level;
   [
@@ -470,12 +987,90 @@ function workflowPayload() {
     "building_width_m",
     "building_length_m",
     "roof_pitch_deg",
-    "average_height_m",
+    "average_roof_height_m",
     "base_rl_m",
   ].forEach((key) => {
     if (payload[key] === null || Number.isNaN(payload[key])) delete payload[key];
   });
   return payload;
+}
+
+function resolvedSiteRequestPayload(requestPayload, workflow = null) {
+  const payload = { ...(requestPayload || {}) };
+  const payloadHasCoordinates = hasSupportedSiteCoordinates(payload);
+  const workflowHasCoordinates = hasSupportedSiteCoordinates(workflow?.site);
+  const overrideHasCoordinates = (
+    locationMode === "coordinates"
+    && hasSupportedSiteCoordinates(coordinateOverride)
+  );
+  const site = payloadHasCoordinates
+    ? payload
+    : workflowHasCoordinates
+      ? workflow.site
+      : overrideHasCoordinates
+        ? coordinateOverride
+        : null;
+  if (!site) return payload;
+  const originalAddress = String(payload.address || "").trim();
+  payload.latitude = Number(site.latitude);
+  payload.longitude = Number(site.longitude);
+  payload.site_label = (
+    payload.site_label
+    || originalAddress
+    || workflow?.site?.display_name
+    || coordinateOverride?.display_name
+    || "Assessed site"
+  );
+  delete payload.address;
+  return payload;
+}
+
+function hasSupportedSiteCoordinates(site) {
+  const rawLatitude = site?.latitude;
+  const rawLongitude = site?.longitude;
+  if (
+    rawLatitude === null
+    || rawLatitude === undefined
+    || rawLatitude === ""
+    || rawLongitude === null
+    || rawLongitude === undefined
+    || rawLongitude === ""
+  ) {
+    return false;
+  }
+  const latitude = Number(rawLatitude);
+  const longitude = Number(rawLongitude);
+  return (
+    Number.isFinite(latitude)
+    && Number.isFinite(longitude)
+    && latitude >= SUPPORTED_LATITUDE_RANGE[0]
+    && latitude <= SUPPORTED_LATITUDE_RANGE[1]
+    && longitude >= SUPPORTED_LONGITUDE_RANGE[0]
+    && longitude <= SUPPORTED_LONGITUDE_RANGE[1]
+  );
+}
+
+function restoreWindDirectionMultiplierCase() {
+  if (!windDirectionMultiplierCaseControl) return;
+  try {
+    const savedValue = localStorage.getItem(WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY);
+    const allowedValues = Array.from(windDirectionMultiplierCaseControl.options || [])
+      .map((option) => option.value);
+    if (allowedValues.includes(savedValue)) windDirectionMultiplierCaseControl.value = savedValue;
+  } catch (_error) {
+    // Browser storage is optional; the visible default remains main structure.
+  }
+}
+
+function persistWindDirectionMultiplierCase() {
+  try {
+    localStorage.setItem(
+      WIND_DIRECTION_MULTIPLIER_CASE_STORAGE_KEY,
+      windDirectionMultiplierCaseControl?.value || "main_structure",
+    );
+  } catch (_error) {
+    // The selection still participates in the current workflow request.
+  }
 }
 
 function assessmentFingerprint() {
@@ -492,11 +1087,14 @@ function acceptedWorkflowFingerprint(requestPayload, workflow) {
   ) {
     acceptedPayload.latitude = Number(workflow.site.latitude);
     acceptedPayload.longitude = Number(workflow.site.longitude);
+    acceptedPayload.site_label = acceptedPayload.address || workflow.site.display_name || null;
+    delete acceptedPayload.address;
+    if (!acceptedPayload.site_label) delete acceptedPayload.site_label;
   }
   return JSON.stringify(acceptedPayload);
 }
 
-function assessmentIsCurrent() {
+function completedAssessmentMatchesInputs() {
   return Boolean(
     currentWorkflow
     && currentWorkflowFingerprint
@@ -504,18 +1102,90 @@ function assessmentIsCurrent() {
   );
 }
 
+function assessmentIsCurrent() {
+  return completedAssessmentMatchesInputs() && !rawDataEditorDirty && !rawDataEditorSaving;
+}
+
 function updateReportAvailability() {
   const isCurrent = assessmentIsCurrent();
   if (workflowPdf) workflowPdf.disabled = !isCurrent;
   if (workflowReport) workflowReport.disabled = !isCurrent;
   if (!reportStatus) return;
-  if (currentWorkflow && !isCurrent) {
+  if (currentWorkflow && rawDataEditorDirty) {
+    reportStatus.textContent = "Raw Data has unsaved changes. Save or restore the values before generating reports.";
+  } else if (currentWorkflow && !isCurrent) {
     reportStatus.textContent = "Inputs changed. Run the assessment again before generating reports.";
-  } else if (isCurrent && !reportStatus.textContent.includes("generated")) {
+  } else if (
+    isCurrent
+    && !/\b(?:generating|generated|failed)\b/i.test(reportStatus.textContent)
+  ) {
     reportStatus.textContent = "Reports are ready for the current assessment.";
   } else if (!currentWorkflow) {
     reportStatus.textContent = "";
   }
+}
+
+function captureWorkflowMapScreenshot(result, signal) {
+  const resultIntegrityToken = String(result?.integrity_token || "");
+  if (!resultIntegrityToken) {
+    return Promise.reject(new Error("The current assessment cannot be linked to a map screenshot."));
+  }
+  if (!workflowMapFrame?.contentWindow) {
+    return Promise.reject(new Error("The interactive map is not available for capture."));
+  }
+  const activeWorkspaceTab = workspaceTabs.find((tab) => tab.classList.contains("is-active"))
+    ?.dataset.workspaceTab;
+  const restoreWorkspaceTab = activeWorkspaceTab === "profile" ? "profile" : null;
+  if (restoreWorkspaceTab) activateWorkspaceTab("map");
+  mapScreenshotRequestId += 1;
+  const requestId = `pdf-map-${mapScreenshotRequestId}`;
+  return new Promise((resolve, reject) => {
+    let timeoutId = null;
+    let sendTimeoutId = null;
+    let abortListener = null;
+    const settle = (callback, value) => {
+      if (!pendingMapScreenshotRequests.has(requestId)) return;
+      pendingMapScreenshotRequests.delete(requestId);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      if (sendTimeoutId !== null) clearTimeout(sendTimeoutId);
+      if (abortListener && signal) signal.removeEventListener("abort", abortListener);
+      if (restoreWorkspaceTab) activateWorkspaceTab(restoreWorkspaceTab);
+      callback(value);
+    };
+    const pending = {
+      resultIntegrityToken,
+      resolve: (value) => settle(resolve, value),
+      reject: (error) => settle(reject, error),
+    };
+    pendingMapScreenshotRequests.set(requestId, pending);
+    timeoutId = setTimeout(() => {
+      pending.reject(new Error("Map screenshot timed out. Try the PDF again."));
+    }, mapScreenshotTimeoutMs);
+    if (signal) {
+      abortListener = () => {
+        const error = new Error("Map screenshot cancelled.");
+        error.name = "AbortError";
+        pending.reject(error);
+      };
+      if (signal.aborted) {
+        abortListener();
+        return;
+      }
+      signal.addEventListener("abort", abortListener, { once: true });
+    }
+    const requestCapture = () => {
+      postWorkflowMapCommand("capture-screenshot", {
+        request_id: requestId,
+        result_integrity_token: resultIntegrityToken,
+      });
+    };
+    if (restoreWorkspaceTab) {
+      workflowMapFrame.getBoundingClientRect();
+      sendTimeoutId = setTimeout(requestCapture, 100);
+    } else {
+      requestCapture();
+    }
+  });
 }
 
 function startReportRequest() {
@@ -554,11 +1224,20 @@ function cancelActiveWorkflow() {
 
 function renderWorkflowFailure(error) {
   const message = formatApiError(error?.message || error || "Unknown error");
-  setWorkflowProgress(100, "Assessment failed", "error");
+  const label = Number(error?.status) === 422
+    ? "Assessment inputs need attention"
+    : "Assessment failed";
+  setWorkflowProgress(100, label, "error");
   workflowSummary.textContent = `Workflow failed: ${message}`;
-  vsitbTable.innerHTML = "<tr><td colspan=\"7\">Workflow failed.</td></tr>";
+  vsitbTable.innerHTML = "<tr><td colspan=\"6\">Workflow failed.</td></tr>";
+  if (vdesTable) {
+    vdesTable.innerHTML = "<tr><td colspan=\"6\">Workflow failed.</td></tr>";
+  }
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
+  rawDataEditorDirty = false;
+  rawDataEditorSaving = false;
+  setRawDataEditorAvailability(false, "Assessment failed; no Raw Data changes were saved.");
   updateReportAvailability();
 }
 
@@ -582,7 +1261,9 @@ async function postJson(url, payload, options = {}) {
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(formatApiError(error.detail || response.statusText));
+    const requestError = new Error(formatApiError(error.detail || response.statusText));
+    requestError.status = response.status;
+    throw requestError;
   }
   return response;
 }
@@ -590,12 +1271,18 @@ async function postJson(url, payload, options = {}) {
 function renderWorkflow(workflow) {
   workflowSummary.textContent = JSON.stringify({
     site: workflow.site,
-    overrides_applied: workflow.overrides_applied?.length || 0,
+    overrides_applied: workflow.input?.workflow_overrides?.length || 0,
     warnings: visibleWarnings(workflow.warnings),
     vsitb_status: workflow.directional_vsitb.map((row) => ({
       direction: row.direction,
       status: row.status,
       vsitb: row.final_vsitb,
+    })),
+    vdes_status: (workflow.design_wind_speeds || []).map((row) => ({
+      face: row.face,
+      theta_deg: row.theta_deg,
+      beta_deg: row.beta_deg,
+      vdes_theta_mps: row.vdes_theta_mps,
     })),
     disclaimer: workflow.disclaimer,
   }, null, 2);
@@ -608,14 +1295,31 @@ function renderWorkflow(workflow) {
     if (variable === "Vsitb") return;
     renderVariableSection(variable, grouped[variable] || []);
   });
-  renderVsitbTable(workflow.directional_vsitb || []);
-  renderRawProvenance(workflow.variables || []);
+  renderVsitbTable(workflow.directional_vsitb || [], grouped);
+  renderVdesTable(workflow.design_wind_speeds || []);
+  renderRawProvenance(
+    workflow.variables || [],
+    workflow.warnings || [],
+    workflow.mixed_terrain_assessments || [],
+    workflow.input?.mixed_terrain_profiles || [],
+  );
+  setRawDataEditorAvailability(
+    true,
+    workflowOverrides.length
+      ? `${workflowOverrides.length} saved edited value${workflowOverrides.length === 1 ? "" : "s"}.`
+      : "All editable values currently match their calculated values.",
+  );
 }
 
 function renderDashboardHeader(workflow) {
   if (dashboardRegion) dashboardRegion.textContent = workflow.wind_region_assessment?.wind_region || "-";
   if (dashboardGoverningDirection) {
-    dashboardGoverningDirection.textContent = workflow.governing_direction || "-";
+    const governingDirections = Array.isArray(workflow.governing_directions)
+      ? workflow.governing_directions.filter(Boolean)
+      : [];
+    dashboardGoverningDirection.textContent = governingDirections.length
+      ? governingDirections.join(", ")
+      : workflow.governing_direction || "-";
   }
   if (dashboardGoverningVsitb) {
     dashboardGoverningVsitb.textContent = workflow.governing_vsitb === null || workflow.governing_vsitb === undefined
@@ -625,33 +1329,44 @@ function renderDashboardHeader(workflow) {
 }
 
 async function renderWorkflowMap(
-  requestPayload = activeWorkflowPayload || workflowPayload(),
+  requestPayload = resolvedSiteRequestPayload(workflowPayload()),
   options = {},
 ) {
-  if (!workflowMapFrame) return;
+  if (!workflowMapFrame) return true;
   renderInitialMapFrame("Rendering project site map...");
   try {
-    const response = await postJson("/api/wind-workflow/map", requestPayload, options);
+    const response = await postJson(
+      "/api/wind-workflow/map",
+      resolvedSiteRequestPayload(requestPayload),
+      options,
+    );
     const html = await response.text();
-    if (options.runId && options.runId !== workflowRunId) return;
+    if (options.runId && options.runId !== workflowRunId) return false;
     setIframeHtml(workflowMapFrame, html);
     setTimeout(syncDesignBuildingOverlay, 80);
     setTimeout(invalidateWorkflowMap, 140);
+    return true;
   } catch (error) {
-    if (error.name === "AbortError" || (options.runId && options.runId !== workflowRunId)) return;
+    if (error.name === "AbortError" || (options.runId && options.runId !== workflowRunId)) {
+      return false;
+    }
     setIframeHtml(workflowMapFrame, `<p>Combined map failed: ${escapeHtml(error.message)}</p>`);
-    throw error;
+    return false;
   }
 }
 
 async function renderTerrainProfileGraph(
-  requestPayload = activeWorkflowPayload || workflowPayload(),
+  requestPayload = resolvedSiteRequestPayload(workflowPayload()),
   options = {},
 ) {
   if (!terrainProfileFrame) return;
   setIframeHtml(terrainProfileFrame, "<p>Rendering terrain profile graph...</p>");
   try {
-    const response = await postJson("/api/plots/profile", requestPayload, options);
+    const response = await postJson(
+      "/api/plots/profile",
+      terrainProfileRequestPayload(requestPayload),
+      options,
+    );
     const html = await response.text();
     if (options.runId && options.runId !== workflowRunId) return;
     setIframeHtml(terrainProfileFrame, html);
@@ -661,10 +1376,35 @@ async function renderTerrainProfileGraph(
   }
 }
 
+function terrainProfileRequestPayload(requestPayload) {
+  const resolved = resolvedSiteRequestPayload(requestPayload);
+  const payload = {
+    building_height_m: Number(resolved.building_height_m),
+    radius_m: Number(resolved.radius_m),
+    sample_interval_m: Number(resolved.sample_interval_m),
+    mzcat_recommendation_mode: resolved.mzcat_recommendation_mode || "conservative",
+  };
+  if (hasSupportedSiteCoordinates(resolved)) {
+    payload.latitude = Number(resolved.latitude);
+    payload.longitude = Number(resolved.longitude);
+    const siteLabel = String(resolved.site_label || "").trim();
+    if (siteLabel) payload.site_label = siteLabel;
+  } else {
+    const address = String(resolved.address || "").trim();
+    if (address) payload.address = address;
+  }
+  return payload;
+}
+
 function renderInitialMapFrame(message, options = {}) {
   if (!workflowMapFrame) return;
   if ((workflowMapFrame.src || workflowMapFrame.srcdoc) && !options.force) return;
   setIframeHtml(workflowMapFrame, initialMapHtml(message));
+}
+
+function renderPendingMapFrame(message) {
+  if (!workflowMapFrame) return;
+  setIframeHtml(workflowMapFrame, pendingMapHtml(message));
 }
 
 function clearIframeHtml(frame) {
@@ -686,8 +1426,36 @@ function iframeHtml(html) {
   return `${base}${html}`;
 }
 
+function pendingMapHtml(message) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <base href="${window.location.origin}/">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+      background: #dfe6ee;
+      color: #344054;
+      font: 700 14px/1.5 Arial, sans-serif;
+      text-align: center;
+    }
+  </style>
+</head>
+<body><p role="status">${escapeHtml(message || "Select a project site.")}</p></body>
+</html>`;
+}
+
 function initialMapHtml(message) {
-  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
+  const enteredOrientation = parseOptionalNumber(orientationControl?.value);
+  const orientation = validEngineeringAzimuth(enteredOrientation)
+    ? normalizeOrientation(enteredOrientation)
+    : 0;
   const widthM = parseOptionalNumber(buildingWidthControl?.value) ?? 12;
   const lengthM = parseOptionalNumber(buildingLengthControl?.value) ?? 18;
   const safeMessage = escapeHtml(message || "Ready");
@@ -731,6 +1499,16 @@ function initialMapHtml(message) {
       border-color: #fdba74;
       color: #7c2d12;
     }
+    .design-face-tooltip {
+      border: 1px solid rgb(154 52 18 / 42%);
+      border-radius: 3px;
+      padding: 2px 5px;
+      background: rgb(255 247 237 / 92%);
+      color: #7c2d12;
+      box-shadow: none;
+      font-size: 10px;
+      font-weight: 800;
+    }
   </style>
 </head>
 <body>
@@ -759,6 +1537,7 @@ function initialMapHtml(message) {
         user_modified: false,
         position_modified: false,
         orientation_modified: false,
+        dimensions_modified: false,
         orientation_options: ${jsonForInlineScript(orientationOptions)}
       };
       const map = L.map("map", { zoomControl: true }).setView(
@@ -773,25 +1552,51 @@ function initialMapHtml(message) {
       let footprint = null;
       let bearingLine = null;
       let pointsLayer = null;
+      let faceLabelsLayer = null;
+      let resizeHandlesLayer = null;
       let orientationDrag = null;
+      let resizeDrag = null;
       let buildingDragStart = null;
       let suppressOrientationClick = false;
+      const dimensionMinimumM = 0.1;
+      const dimensionMaximumM = 5000;
+      const compassLabels = {
+        0: "N",
+        45: "NE",
+        90: "E",
+        135: "SE",
+        180: "S",
+        225: "SW",
+        270: "W",
+        315: "NW"
+      };
 
       function clampDimension(value, fallback) {
         const number = Number(value);
-        return Number.isFinite(number) && number > 0 ? number : fallback;
+        return Number.isFinite(number) && number > 0
+          ? Math.min(dimensionMaximumM, Math.max(dimensionMinimumM, number))
+          : fallback;
       }
 
       function formatDegrees(value) {
-        return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+        return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 1);
       }
 
-      function nearestOrientationOption(value) {
+      function normalizeOrientation(value) {
         const number = Number(value);
         if (!Number.isFinite(number)) return 0;
-        return state.orientation_options.reduce((best, option) => (
-          Math.abs(option - number) < Math.abs(best - number) ? option : best
-        ), state.orientation_options[0]);
+        const normalizedTenths = (
+          (Math.round(number * 10) % 3600) + 3600
+        ) % 3600;
+        return normalizedTenths / 10;
+      }
+
+      function designAxes() {
+        const theta = Number(state.orientation_deg) * Math.PI / 180;
+        return {
+          lengthAxis: [Math.sin(theta), Math.cos(theta)],
+          widthAxis: [Math.cos(theta), -Math.sin(theta)]
+        };
       }
 
       function latLngFromMeters(eastM, northM) {
@@ -814,11 +1619,9 @@ function initialMapHtml(message) {
       }
 
       function footprintCorners() {
-        const theta = Number(state.orientation_deg) * Math.PI / 180;
         const halfLength = clampDimension(state.length_m, 18) / 2;
         const halfWidth = clampDimension(state.width_m, 12) / 2;
-        const lengthAxis = [Math.sin(theta), Math.cos(theta)];
-        const widthAxis = [Math.cos(theta), -Math.sin(theta)];
+        const { lengthAxis, widthAxis } = designAxes();
         return [
           [halfLength, halfWidth],
           [halfLength, -halfWidth],
@@ -854,10 +1657,10 @@ function initialMapHtml(message) {
         const center = centerLatLng();
         const delta = metersDelta({ lat: center[0], lng: center[1] }, latlng);
         const rawDegrees = Math.atan2(delta.eastM, delta.northM) * 180 / Math.PI;
-        const snapped = nearestOrientationOption(rawDegrees);
-        if (Number(state.orientation_deg) === Number(snapped)) return;
+        const orientation = normalizeOrientation(rawDegrees);
+        if (Number(state.orientation_deg) === Number(orientation)) return;
         if (orientationDrag) orientationDrag.moved = true;
-        state.orientation_deg = snapped;
+        state.orientation_deg = orientation;
         state.user_modified = true;
         state.orientation_modified = true;
         redraw();
@@ -887,12 +1690,63 @@ function initialMapHtml(message) {
         map.getContainer().style.cursor = "";
       }
 
-      function stopDesignInteraction() {
-        stopOrientationDrag();
-        if (!buildingDragStart) return;
-        buildingDragStart = null;
+      function applyResizeFromLatLng(latlng) {
+        if (!resizeDrag) return;
+        const center = centerLatLng();
+        const delta = metersDelta({ lat: center[0], lng: center[1] }, latlng);
+        const { lengthAxis, widthAxis } = designAxes();
+        const projectedLength = (
+          delta.eastM * lengthAxis[0] + delta.northM * lengthAxis[1]
+        ) * resizeDrag.lengthSign;
+        const projectedWidth = (
+          delta.eastM * widthAxis[0] + delta.northM * widthAxis[1]
+        ) * resizeDrag.widthSign;
+        const nextLength = Math.round(Math.min(
+          dimensionMaximumM,
+          Math.max(dimensionMinimumM, projectedLength * 2)
+        ) * 10) / 10;
+        const nextWidth = Math.round(Math.min(
+          dimensionMaximumM,
+          Math.max(dimensionMinimumM, projectedWidth * 2)
+        ) * 10) / 10;
+        if (
+          Number(state.length_m) === nextLength
+          && Number(state.width_m) === nextWidth
+        ) return;
+        resizeDrag.moved = true;
+        state.length_m = nextLength;
+        state.width_m = nextWidth;
+        state.user_modified = true;
+        state.dimensions_modified = true;
+        redraw();
+        notifyParent();
+        state.dimensions_modified = false;
+      }
+
+      function startResizeDrag(event, lengthSign, widthSign) {
+        L.DomEvent.preventDefault(event.originalEvent);
+        L.DomEvent.stopPropagation(event.originalEvent);
+        resizeDrag = { lengthSign, widthSign, moved: false };
+        map.dragging.disable();
+        map.getContainer().style.cursor = lengthSign === widthSign ? "nwse-resize" : "nesw-resize";
+        applyResizeFromLatLng(event.latlng);
+      }
+
+      function stopResizeDrag() {
+        if (!resizeDrag) return;
+        resizeDrag = null;
         map.dragging.enable();
         map.getContainer().style.cursor = "";
+      }
+
+      function stopDesignInteraction() {
+        stopOrientationDrag();
+        stopResizeDrag();
+        if (buildingDragStart) {
+          buildingDragStart = null;
+          map.dragging.enable();
+          map.getContainer().style.cursor = "";
+        }
       }
 
       function renderOrientationPoints() {
@@ -902,18 +1756,20 @@ function initialMapHtml(message) {
         state.orientation_options.forEach((option) => {
           const theta = Number(option) * Math.PI / 180;
           const point = latLngFromMeters(Math.sin(theta) * radius, Math.cos(theta) * radius);
-          const active = Number(option) === Number(state.orientation_deg);
-          const marker = L.circleMarker(point, {
-            radius: active ? 5 : 3,
-            color: active ? "#0f766e" : "#475569",
-            weight: active ? 2 : 1,
-            fillColor: active ? "#14b8a6" : "#ffffff",
-            fillOpacity: active ? 0.95 : 0.8
+          L.circleMarker(point, {
+            radius: 3,
+            color: "#475569",
+            weight: 1,
+            fillColor: "#ffffff",
+            fillOpacity: 0.8
           })
-            .bindTooltip(formatDegrees(option) + " deg", { sticky: true })
+            .bindTooltip(
+              compassLabels[option] + " - " + formatDegrees(option) + " deg clockwise from North",
+              { sticky: true }
+            )
             .on("click", () => {
               if (orientationDrag || suppressOrientationClick) return;
-              state.orientation_deg = Number(option);
+              state.orientation_deg = normalizeOrientation(option);
               state.user_modified = true;
               state.orientation_modified = true;
               redraw();
@@ -921,11 +1777,76 @@ function initialMapHtml(message) {
               state.orientation_modified = false;
             })
             .addTo(pointsLayer);
-          if (active) {
-            marker.on("mousedown", startOrientationDrag);
-          }
         });
+        const activeTheta = Number(state.orientation_deg) * Math.PI / 180;
+        const activePoint = latLngFromMeters(
+          Math.sin(activeTheta) * radius,
+          Math.cos(activeTheta) * radius
+        );
+        L.circleMarker(activePoint, {
+          radius: 6,
+          color: "#0f766e",
+          weight: 2,
+          fillColor: "#14b8a6",
+          fillOpacity: 0.98
+        })
+          .bindTooltip(
+            "Front theta=0 at beta=" + formatDegrees(state.orientation_deg)
+              + " deg clockwise from North; drag to rotate",
+            { sticky: true }
+          )
+          .on("mousedown", startOrientationDrag)
+          .addTo(pointsLayer);
         pointsLayer.addTo(designLayer);
+      }
+
+      function renderResizeHandles(corners) {
+        if (resizeHandlesLayer) designLayer.removeLayer(resizeHandlesLayer);
+        resizeHandlesLayer = L.layerGroup();
+        const signs = [[1, 1], [1, -1], [-1, -1], [-1, 1]];
+        corners.forEach((corner, index) => {
+          const [lengthSign, widthSign] = signs[index];
+          L.circleMarker(corner, {
+            radius: 6,
+            color: "#9a3412",
+            weight: 2,
+            fillColor: "#fff7ed",
+            fillOpacity: 1
+          })
+            .bindTooltip("Drag corner to resize breadth and depth", { sticky: true })
+            .on("mousedown", (event) => startResizeDrag(event, lengthSign, widthSign))
+            .addTo(resizeHandlesLayer);
+        });
+        resizeHandlesLayer.addTo(designLayer);
+      }
+
+      function renderFaceLabels() {
+        if (faceLabelsLayer) designLayer.removeLayer(faceLabelsLayer);
+        faceLabelsLayer = L.layerGroup();
+        const { lengthAxis, widthAxis } = designAxes();
+        const halfLength = clampDimension(state.length_m, 18) / 2;
+        const halfWidth = clampDimension(state.width_m, 12) / 2;
+        const labels = [
+          ["Front", 0, lengthAxis[0] * (halfLength + 7), lengthAxis[1] * (halfLength + 7)],
+          ["Right", 90, widthAxis[0] * (halfWidth + 7), widthAxis[1] * (halfWidth + 7)],
+          ["Back", 180, -lengthAxis[0] * (halfLength + 7), -lengthAxis[1] * (halfLength + 7)],
+          ["Left", 270, -widthAxis[0] * (halfWidth + 7), -widthAxis[1] * (halfWidth + 7)]
+        ];
+        labels.forEach(([label, theta, eastM, northM]) => {
+          L.circleMarker(latLngFromMeters(eastM, northM), {
+            radius: 1,
+            opacity: 0,
+            fillOpacity: 0,
+            interactive: false
+          })
+            .bindTooltip(label + " theta=" + theta + " deg", {
+              permanent: true,
+              direction: "center",
+              className: "design-face-tooltip"
+            })
+            .addTo(faceLabelsLayer);
+        });
+        faceLabelsLayer.addTo(designLayer);
       }
 
       function redraw() {
@@ -942,9 +1863,11 @@ function initialMapHtml(message) {
         } else {
           footprint.setLatLngs(corners);
         }
-        footprint.bindTooltip("Design building " + formatDegrees(state.orientation_deg) + " deg", {
-          sticky: true
-        });
+        footprint.bindTooltip(
+          "Design building " + formatDegrees(state.orientation_deg)
+            + " deg clockwise from North; drag footprint to move; drag a corner to resize",
+          { sticky: true }
+        );
         const bearingDistance = Math.max(state.length_m, 18) * 0.75;
         const line = [centerLatLng(), bearingEndpoint(bearingDistance)];
         if (!bearingLine) {
@@ -956,20 +1879,9 @@ function initialMapHtml(message) {
         } else {
           bearingLine.setLatLngs(line);
         }
+        renderResizeHandles(corners);
+        renderFaceLabels();
         renderOrientationPoints();
-      }
-
-      function nudgeDesignBuilding(eastM, northM) {
-        const east = Number(eastM);
-        const north = Number(northM);
-        if (!Number.isFinite(east) || !Number.isFinite(north)) return;
-        state.offset_east_m += east;
-        state.offset_north_m += north;
-        state.user_modified = true;
-        state.position_modified = true;
-        redraw();
-        notifyParent();
-        state.position_modified = false;
       }
 
       function enableBuildingDrag(layer) {
@@ -987,6 +1899,10 @@ function initialMapHtml(message) {
         map.on("mousemove", (event) => {
           if (orientationDrag) {
             applyOrientationFromLatLng(event.latlng);
+            return;
+          }
+          if (resizeDrag) {
+            applyResizeFromLatLng(event.latlng);
             return;
           }
           if (!buildingDragStart) return;
@@ -1009,7 +1925,7 @@ function initialMapHtml(message) {
         setOrientation(value) {
           const number = Number(value);
           if (Number.isFinite(number)) {
-            state.orientation_deg = number;
+            state.orientation_deg = normalizeOrientation(number);
             state.orientation_modified = false;
             redraw();
             notifyParent();
@@ -1018,11 +1934,9 @@ function initialMapHtml(message) {
         setDimensions(widthM, lengthM) {
           state.width_m = clampDimension(widthM, 12);
           state.length_m = clampDimension(lengthM, 18);
+          state.dimensions_modified = false;
           redraw();
           notifyParent();
-        },
-        nudge(eastM, northM) {
-          nudgeDesignBuilding(eastM, northM);
         },
         endInteraction() {
           stopDesignInteraction();
@@ -1045,6 +1959,7 @@ function initialMapHtml(message) {
           state.user_modified = false;
           state.position_modified = false;
           state.orientation_modified = false;
+          state.dimensions_modified = false;
           map.setView([state.latitude, state.longitude], 18);
           redraw();
           notifyParent();
@@ -1066,8 +1981,6 @@ function initialMapHtml(message) {
           window.openWindDesignBuilding.setDimensions(payload.width_m, payload.length_m);
         } else if (event.data.action === "set-orientation") {
           window.openWindDesignBuilding.setOrientation(payload.orientation_deg);
-        } else if (event.data.action === "nudge") {
-          window.openWindDesignBuilding.nudge(payload.east_m, payload.north_m);
         } else if (event.data.action === "end-interaction") {
           window.openWindDesignBuilding.endInteraction();
         } else if (event.data.action === "invalidate") {
@@ -1123,8 +2036,16 @@ function activateWorkspaceTab(tabName) {
 }
 
 function syncDesignBuildingOverlay() {
-  const orientation = nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0);
-  if (orientationControl && Number(orientationControl.value) !== orientation) {
+  const enteredOrientation = parseOptionalNumber(orientationControl?.value);
+  const previousOrientation = parseOptionalNumber(designBuildingState?.orientation_deg);
+  const orientation = validEngineeringAzimuth(enteredOrientation)
+    ? normalizeOrientation(enteredOrientation)
+    : normalizeOrientation(previousOrientation ?? 0);
+  if (
+    orientationControl
+    && validEngineeringAzimuth(enteredOrientation)
+    && Number(orientationControl.value) !== orientation
+  ) {
     orientationControl.value = String(orientation);
   }
   if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
@@ -1162,7 +2083,7 @@ function updateDesignBuildingState(state, options = {}) {
     ...(designBuildingState || {}),
     ...state,
   };
-  const reportedOrientation = nearestOrientation(
+  const reportedOrientation = normalizeOrientation(
     parseOptionalNumber(designBuildingState.orientation_deg) ?? 0,
   );
   const adjustedLocation = adjustedLocationFromDesignState(designBuildingState);
@@ -1171,23 +2092,39 @@ function updateDesignBuildingState(state, options = {}) {
     options.source === "map"
     && Boolean(designBuildingState.orientation_modified)
   );
+  const dimensionsModified = (
+    options.source === "map"
+    && Boolean(designBuildingState.dimensions_modified)
+  );
   const orientation = (
     options.source === "map"
     && !orientationModified
     && previousOrientation !== null
-  ) ? nearestOrientation(previousOrientation) : reportedOrientation;
+  ) ? normalizeOrientation(previousOrientation) : reportedOrientation;
   designBuildingState.orientation_deg = orientation;
-  const userMapChange = positionModified || orientationModified;
+  if (dimensionsModified) {
+    const width = validBuildingDimension(designBuildingState.width_m)
+      ? Number(designBuildingState.width_m)
+      : null;
+    const length = validBuildingDimension(designBuildingState.length_m)
+      ? Number(designBuildingState.length_m)
+      : null;
+    if (width !== null && length !== null) {
+      if (buildingWidthControl) buildingWidthControl.value = formatDimensionInput(width);
+      if (buildingLengthControl) buildingLengthControl.value = formatDimensionInput(length);
+      validateWorkflowInputs();
+    }
+  }
+  const userMapChange = positionModified || orientationModified || dimensionsModified;
   if (positionModified && adjustedLocation) {
+    clearWorkflowOverridesForSiteChange();
     coordinateOverride = {
       ...adjustedLocation,
-      display_name: currentMapSite.display_name || "Saved building location",
+      display_name: currentMapSite.display_name || "Building location",
     };
+    currentMapSite = { ...coordinateOverride };
     locationMode = "coordinates";
     renderMapCoordinates(coordinateOverride);
-    saveDesignLocation({
-      ...coordinateOverride,
-    });
     const latitudeCell = document.getElementById("resolved-site-latitude");
     const longitudeCell = document.getElementById("resolved-site-longitude");
     if (latitudeCell) latitudeCell.textContent = coordinateOverride.latitude.toFixed(6);
@@ -1195,17 +2132,40 @@ function updateDesignBuildingState(state, options = {}) {
   } else if (coordinateOverride) {
     renderMapCoordinates(coordinateOverride);
   }
-  if (orientationControl && Number(orientationControl.value) !== orientation) {
+  if (
+    orientationControl
+    && orientationModified
+    && Number(orientationControl.value) !== orientation
+  ) {
     orientationControl.value = String(orientation);
   }
   if (orientationReadout) orientationReadout.textContent = `${formatOrientation(orientation)} deg`;
   if (userMapChange) {
-    if (coordinateOverride) saveDesignLocation(coordinateOverride);
+    const persistence = coordinateOverride
+      ? saveDesignLocation(coordinateOverride)
+      : { saved: false, reason: "location-unavailable" };
     cancelActiveWorkflow();
     updateReportAvailability();
-  }
-  if (userMapChange && currentWorkflow) {
-    setWorkflowProgress(100, "Map adjusted; rerun assessment to refresh calculated layers", "complete");
+    const nextStep = currentWorkflow
+      ? "rerun assessment to refresh calculated layers"
+      : "run the assessment when ready";
+    if (persistence.saved) {
+      setWorkflowProgress(100, `Map adjusted and saved; ${nextStep}`, "complete");
+    } else if (persistence.reason === "project-number-required") {
+      setWorkflowProgress(
+        100,
+        `Map adjusted for this session only; enter a project number to save the current location; ${nextStep}`,
+        "complete",
+      );
+    } else if (persistence.reason === "storage-unavailable") {
+      setWorkflowProgress(
+        100,
+        `Map adjusted for this session only; browser storage is unavailable, so it was not saved; ${nextStep}`,
+        "complete",
+      );
+    } else {
+      setWorkflowProgress(100, `Map adjusted but not saved; ${nextStep}`, "complete");
+    }
   }
 }
 
@@ -1227,25 +2187,53 @@ function adjustedLocationFromDesignState(state) {
 }
 
 function renderMapCoordinates(location) {
-  if (!mapCoordinateReadout) return;
-  mapCoordinateReadout.textContent = location
-    ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
-    : "Not positioned";
+  if (mapCoordinateReadout) {
+    mapCoordinateReadout.textContent = location
+      ? `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)}`
+      : "Not positioned";
+  }
+}
+
+function clearWorkflowOverridesForSiteChange() {
+  workflowOverrides = [];
 }
 
 function saveDesignLocation(location) {
   try {
+    const projectNumber = dashboardProjectNumber?.value.trim() || "";
+    if (!projectNumber) {
+      clearSavedDesignLocation();
+      return { saved: false, reason: "project-number-required" };
+    }
+    if (!hasSupportedSiteCoordinates(location)) {
+      return { saved: false, reason: "location-unavailable" };
+    }
+    const latitude = Number(location.latitude);
+    const longitude = Number(location.longitude);
+    const widthM = parseOptionalNumber(buildingWidthControl?.value);
+    const lengthM = parseOptionalNumber(buildingLengthControl?.value);
+    const dimensionsAreValid = (
+      validBuildingDimension(widthM)
+      && validBuildingDimension(lengthM)
+    );
+    const enteredOrientation = parseOptionalNumber(orientationControl?.value);
     localStorage.setItem(DESIGN_LOCATION_STORAGE_KEY, JSON.stringify({
       version: DESIGN_LOCATION_STORAGE_VERSION,
-      latitude: Number(location.latitude),
-      longitude: Number(location.longitude),
+      latitude,
+      longitude,
       display_name: location.display_name || dashboardAddress?.value.trim() || "Saved building location",
       address: dashboardAddress?.value.trim() || location.display_name || "",
-      project_number: dashboardProjectNumber?.value.trim() || "",
-      orientation_deg: nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0),
+      project_number: projectNumber,
+      orientation_deg: validEngineeringAzimuth(enteredOrientation)
+        ? normalizeOrientation(enteredOrientation)
+        : normalizeOrientation(designBuildingState?.orientation_deg ?? 0),
+      width_m: dimensionsAreValid ? Number(widthM) : null,
+      length_m: dimensionsAreValid ? Number(lengthM) : null,
     }));
+    return { saved: true, reason: null };
   } catch (_error) {
     // Coordinate persistence is best-effort when browser storage is unavailable.
+    return { saved: false, reason: "storage-unavailable" };
   }
 }
 
@@ -1261,11 +2249,24 @@ function restoreSavedDesignLocation() {
   try {
     const savedLocation = JSON.parse(localStorage.getItem(DESIGN_LOCATION_STORAGE_KEY) || "null");
     const projectNumber = dashboardProjectNumber?.value.trim() || "";
+    const savedProjectNumber = typeof savedLocation?.project_number === "string"
+      ? savedLocation.project_number.trim()
+      : "";
     const isCurrentFormat = savedLocation?.version === DESIGN_LOCATION_STORAGE_VERSION;
-    const belongsToProject = String(savedLocation?.project_number || "") === projectNumber;
+    const belongsToProject = Boolean(
+      projectNumber
+      && savedProjectNumber
+      && savedProjectNumber === projectNumber
+    );
     const hasCoordinates = (
-      Number.isFinite(Number(savedLocation?.latitude))
-      && Number.isFinite(Number(savedLocation?.longitude))
+      typeof savedLocation?.latitude === "number"
+      && typeof savedLocation?.longitude === "number"
+      && Number.isFinite(savedLocation.latitude)
+      && Number.isFinite(savedLocation.longitude)
+      && savedLocation.latitude >= SUPPORTED_LATITUDE_RANGE[0]
+      && savedLocation.latitude <= SUPPORTED_LATITUDE_RANGE[1]
+      && savedLocation.longitude >= SUPPORTED_LONGITUDE_RANGE[0]
+      && savedLocation.longitude <= SUPPORTED_LONGITUDE_RANGE[1]
     );
     if (!isCurrentFormat || !belongsToProject || !hasCoordinates) {
       if (savedLocation) clearSavedDesignLocation();
@@ -1278,12 +2279,22 @@ function restoreSavedDesignLocation() {
     };
     coordinateOverride = { ...currentMapSite };
     locationMode = "coordinates";
+    designLocationProjectNumber = projectNumber;
     if (dashboardAddress && savedLocation.address) {
       dashboardAddress.value = savedLocation.address;
     }
     const savedOrientation = parseOptionalNumber(savedLocation.orientation_deg);
     if (orientationControl && savedOrientation !== null) {
-      orientationControl.value = String(nearestOrientation(savedOrientation));
+      orientationControl.value = String(normalizeOrientation(savedOrientation));
+    }
+    const savedWidth = parseOptionalNumber(savedLocation.width_m);
+    const savedLength = parseOptionalNumber(savedLocation.length_m);
+    if (
+      validBuildingDimension(savedWidth)
+      && validBuildingDimension(savedLength)
+    ) {
+      if (buildingWidthControl) buildingWidthControl.value = formatDimensionInput(savedWidth);
+      if (buildingLengthControl) buildingLengthControl.value = formatDimensionInput(savedLength);
     }
   } catch (_error) {
     clearSavedDesignLocation();
@@ -1293,26 +2304,30 @@ function restoreSavedDesignLocation() {
 function invalidateDesignLocationForProject() {
   cancelAddressResolution();
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "address";
   coordinateOverride = null;
+  designLocationProjectNumber = "";
   designBuildingState = null;
   clearSavedDesignLocation();
   renderMapCoordinates(null);
+  renderPendingMapFrame("Enter an address for the selected project.");
   updateReportAvailability();
 }
 
 function invalidateDesignLocationForAddress() {
   cancelAddressResolution();
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "address";
   coordinateOverride = null;
+  designLocationProjectNumber = "";
   designBuildingState = null;
   clearSavedDesignLocation();
   renderMapCoordinates(null);
+  renderPendingMapFrame("Address changed. Select a suggestion or run the assessment to locate it.");
   updateReportAvailability();
-  if (currentWorkflow) {
-    setWorkflowProgress(100, "Address changed; select a suggestion or run the assessment", "complete");
-  }
+  setWorkflowProgress(0, "Address changed; select a suggestion or run the assessment", "complete");
 }
 
 async function zoomMapToAddress() {
@@ -1388,7 +2403,13 @@ function queueAddressSuggestions(query) {
       if (requestId !== addressSuggestionRequestId || dashboardAddress?.value.trim() !== trimmed) {
         return;
       }
-      addressSuggestions = data.suggestions || [];
+      addressSuggestions = Array.isArray(data.suggestions)
+        ? data.suggestions.filter((suggestion) => (
+          typeof suggestion?.display_name === "string"
+          && suggestion.display_name.trim()
+          && hasSupportedSiteCoordinates(suggestion)
+        ))
+        : [];
       addressSuggestionMessage = addressSuggestions.length ? "" : "No matching Australian addresses found.";
       renderAddressSuggestions();
     } catch (error) {
@@ -1460,34 +2481,58 @@ function suggestionForAddress(value) {
 
 function applyAddressSuggestion(suggestion) {
   if (!suggestion) return;
-  currentMapSite = {
+  const selectedSite = {
     latitude: Number(suggestion.latitude),
     longitude: Number(suggestion.longitude),
-    display_name: suggestion.display_name,
+    display_name: String(suggestion.display_name || "").trim(),
   };
-  if (!Number.isFinite(currentMapSite.latitude) || !Number.isFinite(currentMapSite.longitude)) {
+  if (
+    !selectedSite.display_name
+    || !hasSupportedSiteCoordinates(selectedSite)
+  ) {
+    setWorkflowProgress(0, "Address result is outside the supported Australian extent", "error");
     return;
   }
+  currentMapSite = selectedSite;
   cancelActiveWorkflow();
+  clearWorkflowOverridesForSiteChange();
   locationMode = "coordinates";
   coordinateOverride = { ...currentMapSite };
+  designLocationProjectNumber = dashboardProjectNumber?.value.trim() || "";
   designBuildingState = {
     latitude: currentMapSite.latitude,
     longitude: currentMapSite.longitude,
     display_name: currentMapSite.display_name,
     width_m: parseOptionalNumber(buildingWidthControl?.value),
     length_m: parseOptionalNumber(buildingLengthControl?.value),
-    orientation_deg: nearestOrientation(parseOptionalNumber(orientationControl?.value) ?? 0),
+    orientation_deg: normalizeOrientation(parseOptionalNumber(orientationControl?.value) ?? 0),
     offset_east_m: 0,
     offset_north_m: 0,
     user_modified: false,
     position_modified: false,
+    orientation_modified: false,
+    dimensions_modified: false,
   };
-  saveDesignLocation(currentMapSite);
+  const persistence = saveDesignLocation(currentMapSite);
   renderMapCoordinates(currentMapSite);
-  postWorkflowMapCommand("set-site", { site: currentMapSite });
-  postWorkflowMapCommand("invalidate");
-  setWorkflowProgress(0, "Address located; run assessment when ready", "complete");
+  renderInitialMapFrame("Address located; run assessment when ready", { force: true });
+  if (persistence.saved) {
+    setWorkflowProgress(0, "Address located and saved; run assessment when ready", "complete");
+  } else if (persistence.reason === "project-number-required") {
+    setWorkflowProgress(
+      0,
+      "Address located for this session only; enter a project number to save the current location",
+      "complete",
+    );
+  } else if (persistence.reason === "storage-unavailable") {
+    setWorkflowProgress(
+      0,
+      "Address located for this session only; browser storage is unavailable",
+      "complete",
+    );
+  } else {
+    setWorkflowProgress(0, "Address located but not saved; run assessment when ready", "complete");
+  }
   updateReportAvailability();
 }
 
@@ -1510,10 +2555,26 @@ function postWorkflowMapCommand(action, payload = {}) {
   }, "*");
 }
 
-function nearestOrientation(value) {
-  return orientationOptions.reduce((closest, option) =>
-    Math.abs(option - value) < Math.abs(closest - value) ? option : closest
-  , orientationOptions[0]);
+function normalizeOrientation(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  const normalizedTenths = ((Math.round(number * 10) % 3600) + 3600) % 3600;
+  return normalizedTenths / 10;
+}
+
+function validEngineeringAzimuth(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number < 360;
+}
+
+function validBuildingDimension(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 && number <= 5000;
+}
+
+function formatDimensionInput(value) {
+  const number = Number(value);
+  return Number.isInteger(number) ? String(number) : number.toFixed(1);
 }
 
 function parseOptionalNumber(value) {
@@ -1523,13 +2584,13 @@ function parseOptionalNumber(value) {
 }
 
 function formatOrientation(value) {
-  return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 2);
+  return Number(value).toFixed(Number.isInteger(Number(value)) ? 0 : 1);
 }
 
 function renderSiteAnalysisProgress(siteAnalysis) {
   const input = siteAnalysis.input || {};
   const site = siteAnalysis.site || {};
-  const resultAddress = String(input.address || "").trim();
+  const resultAddress = String(input.address || input.site_label || "").trim();
   const currentAddress = String(dashboardAddress?.value || "").trim();
   const locationStillCurrent = !resultAddress || !currentAddress || resultAddress === currentAddress;
   if (
@@ -1540,21 +2601,22 @@ function renderSiteAnalysisProgress(siteAnalysis) {
     currentMapSite = {
       latitude: Number(site.latitude),
       longitude: Number(site.longitude),
-      display_name: site.display_name || input.address || "Assessed site",
+      display_name: site.display_name || input.address || input.site_label || "Assessed site",
     };
     coordinateOverride = { ...currentMapSite };
     locationMode = "coordinates";
+    designLocationProjectNumber = dashboardProjectNumber?.value.trim() || "";
     saveDesignLocation(currentMapSite);
     renderMapCoordinates(currentMapSite);
   }
-  if (!dashboardAddress?.value.trim() && input.address) {
-    dashboardAddress.value = input.address;
+  if (!dashboardAddress?.value.trim() && (input.address || input.site_label)) {
+    dashboardAddress.value = input.address || input.site_label;
   }
   siteInputSummary.innerHTML = `
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>Address</th><td>${escapeHtml(input.address || site.display_name || "not supplied")}</td></tr>
+          <tr><th>Address / site label</th><td>${escapeHtml(input.address || input.site_label || site.display_name || "not supplied")}</td></tr>
           <tr><th>Latitude</th><td id="resolved-site-latitude">${formatNullableNumber(site.latitude, 6, "")}</td></tr>
           <tr><th>Longitude</th><td id="resolved-site-longitude">${formatNullableNumber(site.longitude, 6, "")}</td></tr>
           <tr><th>Ground elevation</th><td>${formatNullableNumber(site.ground_elevation_m, 2, "m")}</td></tr>
@@ -1621,7 +2683,7 @@ function renderMdProgress(md) {
           </tbody>
         </table>
       </div>
-      <p class="note">Md values loaded from the selected region table. Final editable values are available once directional variables are calculated.</p>
+      <p class="note">Md values loaded from the selected region table. Selected values can be edited once directional variables are calculated.</p>
     </article>
   `);
 }
@@ -1683,6 +2745,9 @@ function replaceWorkflowCards(section, html) {
 
 function renderSiteInputs(workflow) {
   const input = workflow.input || {};
+  const importanceMetadataRow = input.importance_level
+    ? `<tr><th>Importance level (report metadata only)</th><td>${escapeHtml(input.importance_level)}; does not select AEP / ARI</td></tr>`
+    : "";
   const structureRows = [
     input.structure_class ? `<tr><th>Structure class</th><td>${escapeHtml(input.structure_class)}</td></tr>` : "",
     input.structure_orientation_deg !== null && input.structure_orientation_deg !== undefined ? `<tr><th>Orientation</th><td>${formatNullableNumber(input.structure_orientation_deg, 2, "deg")}</td></tr>` : "",
@@ -1690,20 +2755,21 @@ function renderSiteInputs(workflow) {
     input.building_width_m !== null && input.building_width_m !== undefined ? `<tr><th>Width</th><td>${formatNullableNumber(input.building_width_m, 2, "m")}</td></tr>` : "",
     input.building_length_m !== null && input.building_length_m !== undefined ? `<tr><th>Length</th><td>${formatNullableNumber(input.building_length_m, 2, "m")}</td></tr>` : "",
     input.roof_pitch_deg !== null && input.roof_pitch_deg !== undefined ? `<tr><th>Roof pitch</th><td>${formatNullableNumber(input.roof_pitch_deg, 2, "deg")}</td></tr>` : "",
-    input.average_height_m !== null && input.average_height_m !== undefined ? `<tr><th>Average height</th><td>${formatNullableNumber(input.average_height_m, 2, "m")}</td></tr>` : "",
+    input.average_roof_height_m !== null && input.average_roof_height_m !== undefined ? `<tr><th>Average roof height</th><td>${formatNullableNumber(input.average_roof_height_m, 2, "m")}</td></tr>` : "",
     input.base_rl_m !== null && input.base_rl_m !== undefined ? `<tr><th>Base RL</th><td>${formatNullableNumber(input.base_rl_m, 2, "m")}</td></tr>` : "",
   ].join("");
   siteInputSummary.innerHTML = `
     <div class="table-wrap">
       <table>
         <tbody>
-          <tr><th>Address</th><td>${escapeHtml(input.address || workflow.site?.display_name || "not supplied")}</td></tr>
+          <tr><th>Address / site label</th><td>${escapeHtml(input.address || input.site_label || workflow.site?.display_name || "not supplied")}</td></tr>
           <tr><th>Latitude</th><td id="resolved-site-latitude">${formatNullableNumber(workflow.site?.latitude, 6, "")}</td></tr>
           <tr><th>Longitude</th><td id="resolved-site-longitude">${formatNullableNumber(workflow.site?.longitude, 6, "")}</td></tr>
           <tr><th>Elevation</th><td>${Number(workflow.site.ground_elevation_m).toFixed(2)} m</td></tr>
           <tr><th>Building height</th><td>${Number(input.building_height_m).toFixed(2)} m</td></tr>
           ${structureRows}
-          <tr><th>Return period / importance level</th><td>${escapeHtml(input.importance_level || input.annual_exceedance_probability || "user input")}</td></tr>
+          <tr><th>AEP / ARI</th><td>${escapeHtml(input.annual_exceedance_probability || "not supplied")}</td></tr>
+          ${importanceMetadataRow}
         </tbody>
       </table>
     </div>
@@ -1718,6 +2784,13 @@ function renderWindInputs(workflow) {
     windInputsSummary.innerHTML = "<p class=\"note\">Wind inputs were not generated.</p>";
     return;
   }
+  const selectedAep = speed.annual_exceedance_probability
+    || workflow.input?.annual_exceedance_probability
+    || "not supplied";
+  const importanceMetadata = speed.importance_level || workflow.input?.importance_level;
+  const returnPeriodNote = importanceMetadata
+    ? `Selected AEP / ARI: ${selectedAep}; importance metadata: ${importanceMetadata} (does not select AEP / ARI)`
+    : `Selected AEP / ARI: ${selectedAep}`;
   windInputsSummary.innerHTML = `
     <div class="status-strip">
       <div>
@@ -1728,20 +2801,53 @@ function renderWindInputs(workflow) {
       <div>
         <span class="kicker">Return period</span>
         <strong>ARI ${Number(speed.ari_years)} years</strong>
-        <span class="muted">${escapeHtml(speed.importance_level || "user-selected AEP")}</span>
+        <span class="muted">${escapeHtml(returnPeriodNote)}</span>
       </div>
       <div>
         <span class="kicker">Confidence</span>
         ${badge(region.confidence, region.confidence)}
         <span class="muted">${escapeHtml(region.dataset_name || "dataset not configured")}</span>
       </div>
+      <div>
+        <span class="kicker">Md application</span>
+        <strong>${escapeHtml(effectiveWindDirectionMultiplierCaseLabel(workflow))}</strong>
+        <span class="muted">AS/NZS 1170.2 Clause 3.3 case</span>
+      </div>
     </div>
   `;
+}
+
+function windDirectionMultiplierCaseLabel(value) {
+  return {
+    main_structure: "Main structure",
+    cladding_or_immediate_support: "Cladding or immediate support",
+    circular_or_polygonal_chimney_tank_or_pole: "Circular/polygonal chimney, tank or pole",
+  }[value] || "Main structure";
+}
+
+function effectiveWindDirectionMultiplierCaseLabel(workflow) {
+  const sourceTable = String(workflow?.direction_multiplier_assessment?.source_table || "");
+  if (
+    workflow?.input?.structure_class === "monopole"
+    && /Clause 3\.3/i.test(sourceTable)
+  ) {
+    return `${windDirectionMultiplierCaseLabel(
+      "circular_or_polygonal_chimney_tank_or_pole",
+    )} (monopole)`;
+  }
+  return windDirectionMultiplierCaseLabel(workflow?.input?.wind_direction_multiplier_case);
 }
 
 function resetWorkflowSections() {
   currentWorkflow = null;
   currentWorkflowFingerprint = null;
+  rawDataEditorDirty = false;
+  setRawDataEditorAvailability(
+    false,
+    rawDataEditorSaving
+      ? "Saving Raw Data changes and recalculating the assessment..."
+      : "Assessment running; editable values will appear when it completes.",
+  );
   updateReportAvailability();
   if (terrainProfileFrame) {
     setIframeHtml(terrainProfileFrame, "<p>Run the assessment to display terrain profiles.</p>");
@@ -1754,13 +2860,24 @@ function resetWorkflowSections() {
   }
   if (workflowMapFrame) {
     clearIframeHtml(workflowMapFrame);
-    renderInitialMapFrame("Assessment running. The project map will replace this view.");
+    if (locationMode === "coordinates" && coordinateOverride) {
+      renderInitialMapFrame("Assessment running. The project map will replace this view.");
+    } else {
+      renderPendingMapFrame("Resolving the assessment address.");
+    }
   }
   if (dashboardRegion) dashboardRegion.textContent = "-";
   if (dashboardGoverningDirection) dashboardGoverningDirection.textContent = "-";
   if (dashboardGoverningVsitb) dashboardGoverningVsitb.textContent = "Calculating";
   if (vsitbTable) {
-    vsitbTable.innerHTML = "<tr><td colspan=\"7\">Waiting for directional variables.</td></tr>";
+    vsitbTable.innerHTML = "<tr><td colspan=\"6\">Waiting for directional variables.</td></tr>";
+  }
+  if (directionalEditRestrictions) {
+    directionalEditRestrictions.hidden = true;
+    directionalEditRestrictions.textContent = "";
+  }
+  if (vdesTable) {
+    vdesTable.innerHTML = "<tr><td colspan=\"6\">Waiting for design directions.</td></tr>";
   }
   if (rawProvenance) {
     rawProvenance.innerHTML = "<p class=\"note\">Waiting for calculation sources and warnings...</p>";
@@ -1788,15 +2905,14 @@ function renderVariableSection(variable, rows) {
   section.querySelectorAll(".workflow-card").forEach((card) => card.remove());
   const table = variable === "Md"
     ? mdWorkflowTable(rows)
-    : variable === "VR"
-      ? sourceWorkflowTable(rows)
+    : ["VR", "Mc"].includes(variable)
+      ? sourceWorkflowTable(rows, { allowOverride: variable === "VR" })
       : workflowTable(rows);
   section.insertAdjacentHTML("beforeend", `
     <article class="workflow-card">
       ${table}
     </article>
   `);
-  attachOverrideHandlers(section);
 }
 
 function workflowTable(rows) {
@@ -1807,9 +2923,8 @@ function workflowTable(rows) {
         <thead>
           <tr>
             <th>Direction</th>
-            <th>Calculated</th>
+            <th>Value</th>
             <th>Confidence</th>
-            <th>Override (optional)</th>
           </tr>
         </thead>
         <tbody>
@@ -1820,21 +2935,20 @@ function workflowTable(rows) {
   `;
 }
 
-function sourceWorkflowTable(rows) {
+function sourceWorkflowTable(rows, { allowOverride = true } = {}) {
   if (!rows.length) return "<p class=\"note\">No workflow results generated.</p>";
   return `
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
+            <th>Scope</th>
             <th>Value</th>
-            <th>Calculated</th>
             <th>Confidence</th>
-            <th>Override (optional)</th>
           </tr>
         </thead>
         <tbody>
-          ${rows.map((row) => variableRow(row)).join("")}
+          ${rows.map((row) => variableRow(row, { allowOverride })).join("")}
         </tbody>
       </table>
     </div>
@@ -1846,7 +2960,7 @@ function mdWorkflowTable(rows) {
   const byDirection = Object.fromEntries(rows.map((row) => [row.direction, row]));
   const highest = Math.max(
     ...rows
-      .map((row) => row.recommended_value)
+      .map((row) => row.final_value ?? row.recommended_value)
       .filter((value) => value !== null && value !== undefined)
       .map(Number),
   );
@@ -1872,21 +2986,25 @@ function mdWorkflowTable(rows) {
 }
 
 function mdStandardCell(row, highest) {
-  if (!row || row.recommended_value === null || row.recommended_value === undefined) {
+  if (!row || (row.final_value ?? row.recommended_value) === null || (row.final_value ?? row.recommended_value) === undefined) {
     return "<td>manual input required</td>";
   }
-  const value = Number(row.recommended_value);
+  const value = Number(row.final_value ?? row.recommended_value);
   const isGoverning = Number.isFinite(highest) && value === highest;
-  return `<td class="${isGoverning ? "governing-md-cell" : ""}">${value.toFixed(2)}${isGoverning ? "<span class=\"muted\">governing</span>" : ""}</td>`;
+  return `
+    <td class="${isGoverning ? "governing-md-cell" : ""}">
+      ${editableAssessmentValueCell(row, { compact: true })}
+      ${isGoverning ? "<span class=\"muted\">governing</span>" : ""}
+    </td>
+  `;
 }
 
-function variableRow(row) {
+function variableRow(row, { allowOverride = true } = {}) {
   return `
     <tr>
       <td>${escapeHtml(row.direction || "all")}</td>
-      <td>${recommendedCell(row)}</td>
+      <td>${allowOverride ? editableAssessmentValueCell(row) : recommendedCell(row)}</td>
       <td>${badge(row.confidence, row.confidence)}</td>
-      <td>${inlineFinalValueCell(row)}</td>
     </tr>
   `;
 }
@@ -1903,28 +3021,87 @@ function warningListHtml(warnings) {
     : "";
 }
 
-function renderVsitbTable(rows) {
+function renderVsitbTable(rows, variableGroups = {}) {
   if (!rows.length) {
-    vsitbTable.innerHTML = "<tr><td colspan=\"7\">No Vsit,b rows generated.</td></tr>";
+    if (directionalEditRestrictions) {
+      directionalEditRestrictions.hidden = true;
+      directionalEditRestrictions.textContent = "";
+    }
+    vsitbTable.innerHTML = "<tr><td colspan=\"6\">No Vsit,b rows generated.</td></tr>";
     return;
   }
+  const restrictions = [...new Set(
+    ["Md", "Mzcat", "Ms"]
+      .map((variable) => rawDataEditRestriction(variable))
+      .filter(Boolean),
+  )];
+  if (directionalEditRestrictions) {
+    directionalEditRestrictions.hidden = !restrictions.length;
+    directionalEditRestrictions.textContent = restrictions.join(" ");
+  }
+  const assessmentFor = (variable, row, fallbackValue, unit = "") => (
+    (variableGroups[variable] || []).find((item) => item.direction === row.direction)
+    || {
+      variable,
+      direction: row.direction,
+      unit,
+      calculated_value: fallbackValue,
+      final_value: fallbackValue,
+    }
+  );
   vsitbTable.innerHTML = rows.map((row) => `
     <tr class="${row.is_governing ? "governing-row" : ""}">
       <td>${row.direction}${row.is_governing ? "<span class=\"muted\">governing direction</span>" : ""}</td>
-      <td>${formatWorkflowValue(row.vr, "m/s")}</td>
-      <td>${formatWorkflowValue(row.md, "")}</td>
-      <td>${formatWorkflowValue(row.mzcat, "")}</td>
-      <td>${formatWorkflowValue(row.ms, "")}</td>
-      <td>${formatWorkflowValue(row.mt, "")}</td>
-      <td>${row.final_vsitb === null || row.final_vsitb === undefined ? "blocked" : `${row.final_vsitb.toFixed(3)} m/s${row.is_governing ? "<span class=\"muted\">governing Vsit,b</span>" : ""}`}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Md", row, row.md), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Mzcat", row, row.mzcat), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Ms", row, row.ms), { compact: true })}</td>
+      <td>${editableAssessmentValueCell(assessmentFor("Mt", row, row.mt), { compact: true })}</td>
+      <td>
+        ${row.final_vsitb === null || row.final_vsitb === undefined
+          ? "blocked"
+          : editableAssessmentValueCell(
+            assessmentFor("Vsitb", row, row.recommended_vsitb ?? row.final_vsitb, "m/s"),
+            { compact: true },
+          )}
+        ${row.is_governing ? "<span class=\"muted\">governing Vsit,b</span>" : ""}
+      </td>
     </tr>
   `).join("");
 }
 
-function renderRawProvenance(variables) {
+function renderVdesTable(rows) {
+  if (!vdesTable) return;
+  if (!rows.length) {
+    vdesTable.innerHTML = (
+      "<tr><td colspan=\"6\">Vdes,theta requires the front orientation and all eight "
+      + "directional Vsit,b values.</td></tr>"
+    );
+    return;
+  }
+  vdesTable.innerHTML = rows.map((row) => `
+    <tr class="${row.is_governing ? "governing-row" : ""}">
+      <td>${escapeHtml(row.face)}${row.is_governing ? "<span class=\"muted\">governing face</span>" : ""}</td>
+      <td>${formatOrientation(row.theta_deg)} deg</td>
+      <td>${formatOrientation(row.beta_deg)} deg</td>
+      <td>${formatOrientation(row.sector_start_beta_deg)} to ${formatOrientation(row.sector_end_beta_deg)} deg</td>
+      <td>${Number(row.raw_vdes_theta_mps).toFixed(3)} m/s</td>
+      <td>${Number(row.vdes_theta_mps).toFixed(3)} m/s${row.minimum_uls_applied ? "<span class=\"muted\">30 m/s ULS minimum applied</span>" : ""}</td>
+    </tr>
+  `).join("");
+}
+
+function renderRawProvenance(
+  variables,
+  workflowWarnings = [],
+  mixedTerrainAssessments = [],
+  mixedTerrainProfiles = [],
+) {
   if (!rawProvenance) return;
   const uniqueWarnings = [...new Set(
-    variables.flatMap((row) => visibleWarnings(row.warnings || [])),
+    [
+      ...visibleWarnings(workflowWarnings),
+      ...variables.flatMap((row) => visibleWarnings(row.warnings || [])),
+    ],
   )];
   const byVariable = variableOrder
     .filter((variable) => variable !== "Vsitb")
@@ -1953,73 +3130,515 @@ function renderRawProvenance(variables) {
         </tbody>
       </table>
     </div>
+    ${renderMixedTerrainRawData(mixedTerrainAssessments, mixedTerrainProfiles)}
     ${warningListHtml(uniqueWarnings)}
   `;
 }
 
-function inlineFinalValueCell(row) {
+function renderMixedTerrainRawData(assessments, profiles = []) {
+  if (!assessments?.length) return "";
+  const weightedAssessments = assessments.filter(
+    (assessment) => assessment.mode !== "a0_mandatory",
+  );
+  const a0Assessments = assessments.filter(
+    (assessment) => assessment.mode === "a0_mandatory",
+  );
+  return [
+    renderWeightedMixedTerrainRawData(weightedAssessments),
+    renderA0TerrainEvidenceRawData(a0Assessments, profiles),
+  ].join("");
+}
+
+function renderWeightedMixedTerrainRawData(assessments) {
+  if (!assessments.length) return "";
+  return `
+    <h3>Clause 4.2.3 mixed-terrain calculations</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Direction</th><th>z</th><th>xi</th><th>xa</th>
+            <th>Window</th><th>Weighted Mz,cat</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${assessments.map((assessment) => `
+            <tr>
+              <th>${escapeHtml(assessment.direction)}</th>
+              <td>${Number(assessment.assessment_height_z_m).toFixed(3)} m</td>
+              <td>${Number(assessment.lag_distance_xi_m).toFixed(3)} m</td>
+              <td>${Number(assessment.averaging_distance_xa_m).toFixed(3)} m</td>
+              <td>${Number(assessment.window_start_distance_m).toFixed(3)}-${Number(assessment.window_end_distance_m).toFixed(3)} m</td>
+              <td>${Number(assessment.weighted_mzcat).toFixed(6)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+    ${assessments.map((assessment) => `
+      <details class="diagnostic-details">
+        <summary>${escapeHtml(assessment.direction)} segment contributions</summary>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Input interval</th><th>Included interval</th><th>Length</th>
+                <th>Weight</th><th>TC</th><th>Table Mz,cat</th><th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${(assessment.contributions || []).map((item) => `
+                <tr>
+                  <td>${Number(item.start_distance_m).toFixed(3)}-${Number(item.end_distance_m).toFixed(3)} m</td>
+                  <td>${Number(item.clipped_start_distance_m).toFixed(3)}-${Number(item.clipped_end_distance_m).toFixed(3)} m</td>
+                  <td>${Number(item.included_length_m).toFixed(3)} m</td>
+                  <td>${(100 * Number(item.weight_fraction)).toFixed(3)}%</td>
+                  <td>${escapeHtml(item.terrain_category)}</td>
+                  <td>${Number(item.table_mzcat).toFixed(6)}</td>
+                  <td>${escapeHtml(item.source_reference)}</td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `).join("")}
+  `;
+}
+
+function renderA0TerrainEvidenceRawData(assessments, profiles) {
+  if (!assessments.length) return "";
+  const profileByDirection = new Map(
+    profiles.map((profile) => [profile.direction, profile]),
+  );
+  return `
+    <h3>Region A0 mandatory Mz,cat</h3>
+    <p class="note">
+      Supplied terrain intervals are retained as signed evidence only. Region A0 uses the
+      mandatory terrain-independent Table 4.1 value; Clause 4.2.3 weighting is not applied.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Direction</th><th>Workflow reference height</th><th>Mandatory Mz,cat</th><th>Profile source</th></tr>
+        </thead>
+        <tbody>
+          ${assessments.map((assessment) => `
+            <tr>
+              <th>${escapeHtml(assessment.direction)}</th>
+              <td>${Number(assessment.assessment_height_z_m).toFixed(3)} m</td>
+              <td>${Number(assessment.weighted_mzcat).toFixed(6)}</td>
+              <td>${escapeHtml(assessment.profile_source_reference || "See signed workflow input")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+    ${assessments.map((assessment) => {
+    const profile = profileByDirection.get(assessment.direction);
+    const segments = profile?.segments || [];
+    if (!segments.length) return "";
+    return `
+        <details class="diagnostic-details">
+          <summary>${escapeHtml(assessment.direction)} signed evidence intervals</summary>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Input interval</th><th>TC</th><th>Source</th></tr></thead>
+              <tbody>
+                ${segments.map((item) => `
+                  <tr>
+                    <td>${Number(item.start_distance_m).toFixed(3)}-${Number(item.end_distance_m).toFixed(3)} m</td>
+                    <td>${escapeHtml(item.terrain_category)}</td>
+                    <td>${escapeHtml(item.source_reference)}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      `;
+  }).join("")}
+  `;
+}
+
+function editableAssessmentValueCell(row, { compact = false } = {}) {
   const key = overrideKey(row.variable, row.direction);
   const existing = overrideForKey(key);
-  const finalValue = existing?.override_value ?? row.override_value ?? "";
-  const placeholder = row.final_value === null || row.final_value === undefined
-    ? "override value"
-    : `calculated ${formatWorkflowValue(row.final_value, row.unit)}`;
-  const reason = existing?.reason || row.override_reason || "";
+  const calculatedValue = finiteNumberOrNull(row.calculated_value ?? row.recommended_value);
+  const finalValue = finiteNumberOrNull(
+    existing?.override_value
+      ?? row.final_value
+      ?? row.override_value
+      ?? calculatedValue,
+  );
+  const restriction = rawDataEditRestriction(row.variable);
+  const maximum = workflowOverrideMaximums[row.variable];
+  const maximumAttribute = maximum === undefined ? "" : ` max="${maximum}"`;
+  const calculatedAttribute = calculatedValue === null ? "" : String(calculatedValue);
+  const finalAttribute = finalValue === null ? "" : String(finalValue);
+  const calculatedDisplayValue = rawDataEditableDisplayValue(calculatedValue);
+  const finalDisplayValue = rawDataEditableDisplayValue(finalValue);
+  const directionLabel = row.direction || "all directions";
+  const unit = row.unit || "";
+  const title = restriction || (
+    calculatedValue === null
+      ? "No calculated value is available; enter a reviewed value."
+      : `Calculated value: ${calculatedAttribute}${unit ? ` ${unit}` : ""}`
+  );
   return `
-    <div class="inline-override" data-key="${key}">
-      <input data-override-field="override_value" data-key="${key}" type="number" step="0.001" value="${finalValue}" placeholder="${escapeHtml(placeholder)}" aria-label="Optional ${escapeHtml(row.variable)} override for ${escapeHtml(row.direction || "all directions")}" />
-      <input data-override-field="reason" data-key="${key}" value="${escapeHtml(reason)}" placeholder="reason if edited" aria-label="Override reason" />
-      <button type="button" data-override-action="apply" data-key="${key}">Save</button>
-      ${row.is_overridden || existing ? `<button type="button" data-override-action="clear" data-key="${key}">Reset</button>` : ""}
-      ${row.is_overridden ? `<span class="badge badge-warn">override</span>` : ""}
-      <span class="muted">calculated ${formatWorkflowValue(row.calculated_value, row.unit)}</span>
+    <div class="inline-assessment-value${compact ? " is-compact" : ""}" data-key="${escapeHtml(key)}">
+      <input
+        data-raw-value
+        data-key="${escapeHtml(key)}"
+        data-variable="${escapeHtml(row.variable)}"
+        data-direction="${escapeHtml(row.direction || "")}"
+        data-calculated-value="${calculatedAttribute}"
+        data-initial-value="${finalAttribute}"
+        type="number"
+        min="0.001"
+        ${maximumAttribute}
+        step="any"
+        value="${finalDisplayValue}"
+        placeholder="${calculatedValue === null ? "enter value" : calculatedDisplayValue}"
+        aria-label="${escapeHtml(row.variable)} value for ${escapeHtml(directionLabel)}${unit ? ` (${escapeHtml(unit)})` : ""}"
+        title="${escapeHtml(title)}"
+        ${restriction ? "disabled" : ""}
+      />
+      ${unit ? `<span class="inline-value-unit">${escapeHtml(unit)}</span>` : ""}
+      ${row.is_overridden || existing ? `<span class="badge badge-warn" title="${escapeHtml(existing?.reason || row.override_reason || "Saved edited value")}">edited</span>` : ""}
+      ${restriction ? `<span class="inline-value-lock" title="${escapeHtml(restriction)}">locked</span>` : ""}
     </div>
   `;
 }
 
 function recommendedCell(row) {
   const value = formatWorkflowValue(row.recommended_value, row.unit);
-  return row.recommended_label
-    ? `${escapeHtml(row.recommended_label)}<span class="muted">${value}</span>`
-    : value;
-}
-
-function attachOverrideHandlers(scope) {
-  scope.querySelectorAll("button[data-override-action]").forEach((button) => {
-    button.addEventListener("click", () => updateOverride(button));
-  });
-}
-
-async function updateOverride(button) {
-  const key = button.dataset.key;
-  const [variable, directionValue] = key.split(":");
-  const direction = directionValue || null;
-  if (button.dataset.overrideAction === "clear") {
-    workflowOverrides = workflowOverrides.filter((item) =>
-      !(item.variable === variable && (item.direction || null) === direction)
-    );
-    await runWorkflow();
-    return;
-  }
-  const panel = button.closest(".inline-override") || button.closest(".override-panel");
-  const valueInput = panel.querySelector("[data-override-field='override_value']");
-  const reasonInput = panel.querySelector("[data-override-field='reason']");
-  const overrideValue = valueInput.value === "" ? null : Number(valueInput.value);
-  const reason = reasonInput.value.trim() || "Inline final value edited in Site Wind Assessment.";
-  if (overrideValue === null || !Number.isFinite(overrideValue) || overrideValue <= 0) {
-    workflowSummary.textContent = "Override value must be a number greater than zero.";
-    return;
-  }
-  workflowOverrides = workflowOverrides.filter((item) =>
-    !(item.variable === variable && (item.direction || null) === direction)
+  if (!row.recommended_label) return value;
+  const label = String(row.recommended_label);
+  const recommendedValue = Number(row.recommended_value);
+  const labelNumbers = Array.from(
+    label.matchAll(/(^|[^A-Za-z0-9_])([+-]?(?:\d+(?:\.\d*)?|\.\d+))/g),
+    (match) => match[2],
   );
-  workflowOverrides.push({
-    variable,
-    direction,
-    override_value: overrideValue,
-    reason,
+  const labelAlreadyContainsValue = Number.isFinite(recommendedValue) && labelNumbers.some((token) => {
+    const candidate = Number(token);
+    return Number.isFinite(candidate) && candidate.toFixed(3) === recommendedValue.toFixed(3);
   });
-  await runWorkflow();
+  return labelAlreadyContainsValue
+    ? escapeHtml(label)
+    : `${escapeHtml(label)}<span class="muted">${value}</span>`;
+}
+
+function finiteNumberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function rawDataEditableDisplayValue(value) {
+  const number = finiteNumberOrNull(value);
+  if (number === null) return "";
+  return number.toFixed(rawDataDisplayDecimals).replace(/\.?0+$/, "");
+}
+
+function rawDataEditRestriction(variable) {
+  if (variable === "Md") return mandatoryMdOverrideRestriction();
+  if (variable === "Ms") return mandatoryMsOverrideRestriction();
+  if (variable === "Mzcat") return mandatoryMzcatOverrideRestriction();
+  return null;
+}
+
+function removeNowRestrictedWorkflowOverrides() {
+  const retained = workflowOverrides.filter(
+    (item) => !rawDataEditRestriction(item.variable),
+  );
+  const removedCount = workflowOverrides.length - retained.length;
+  if (removedCount) workflowOverrides = retained;
+  return removedCount;
+}
+
+function rawDataValueInputs() {
+  return Array.from(rawDataPanel?.querySelectorAll("input[data-raw-value]") || []);
+}
+
+function rawDataValuesEqual(first, second) {
+  if (first === null && second === null) return true;
+  if (first === null || second === null) return false;
+  return (
+    Object.is(first, second)
+    || Math.abs(first - second)
+      <= rawDataDisplayTolerance
+        + Number.EPSILON * Math.max(1, Math.abs(first), Math.abs(second))
+  );
+}
+
+function rawDataInputChanged(input) {
+  return !rawDataValuesEqual(
+    finiteNumberOrNull(input.value),
+    finiteNumberOrNull(input.dataset.initialValue),
+  );
+}
+
+function rawDataCalculatedResetAvailable() {
+  return rawDataValueInputs().some((input) => {
+    if (input.disabled) return false;
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    return calculated !== null && !rawDataValuesEqual(finiteNumberOrNull(input.value), calculated);
+  });
+}
+
+function setRawDataEditorAvailability(available, status) {
+  rawDataEditorDirty = false;
+  if (rawDataSave) rawDataSave.disabled = true;
+  if (rawDataDiscard) rawDataDiscard.disabled = true;
+  if (rawDataUseCalculated) {
+    rawDataUseCalculated.disabled = (
+      !available
+      || rawDataEditorSaving
+      || !rawDataCalculatedResetAvailable()
+    );
+  }
+  if (rawDataEditReason) {
+    rawDataEditReason.disabled = !available || rawDataEditorSaving;
+    if (available && !rawDataEditorSaving) rawDataEditReason.value = "";
+  }
+  if (rawDataEditStatus) rawDataEditStatus.textContent = status;
+  updateReportAvailability();
+}
+
+function refreshRawDataEditorState(status = null) {
+  if (rawDataEditorSaving) return;
+  const inputs = rawDataValueInputs();
+  rawDataEditorDirty = inputs.some(rawDataInputChanged);
+  const canSave = rawDataEditorDirty && completedAssessmentMatchesInputs();
+  if (rawDataSave) rawDataSave.disabled = !canSave;
+  if (rawDataDiscard) rawDataDiscard.disabled = !rawDataEditorDirty;
+  if (rawDataUseCalculated) {
+    rawDataUseCalculated.disabled = !currentWorkflow || !rawDataCalculatedResetAvailable();
+  }
+  if (rawDataEditReason) rawDataEditReason.disabled = !currentWorkflow;
+  if (rawDataEditStatus) {
+    const changedCount = inputs.filter(rawDataInputChanged).length;
+    rawDataEditStatus.textContent = status || (
+      rawDataEditorDirty
+        ? `${changedCount} unsaved value${changedCount === 1 ? "" : "s"}. Reports are paused until the changes are saved or discarded.`
+        : workflowOverrides.length
+          ? `${workflowOverrides.length} saved edited value${workflowOverrides.length === 1 ? "" : "s"}.`
+          : "All editable values currently match their calculated values."
+    );
+  }
+  updateReportAvailability();
+}
+
+function stageCalculatedRawDataValues() {
+  if (rawDataEditorSaving || !currentWorkflow) return;
+  rawDataValueInputs().forEach((input) => {
+    if (input.disabled) return;
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    if (calculated !== null) input.value = rawDataEditableDisplayValue(calculated);
+  });
+  refreshRawDataEditorState(
+    "Calculated values are ready to save. Save all changes to remove saved edits, or undo to keep them.",
+  );
+}
+
+function discardRawDataEdits() {
+  if (rawDataEditorSaving) return;
+  rawDataValueInputs().forEach((input) => {
+    input.value = rawDataEditableDisplayValue(input.dataset.initialValue);
+  });
+  if (rawDataEditReason) rawDataEditReason.value = "";
+  refreshRawDataEditorState("Unsaved Raw Data edits were undone.");
+}
+
+function captureRawDataDraft() {
+  return {
+    reason: rawDataEditReason?.value || "",
+    values: rawDataValueInputs().map((input) => ({
+      key: input.dataset.key,
+      value: input.value,
+    })),
+  };
+}
+
+function restoreRawDataDraft(draft, status) {
+  const valuesByKey = new Map((draft?.values || []).map((item) => [item.key, item.value]));
+  rawDataValueInputs().forEach((input) => {
+    if (valuesByKey.has(input.dataset.key)) input.value = valuesByKey.get(input.dataset.key);
+  });
+  if (rawDataEditReason) rawDataEditReason.value = draft?.reason || "";
+  refreshRawDataEditorState(status);
+}
+
+function validateAndBuildRawDataOverrides(inputs, reason) {
+  if (reason.length > workflowOverrideReasonMaximum) {
+    throw new Error(`Change reason must be ${workflowOverrideReasonMaximum} characters or fewer.`);
+  }
+  const candidateByKey = new Map(
+    workflowOverrides.map((item) => [overrideKey(item.variable, item.direction), { ...item }]),
+  );
+  for (const input of inputs) {
+    if (input.disabled || !rawDataInputChanged(input)) continue;
+    const variable = input.dataset.variable;
+    const direction = input.dataset.direction || null;
+    const key = overrideKey(variable, direction);
+    const value = finiteNumberOrNull(input.value);
+    const calculated = finiteNumberOrNull(input.dataset.calculatedValue);
+    if (value === null || value <= 0) {
+      throw new Error(`${variable} ${direction || "value"} must be a number greater than zero.`);
+    }
+    const maximum = workflowOverrideMaximums[variable];
+    if (maximum !== undefined && value > maximum) {
+      throw new Error(`${variable} override must be no greater than ${maximum}.`);
+    }
+    const restriction = rawDataEditRestriction(variable);
+    if (restriction) throw new Error(restriction);
+    if (calculated !== null && rawDataValuesEqual(value, calculated)) {
+      candidateByKey.delete(key);
+      continue;
+    }
+    candidateByKey.set(key, {
+      variable,
+      direction,
+      override_value: value,
+      reason: reason || (
+        "Raw Data value edited using global Save; no user change reason was provided."
+      ),
+    });
+  }
+  return [...candidateByKey.values()];
+}
+
+async function saveRawDataEdits() {
+  if (rawDataEditorSaving || !rawDataEditorDirty) return false;
+  if (!completedAssessmentMatchesInputs()) {
+    const message = "Assessment inputs changed. Run the assessment again before saving Raw Data edits.";
+    if (rawDataEditStatus) rawDataEditStatus.textContent = message;
+    workflowSummary.textContent = message;
+    return false;
+  }
+  const inputs = rawDataValueInputs();
+  const reason = rawDataEditReason?.value.trim() || "";
+  let candidateOverrides;
+  try {
+    candidateOverrides = validateAndBuildRawDataOverrides(inputs, reason);
+  } catch (error) {
+    const message = error.message || String(error);
+    if (rawDataEditStatus) rawDataEditStatus.textContent = message;
+    workflowSummary.textContent = message;
+    return false;
+  }
+  const previousOverrides = workflowOverrides.map((item) => ({ ...item }));
+  const previousState = captureCompletedWorkflowState();
+  const draft = captureRawDataDraft();
+  rawDataEditorSaving = true;
+  setRawDataEditorAvailability(false, "Saving all Raw Data changes...");
+  const outcome = await rerunAfterRawDataChange(
+    candidateOverrides,
+    previousOverrides,
+    previousState,
+  );
+  rawDataEditorSaving = false;
+  if (outcome === "saved") {
+    workflowOverrides = candidateOverrides;
+    if (Array.isArray(currentWorkflow?.variables)) renderWorkflow(currentWorkflow);
+    setRawDataEditorAvailability(
+      true,
+      `${candidateOverrides.length} edited value${candidateOverrides.length === 1 ? "" : "s"} saved and the assessment recalculated.`,
+    );
+    return true;
+  }
+  if (outcome === "restored") {
+    restoreRawDataDraft(
+      draft,
+      "Save failed. The previous completed assessment was restored; your unsaved values are still available to correct or discard.",
+    );
+  }
+  return false;
+}
+
+async function rerunAfterRawDataChange(candidateOverrides, previousOverrides, previousState) {
+  const runIdBeforeAttempt = workflowRunId;
+  const succeeded = await runWorkflow({ workflowOverrides: candidateOverrides });
+  if (succeeded) return "saved";
+  if (workflowRunId > runIdBeforeAttempt + 1) {
+    if (!currentWorkflow && !activeWorkflowController) {
+      workflowOverrides = previousOverrides;
+      restoreCompletedWorkflowState(
+        previousState,
+        "Raw Data save was cancelled because assessment inputs changed. "
+          + "The previous completed assessment was restored.",
+      );
+      return "restored";
+    }
+    return "superseded";
+  }
+  const failureMessage = workflowSummary.textContent;
+  workflowOverrides = previousOverrides;
+  restoreCompletedWorkflowState(
+    previousState,
+    `Raw Data changes were not saved. The previous completed assessment was restored. ${failureMessage}`,
+  );
+  return "restored";
+}
+
+function captureCompletedWorkflowState() {
+  return {
+    workflow: currentWorkflow,
+    fingerprint: currentWorkflowFingerprint,
+    payload: activeWorkflowPayload,
+    mapHtml: workflowMapFrame?.srcdoc || "",
+    terrainProfileHtml: terrainProfileFrame?.srcdoc || "",
+  };
+}
+
+function restoreCompletedWorkflowState(state, message) {
+  currentWorkflow = state.workflow;
+  currentWorkflowFingerprint = state.fingerprint;
+  activeWorkflowPayload = state.payload;
+  if (currentWorkflow) renderWorkflow(currentWorkflow);
+  if (workflowMapFrame && state.mapHtml) setIframeHtml(workflowMapFrame, state.mapHtml);
+  if (terrainProfileFrame && state.terrainProfileHtml) {
+    setIframeHtml(terrainProfileFrame, state.terrainProfileHtml);
+  }
+  setWorkflowProgress(100, "Previous assessment restored", "complete");
+  updateReportAvailability();
+  workflowSummary.textContent = message;
+}
+
+function mandatoryMdOverrideRestriction() {
+  const payload = workflowPayload();
+  const designCase = payload.wind_direction_multiplier_case;
+  if (
+    designCase === "circular_or_polygonal_chimney_tank_or_pole"
+    || payload.structure_class === "monopole"
+  ) {
+    return "Md cannot be overridden because the selected Clause 3.3 design case requires Md = 1.0.";
+  }
+  const windRegion = currentWorkflow?.direction_multiplier_assessment?.wind_region
+    || currentWorkflow?.wind_region_assessment?.region_subclassification
+    || currentWorkflow?.wind_region_assessment?.wind_region;
+  if (designCase === "cladding_or_immediate_support" && ["B2", "C", "D"].includes(windRegion)) {
+    return `Md cannot be overridden because Clause 3.3 requires Md = 1.0 for cladding and its immediate supporting structure in wind region ${windRegion}.`;
+  }
+  return null;
+}
+
+function mandatoryMsOverrideRestriction() {
+  const payload = workflowPayload();
+  const referenceHeight = Number(payload.average_roof_height_m ?? payload.building_height_m);
+  if (referenceHeight > 25) {
+    return "Ms cannot be overridden because Clause 4.3.1 requires Ms = 1.0 when average roof height h exceeds 25 m.";
+  }
+  return null;
+}
+
+function mandatoryMzcatOverrideRestriction() {
+  const windRegion = currentWorkflow?.wind_region_assessment?.wind_region;
+  if (windRegion === "A0") {
+    return "Mz,cat cannot be overridden because the Region A0 Table 4.1 value is terrain-independent and mandatory.";
+  }
+  return null;
 }
 
 function overrideForKey(key) {
@@ -2059,7 +3678,6 @@ function badge(status, text) {
     blocked: "badge-fail",
     draft: "badge-neutral",
     reviewed: "badge-warn",
-    final: "badge-pass",
   };
   return `<span class="badge ${classes[status] || "badge-neutral"}">${escapeHtml(text)}</span>`;
 }

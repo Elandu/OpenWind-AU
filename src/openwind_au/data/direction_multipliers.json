@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "source": {
     "title": "Editable direction multiplier lookup table",
     "standard": "AS/NZS 1170.2:2021",
@@ -6,7 +7,9 @@
     "table": "Table 3.2(A) - Wind direction multiplier (Md) - Australia",
     "standard_reference": "AS/NZS 1170.2:2021 Section 3 Table 3.2(A)",
     "status": "review data; not a substitute for the Standard",
-    "review_status": "verified_against_standard",
+    "review_status": "pending_independent_review",
+    "reviewed_by": null,
+    "reviewed_on": null,
     "review_note": "Values manually checked against licensed standard. User must hold appropriate rights to verify source standard."
   },
   "tables": {
@@ -20,5 +23,6 @@
     "B2": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90},
     "C": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90},
     "D": {"N": 0.90, "NE": 0.90, "E": 0.90, "SE": 0.90, "S": 0.90, "SW": 0.90, "W": 0.90, "NW": 0.90}
-  }
+  },
+  "values_sha256": "6e4e362fee71aaf4a53476653807c2bc807498c5352b5234bf95079fa6215666"
 }

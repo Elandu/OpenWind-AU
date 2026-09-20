@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openwind_au.dem import DEMProvider
 from openwind_au.models import SiteAnalysisRequest
+from openwind_au.report_lineage import CALCULATION_BASIS_URL
 from openwind_au.validation import (
     DEFAULT_VALIDATION_CASES,
     ValidationCase,
@@ -74,7 +75,7 @@ def test_validation_runner_executes_cases_and_renders_reports() -> None:
     assert data["results"][0]["status"] == "pass"
     assert "not proof of AS/NZS 1170.2 compliance" in data["disclaimer"]
     assert "Validation Report" in html
-    assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
+    assert CALCULATION_BASIS_URL in html
     assert "pass" in html
     assert "Warning" in html
     assert "Fail" in html

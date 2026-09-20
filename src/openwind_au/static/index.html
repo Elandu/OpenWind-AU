@@ -176,7 +176,7 @@
               JSON review import
               <input id="obstruction-json" type="file" accept=".json,application/json" />
             </label>
-            <button id="obstruction-export" type="button">Export Reviewed JSON</button>
+            <button id="obstruction-export" type="button" disabled>Export Reviewed JSON</button>
             <label>
               Filter
               <select id="obstruction-filter">
@@ -268,8 +268,8 @@
         <details>
           <summary>Terrain category sectors and evidence</summary>
           <p class="disclaimer">
-            Evidence support only. OpenWind-AU does not assign a final AS/NZS 1170.2 terrain
-            category and does not calculate final Mz,cat design values.
+            Evidence support only. This aggregate evidence panel does not assign a final AS/NZS
+            1170.2 terrain category or by itself select the workflow Mz,cat value.
           </p>
           <iframe id="terrain-category-frame" class="map-iframe" title="Terrain category evidence map" sandbox="allow-scripts"></iframe>
           <div class="table-wrap">
@@ -325,7 +325,7 @@
               </tbody>
             </table>
           </div>
-          <button id="terrain-report" type="button">Open Reviewed Mz,cat Report</button>
+          <button id="terrain-report" type="button" disabled>Open Reviewed Mz,cat Report</button>
         </details>
       </section>
 
@@ -338,6 +338,6 @@
 
     </main>
 
-    <script src="/static/app.js?v=20260706-map-preview-5"></script>
+    <script src="/static/app.js?v=20260729-tc35-1"></script>
   </body>
 </html>

@@ -29,7 +29,11 @@ def run_site_analysis(
         radius_m=request.radius_m,
         sample_interval_m=request.sample_interval_m,
     )
-    features = analyse_topography(profiles, location.ground_elevation_m)
+    features = analyse_topography(
+        profiles,
+        location.ground_elevation_m,
+        request.reference_height_m,
+    )
     dem_source = dem_provider_label(dem_provider)
     return SiteAnalysisResult(
         input=request,
@@ -42,7 +46,7 @@ def run_site_analysis(
             "local survey levels.",
             "Topographic screening is rule-based and conservative.",
             "Feature metrics are geometric indicators for preliminary engineering review only.",
-            "Building height is recorded for context and future wind workflow integration.",
+            "The supplied reference height is used in preliminary topographic screening.",
         ],
         limitations=[
             "This terrain endpoint does not calculate final terrain category, certified shielding "
@@ -61,7 +65,7 @@ def resolve_site_location(request: SiteAnalysisRequest, dem_provider: DEMProvide
     if request.latitude is not None and request.longitude is not None:
         latitude = request.latitude
         longitude = request.longitude
-        display_name = request.address
+        display_name = request.site_label
         source = "User supplied coordinates"
     else:
         assert request.address is not None
@@ -84,7 +88,8 @@ def resolve_site_location(request: SiteAnalysisRequest, dem_provider: DEMProvide
 def detect_topographic_features(
     profiles: list[TerrainProfile],
     site_elevation_m: float,
+    average_roof_height_m: float,
 ) -> list[TopographicFeature]:
     """Backward-compatible wrapper for rule-based topographic screening."""
 
-    return analyse_topography(profiles, site_elevation_m)
+    return analyse_topography(profiles, site_elevation_m, average_roof_height_m)

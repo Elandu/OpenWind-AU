@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import openwind_au.api as api_module
 import openwind_au.validation as validation_module
 from openwind_au.dem import DEMProvider
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
+    MS_DATA_FILE,
+    MZCAT_DATA_FILE,
+    VERIFIED_LOOKUP_REVIEW_STATUS,
+    VR_DATA_FILE,
+    load_packaged_lookup_data,
+)
 
 
 class FlatDEM(DEMProvider):
@@ -19,7 +30,20 @@ class FlatDEM(DEMProvider):
         return 75.0
 
 
+def reviewed_lookup(filename: str) -> dict:
+    data = load_packaged_lookup_data(filename)
+    data["source"].update(
+        {
+            "review_status": VERIFIED_LOOKUP_REVIEW_STATUS,
+            "reviewed_by": "Independent Test Engineer",
+            "reviewed_on": "2026-07-12",
+        }
+    )
+    return data
+
+
 def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "test-result-signing-key-at-least-32-bytes")
     production_regions = ["A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D"]
     monkeypatch.setattr(
         api_module,
@@ -31,17 +55,10 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
             "available_region_names": production_regions,
         },
     )
-    monkeypatch.setattr(
-        api_module,
-        "load_md_tables",
-        lambda: {
-            "source": {"review_status": api_module.VERIFIED_LOOKUP_REVIEW_STATUS},
-            "tables": {
-                region: {direction: 1.0 for direction in api_module.DIRECTIONS}
-                for region in production_regions
-            },
-        },
-    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: reviewed_lookup(MD_DATA_FILE))
+    monkeypatch.setattr(api_module, "load_mzcat_table", lambda: reviewed_lookup(MZCAT_DATA_FILE))
+    monkeypatch.setattr(api_module, "load_ms_table", lambda: reviewed_lookup(MS_DATA_FILE))
+    monkeypatch.setattr(api_module, "load_vr_tables", lambda: reviewed_lookup(VR_DATA_FILE))
     client = TestClient(api_module.create_app())
 
     live = client.get("/health/live")
@@ -52,6 +69,12 @@ def test_health_distinguishes_liveness_from_readiness(monkeypatch) -> None:
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
     assert all(check["ready"] for check in ready.json()["checks"].values())
+    assert ready.json()["checks"]["terrain_height_multiplier_table"]["reviewed"] is True
+    assert ready.json()["checks"]["shielding_multiplier_table"]["reviewed"] is True
+    assert len(ready.json()["checks"]["terrain_height_multiplier_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["shielding_multiplier_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["regional_wind_speed_table"]["values_sha256"]) == 64
+    assert len(ready.json()["checks"]["direction_multiplier_table"]["values_sha256"]) == 64
 
 
 def test_health_reports_missing_production_inputs(monkeypatch) -> None:
@@ -71,10 +94,26 @@ def test_health_reports_missing_production_inputs(monkeypatch) -> None:
     assert response.status_code == 503
     assert response.json()["status"] == "not_ready"
     assert response.json()["checks"]["wind_region_dataset"]["ready"] is False
+    assert response.json()["checks"]["terrain_height_multiplier_table"]["ready"] is False
+    assert response.json()["checks"]["shielding_multiplier_table"]["ready"] is False
     assert "dataset_path" not in response.text
 
 
-def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
+def test_health_distinguishes_missing_and_invalid_result_signing_keys(monkeypatch) -> None:
+    monkeypatch.delenv("OPENWIND_RESULT_SIGNING_KEY", raising=False)
+    missing = api_module.result_signing_readiness()
+    monkeypatch.setenv("OPENWIND_RESULT_SIGNING_KEY", "too-short")
+    invalid = api_module.result_signing_readiness()
+
+    assert missing["ready"] is False
+    assert missing["configured"] is False
+    assert "ephemeral development key" in missing["detail"]
+    assert invalid["ready"] is False
+    assert invalid["configured"] is True
+    assert "fewer than 32" in invalid["detail"]
+
+
+def test_health_handles_malformed_lookup_configuration(monkeypatch, caplog) -> None:
     monkeypatch.setattr(
         api_module,
         "dataset_metadata",
@@ -87,15 +126,82 @@ def test_health_handles_malformed_lookup_configuration(monkeypatch) -> None:
     )
     monkeypatch.setattr(api_module, "load_md_tables", lambda: ["invalid"])
     monkeypatch.setattr(api_module, "load_vr_tables", lambda: {"tables": []})
+    monkeypatch.setattr(api_module, "load_mzcat_table", lambda: {"values": []})
+    monkeypatch.setattr(api_module, "load_ms_table", lambda: {"values": []})
     client = TestClient(api_module.create_app())
 
-    response = client.get("/health")
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.get("/health")
 
     assert response.status_code == 503
     body = response.json()
     assert body["checks"]["direction_multiplier_table"]["ready"] is False
     assert body["checks"]["regional_wind_speed_table"]["ready"] is False
+    assert body["checks"]["terrain_height_multiplier_table"]["ready"] is False
+    assert body["checks"]["shielding_multiplier_table"]["ready"] is False
     assert "inspect the server logs" in response.text
+    assert "Direction multiplier readiness check failed" in caplog.text
+    assert "Regional wind speed readiness check failed" in caplog.text
+
+
+def test_health_rejects_out_of_range_direction_multiplier(monkeypatch) -> None:
+    regions = ["A2"]
+    data = reviewed_lookup(MD_DATA_FILE)
+    data["tables"]["A2"]["N"] = 5.0
+    monkeypatch.setattr(
+        api_module,
+        "dataset_metadata",
+        lambda: {
+            "dataset_name": "production-wind-regions",
+            "polygon_count": 1,
+            "is_test_fixture": False,
+            "available_region_names": regions,
+        },
+    )
+    monkeypatch.setattr(api_module, "load_md_tables", lambda: data)
+
+    report = api_module.readiness_report()
+    check = report["checks"]["direction_multiplier_table"]
+
+    assert check["ready"] is False
+    assert check["missing_regions"] == ["A2"]
+    assert "not greater than 2" in " ".join(check["issues"]["A2"])
+
+
+def test_health_rejects_noncanonical_vr_ari_key(monkeypatch) -> None:
+    data = reviewed_lookup(VR_DATA_FILE)
+    data["tables"]["A"]["ultimate"]["garbage"] = 45.0
+    monkeypatch.setattr(api_module, "load_vr_tables", lambda: data)
+
+    report = api_module.readiness_report()
+    check = report["checks"]["regional_wind_speed_table"]
+
+    assert check["ready"] is False
+    assert "A" in check["missing_regions"]
+
+
+def test_health_rejects_invalid_boundary_warning_distance(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_WIND_REGION_BOUNDARY_WARNING_M", "NaN")
+
+    report = api_module.readiness_report()
+
+    assert report["checks"]["wind_region_dataset"]["ready"] is False
+    assert "inspect the server logs" in report["checks"]["wind_region_dataset"]["message"]
+
+
+def test_lookup_readiness_logs_loader_failures(caplog) -> None:
+    def broken_loader():
+        raise ValueError("synthetic lookup failure")
+
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        check = api_module._standards_lookup_readiness(
+            loader=broken_loader,
+            validator=lambda _data, **_kwargs: [],
+            label="synthetic lookup",
+        )
+
+    assert check["ready"] is False
+    assert "synthetic lookup readiness check failed" in caplog.text
 
 
 def sample_footprints() -> list[dict]:
@@ -158,6 +264,25 @@ def test_analyse_endpoint_with_coordinates(monkeypatch) -> None:
     assert "not a certified" in body["disclaimer"]
 
 
+def test_export_json_matches_typed_site_analysis_response(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    client = TestClient(api_module.create_app())
+    payload = {
+        "latitude": -33.86,
+        "longitude": 151.21,
+        "site_label": "Reviewed coordinate site",
+        "building_height_m": 10,
+        "radius_m": 500,
+        "sample_interval_m": 100,
+    }
+
+    analysis = client.post("/api/analyse", json=payload)
+    exported = client.post("/api/export/json", json=payload)
+
+    assert analysis.status_code == exported.status_code == 200
+    assert exported.json() == analysis.json()
+
+
 def test_pdf_report_endpoint_returns_in_memory_download(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
     monkeypatch.chdir(tmp_path)
@@ -180,6 +305,35 @@ def test_pdf_report_endpoint_returns_in_memory_download(monkeypatch, tmp_path) -
     assert not (tmp_path / "reports").exists()
 
 
+def test_pdf_report_failure_hides_internal_details_and_logs_incident(
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+
+    def fail_pdf(_result):
+        raise RuntimeError(r"C:\private\project\font-cache failure")
+
+    monkeypatch.setattr(api_module, "render_pdf_report", fail_pdf)
+    client = TestClient(api_module.create_app())
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.post(
+            "/api/report/pdf",
+            json={
+                "latitude": -33.86,
+                "longitude": 151.21,
+                "building_height_m": 10,
+                "radius_m": 500,
+                "sample_interval_m": 100,
+            },
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == ("Failed to generate PDF report; inspect the server logs.")
+    assert "private" not in response.text
+    assert "font-cache failure" in caplog.text
+
+
 def test_vendored_map_assets_are_served() -> None:
     client = TestClient(api_module.create_app())
 
@@ -197,7 +351,7 @@ def test_vendored_map_assets_are_served() -> None:
     plotly = client.get("/vendor/plotly.min.js")
     assert plotly.status_code == 200
     assert plotly.headers["content-type"].startswith("application/javascript")
-    assert plotly.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert plotly.headers["cache-control"] == "public, max-age=0, must-revalidate"
     assert b"plotly.js" in plotly.content[:500]
 
 
@@ -226,7 +380,7 @@ def test_geocode_suggest_endpoint(monkeypatch) -> None:
     assert response.json()["suggestions"][0]["display_name"] == "1 Macquarie Street, Sydney NSW"
 
 
-def test_geocode_resolve_endpoint_and_errors(monkeypatch) -> None:
+def test_geocode_resolve_endpoint_and_errors(monkeypatch, caplog) -> None:
     def fake_geocode(query):
         assert query == "1 Macquarie Street Sydney"
         return {
@@ -263,15 +417,19 @@ def test_geocode_resolve_endpoint_and_errors(monkeypatch) -> None:
     monkeypatch.setattr(
         api_module,
         "geocode_address",
-        lambda _query: (_ for _ in ()).throw(RuntimeError("upstream unavailable")),
+        lambda _query: (_ for _ in ()).throw(
+            RuntimeError("upstream unavailable at C:\\private\\provider-cache")
+        ),
     )
-    assert (
-        client.post(
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        upstream_failure = client.post(
             "/api/geocode/resolve",
             json={"query": "failure"},
-        ).status_code
-        == 502
-    )
+        )
+    assert upstream_failure.status_code == 502
+    assert upstream_failure.json()["detail"] == api_module.DEPENDENCY_FAILURE_DETAIL
+    assert "private" not in upstream_failure.text
+    assert "private\\provider-cache" in caplog.text
 
 
 def test_combined_map_endpoint_renders_all_layer_groups(monkeypatch) -> None:
@@ -333,6 +491,7 @@ def test_validation_endpoints(monkeypatch) -> None:
 
 def test_wind_region_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv(api_module.DEBUG_ENDPOINTS_ENV, "1")
     monkeypatch.setenv(
         "OPENWIND_WIND_REGION_DATASET",
         str(Path(__file__).parent / "fixtures" / "wind_regions_sample.geojson"),
@@ -358,7 +517,9 @@ def test_wind_region_endpoints(monkeypatch) -> None:
     assert assessment.json()["wind_region"] == "A2"
     assert assessment.json()["dataset_name"] == "wind_regions_sample"
     assert assessment.json()["polygon_count"] == 10
-    assert assessment.json()["region_polygon"]
+    assert "dataset_path" not in assessment.json()
+    assert "region_polygon" not in assessment.json()
+    assert "local path" not in assessment.text
     assert fmap.status_code == 200
     assert "Selected Wind Region A2" in fmap.text
     assert validation.status_code == 200
@@ -371,6 +532,125 @@ def test_wind_region_endpoints(monkeypatch) -> None:
     assert metadata.json()["is_test_fixture"] is True
     assert debug.status_code == 200
     assert debug.json()["selected_polygon"]["region_name"] == "A3"
+
+
+def test_wind_region_debug_endpoints_are_hidden_by_default(monkeypatch) -> None:
+    monkeypatch.delenv(api_module.DEBUG_ENDPOINTS_ENV, raising=False)
+    client = TestClient(api_module.create_app())
+
+    responses = [
+        client.get("/api/debug/wind-region/dataset"),
+        client.get(
+            "/api/debug/wind-region",
+            params={"latitude": -33.86, "longitude": 151.21},
+        ),
+        client.post(
+            "/api/debug/wind-region",
+            json={
+                "latitude": -33.86,
+                "longitude": 151.21,
+                "building_height_m": 10,
+                "radius_m": 500,
+            },
+        ),
+    ]
+
+    assert all(response.status_code == 404 for response in responses)
+    paths = client.get("/openapi.json").json()["paths"]
+    assert not any(path.startswith("/api/debug/") for path in paths)
+
+
+def test_wind_region_configuration_failure_hides_local_path(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    missing_path = tmp_path / "private-dataset" / "missing-regions.gpkg"
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", str(missing_path))
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-region",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Configured wind-region dataset does not exist."
+    assert "private-dataset" not in response.text
+
+
+def test_invalid_dem_configuration_is_a_service_readiness_failure(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_DEM_PROVIDER", "unknown")
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/analyse",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Unsupported OPENWIND_DEM_PROVIDER setting. Configure 'srtm' or 'open-meteo'."
+    )
+
+
+def test_invalid_lookup_configuration_is_a_service_readiness_failure(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    lookup_path = tmp_path / "mzcat.json"
+    lookup_path.write_text('{"values": NaN}', encoding="utf-8")
+    monkeypatch.setenv("OPENWIND_MZCAT_TABLE_PATH", str(lookup_path))
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-workflow",
+        json={
+            "latitude": -33.86,
+            "longitude": 151.21,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Configured lookup data for OPENWIND_MZCAT_TABLE_PATH is invalid: "
+        "Lookup JSON must not contain non-finite numeric constants"
+    )
+    assert str(tmp_path) not in response.text
+
+
+def test_wind_workflow_stream_reports_missing_dataset_as_not_ready(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
+    monkeypatch.setenv("OPENWIND_WIND_REGION_DATASET", "missing-regions.gpkg")
+    client = TestClient(api_module.create_app())
+
+    response = client.post(
+        "/api/wind-workflow/stream",
+        json={
+            "latitude": -33.8688,
+            "longitude": 151.2093,
+            "building_height_m": 10,
+            "radius_m": 500,
+        },
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert events[-1]["stage"] == "error"
+    assert events[-1]["data"]["status_code"] == 503
+    assert events[-1]["label"] == "Configured wind-region dataset does not exist."
 
 
 def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
@@ -397,6 +677,9 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
         "sample_interval_m": 100,
         "obstruction_radius_m": 500,
         "annual_exceedance_probability": "1/500",
+        "structure_orientation_deg": 270.5,
+        "building_width_m": 15,
+        "building_length_m": 12,
     }
 
     response = client.post("/api/wind-workflow/stream", json=payload)
@@ -418,6 +701,10 @@ def test_wind_workflow_stream_endpoint(monkeypatch) -> None:
     map_event = next(event for event in events if event["stage"] == "map")
     assert workflow_event["data"]["workflow"]["wind_region_assessment"]["wind_region"] == "A2"
     assert workflow_event["data"]["workflow"]["regional_wind_speed_assessment"]["vr_ult"] == 45.0
+    workflow_input = workflow_event["data"]["workflow"]["input"]
+    assert workflow_input["structure_orientation_deg"] == 270.5
+    assert workflow_input["building_width_m"] == 15
+    assert workflow_input["building_length_m"] == 12
     assert "L.control.layers" in map_event["data"]["map_html"]
 
 
@@ -447,6 +734,36 @@ def test_wind_workflow_stream_emits_sanitized_terminal_event_for_unexpected_erro
     assert events[-1]["data"]["status_code"] == 500
     assert "server logs" in events[-1]["label"]
     assert "private detail" not in response.text
+
+
+def test_wind_workflow_stream_sanitizes_dependency_failure(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "run_site_analysis",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("failed at C:\\private\\terrain-cache")
+        ),
+    )
+    client = TestClient(api_module.create_app())
+
+    with caplog.at_level(logging.ERROR, logger=api_module.LOGGER.name):
+        response = client.post(
+            "/api/wind-workflow/stream",
+            json={
+                "latitude": -33.8688,
+                "longitude": 151.2093,
+                "building_height_m": 10,
+                "radius_m": 500,
+            },
+        )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert events[-1]["stage"] == "error"
+    assert events[-1]["data"]["status_code"] == 502
+    assert events[-1]["label"] == api_module.DEPENDENCY_FAILURE_DETAIL
+    assert "private" not in response.text
+    assert "private\\terrain-cache" in caplog.text
 
 
 def test_obstruction_inventory_endpoints(monkeypatch) -> None:
@@ -548,6 +865,132 @@ def test_obstruction_inventory_openapi_omits_private_diagnostics() -> None:
     assert "reviewed_footprints" not in input_properties
 
 
+def test_openapi_documents_stream_and_pdf_transport_media_types() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+
+    stream_content = schema["paths"]["/api/wind-workflow/stream"]["post"]["responses"]["200"][
+        "content"
+    ]
+    assert set(stream_content) == {"application/x-ndjson"}
+    assert stream_content["application/x-ndjson"]["schema"] == {"type": "string"}
+
+    for path in (
+        "/api/wind-workflow/report/pdf",
+        "/api/wind-workflow/result/report/pdf",
+        "/api/report/pdf",
+    ):
+        success = schema["paths"][path]["post"]["responses"]["200"]
+        assert set(success["content"]) == {"application/pdf"}
+        assert success["content"]["application/pdf"]["schema"] == {
+            "type": "string",
+            "format": "binary",
+        }
+        assert "Content-Disposition" in success["headers"]
+
+
+def test_openapi_documents_raw_obstruction_import_contracts() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    paths = schema["paths"]
+
+    csv_operation = paths["/api/obstructions/import/csv"]["post"]
+    assert set(csv_operation["requestBody"]["content"]) == {
+        "text/csv",
+        "application/csv",
+    }
+    json_operation = paths["/api/obstructions/import/json"]["post"]
+    json_body_schema = json_operation["requestBody"]["content"]["application/json"]["schema"]
+    assert len(json_body_schema["oneOf"]) == 2
+    assert json_body_schema["oneOf"][1]["additionalProperties"] is False
+    override_schema = schema["components"]["schemas"]["ObstructionManualOverride"]
+    assert len(override_schema["anyOf"]) == 2
+    assert override_schema["properties"]["obstruction_id"]["pattern"] == r".*\S.*"
+
+    for operation in (csv_operation, json_operation):
+        success_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert success_schema["type"] == "array"
+        assert success_schema["items"]["$ref"].endswith("/ObstructionManualOverride")
+        for status in ("400", "413", "415"):
+            error_schema = operation["responses"][status]["content"]["application/json"]["schema"]
+            assert error_schema["$ref"].endswith("/ApiErrorResponse")
+
+
+def test_openapi_documents_location_modes_and_runtime_error_models() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    request_schema = schema["components"]["schemas"]["WindWorkflowRequest"]
+    assert [branch["required"] for branch in request_schema["oneOf"]] == [
+        ["address"],
+        ["latitude", "longitude"],
+    ]
+
+    expected_errors = {
+        ("/api/geocode/resolve", "404"): "ApiErrorResponse",
+        ("/api/wind-workflow", "400"): "ApiErrorResponse",
+        ("/api/wind-workflow", "502"): "ApiErrorResponse",
+        ("/api/wind-workflow", "503"): "ApiErrorResponse",
+        ("/api/wind-workflow/report/pdf", "500"): "ApiErrorResponse",
+        (
+            "/api/wind-workflow/result/report/html",
+            "422",
+        ): "ApiValidationErrorResponse",
+        (
+            "/api/wind-workflow/result/report/pdf",
+            "422",
+        ): "ApiValidationErrorResponse",
+    }
+    for (path, status), model_name in expected_errors.items():
+        error_schema = schema["paths"][path]["post"]["responses"][status]["content"][
+            "application/json"
+        ]["schema"]
+        assert error_schema["$ref"].endswith(f"/{model_name}")
+
+    health_responses = schema["paths"]["/health"]["get"]["responses"]
+    for status in ("200", "503"):
+        health_schema = health_responses[status]["content"]["application/json"]["schema"]
+        assert health_schema["$ref"].endswith("/ReadinessResponse")
+
+
+def test_openapi_has_typed_success_schemas_for_all_published_json_operations() -> None:
+    schema = TestClient(api_module.create_app()).get("/openapi.json").json()
+    expected_models = {
+        ("/health/live", "get"): ("LivenessResponse", False),
+        ("/api/geocode/suggest", "post"): ("GeocodeSuggestionsResponse", False),
+        ("/api/geocode/resolve", "post"): ("GeocodeResult", False),
+        ("/api/full-analysis", "post"): ("FullAnalysisResult", False),
+        ("/api/export/json", "post"): ("SiteAnalysisResult", False),
+        ("/api/terrain-category/validation/cases", "get"): (
+            "TerrainCategoryValidationCase",
+            True,
+        ),
+        ("/api/terrain-category/validation", "get"): (
+            "TerrainCategoryValidationResult",
+            True,
+        ),
+        ("/api/validation/cases", "get"): ("ValidationCase", True),
+        ("/api/validation", "get"): ("ValidationReport", False),
+        ("/api/calculation-validation", "get"): ("CalculationValidationReport", False),
+        ("/api/reference-validation/anonymized", "get"): (
+            "AnonymizedReferenceComparisonReport",
+            False,
+        ),
+        ("/api/wind-region/validation", "get"): ("WindRegionValidationResult", True),
+    }
+    for (path, method), (model_name, is_array) in expected_models.items():
+        success_schema = schema["paths"][path][method]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+        model_schema = success_schema["items"] if is_array else success_schema
+        assert model_schema["$ref"].endswith(f"/{model_name}")
+
+    empty_success_schemas = []
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            success = operation.get("responses", {}).get("200", {})
+            for media_type, media in success.get("content", {}).items():
+                if media.get("schema") == {}:
+                    empty_success_schemas.append((method, path, media_type))
+    assert empty_success_schemas == []
+
+
 @pytest.mark.parametrize(
     ("path", "content", "content_type", "expected_status"),
     [
@@ -561,6 +1004,30 @@ def test_obstruction_inventory_openapi_omits_private_diagnostics() -> None:
         ),
         ("/api/obstructions/import/json", b"{broken", "application/json", 400),
         ("/api/obstructions/import/json", b'{"unexpected": []}', "application/json", 400),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":8,"height_metres":8}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":"8"}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'[{"obstruction_id":"x","height_m":8,"height_m":9}]',
+            "application/json",
+            400,
+        ),
+        (
+            "/api/obstructions/import/json",
+            b'{"obstructions":[],"obstructions":[]}',
+            "application/json",
+            400,
+        ),
         ("/api/obstructions/import/json", b"[]", "text/plain", 415),
     ],
 )
@@ -588,6 +1055,32 @@ def test_obstruction_import_rejects_oversized_payload() -> None:
     )
 
     assert response.status_code == 413
+
+
+def test_obstruction_import_stream_stops_at_size_limit_without_buffering_remainder() -> None:
+    consumed_chunks: list[int] = []
+
+    class ChunkedRequest:
+        headers = {"content-type": "application/json"}
+
+        async def stream(self):
+            for index, chunk in enumerate(
+                (b"x" * api_module.MAX_OBSTRUCTION_IMPORT_BYTES, b"y", b"not-consumed"),
+                start=1,
+            ):
+                consumed_chunks.append(index)
+                yield chunk
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            api_module._read_obstruction_import(
+                ChunkedRequest(),
+                accepted_media_types={"application/json"},
+            )
+        )
+
+    assert exc_info.value.status_code == 413
+    assert consumed_chunks == [1, 2]
 
 
 def test_obstruction_debug_endpoint(monkeypatch) -> None:
@@ -733,8 +1226,10 @@ def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     assert len(body["obstruction_inventory"]["obstructions"]) == 1
     assert "raw_osm_building_footprints" not in body["obstruction_inventory"]["data_quality"]
     assert "pipeline_log" not in body["obstruction_inventory"]["data_quality"]
+    assert len(body["obstruction_inventory"]["ms_lookup_provenance"]["values_sha256"]) == 64
     assert len(body["terrain_category_evidence"]["directions"]) == 8
     assert len(body["terrain_category_evidence"]["mzcat_assessment"]) == 8
+    assert len(body["terrain_category_evidence"]["mzcat_lookup_provenance"]["values_sha256"]) == 64
     assert (
         body["terrain_category_evidence"]["mzcat_assessment"][0]["recommendation_mode"]
         == "best_estimate"

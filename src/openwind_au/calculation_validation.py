@@ -10,18 +10,27 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from openwind_au.geo import EARTH_RADIUS_M
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
 from openwind_au.models import (
+    MixedTerrainProfile,
     ObstructionRecord,
     SiteLocation,
     TerrainPoint,
     TerrainProfile,
     WindRegionAssessment,
 )
+from openwind_au.mzcat import indicative_mzcat
 from openwind_au.shielding import (
     footprint_breadth_normal_to_wind,
-    ms_from_shielding_parameter,
     run_shielding_sector_analysis,
 )
+from openwind_au.standard_calculations import (
+    climate_change_multiplier,
+    design_wind_speed,
+    ms_from_shielding_parameter,
+    site_wind_speed,
+)
+from openwind_au.topographic_multiplier import calculate_topographic_multiplier
 from openwind_au.topography import analyse_profile_topography
 from openwind_au.wind_inputs import regional_wind_speed_assessment
 
@@ -73,8 +82,13 @@ def run_calculation_validation_cases() -> CalculationValidationReport:
     """Run deterministic shielding and topographic calculation checks."""
 
     results = [
-        _wind_region_a2_serviceability_reference_case(),
+        _wind_region_a2_serviceability_case(),
+        _terrain_height_multiplier_reference_case(),
+        _mixed_terrain_clause_423_case(),
         _shielding_ms_interpolation_case(),
+        _topographic_multiplier_reference_case(),
+        _site_wind_speed_precision_case(),
+        _design_wind_speed_reference_case(),
         _shielding_sector_reference_case(),
         _shielding_height_rejection_case(),
         _topography_flat_threshold_case(),
@@ -100,12 +114,12 @@ def calculation_validation_report_to_json(report: CalculationValidationReport) -
     return json.loads(report.model_dump_json())
 
 
-def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCaseResult:
+def _wind_region_a2_serviceability_case() -> CalculationValidationCaseResult:
     wind_region = WindRegionAssessment(
-        latitude=-33.309,
-        longitude=151.524,
+        latitude=-34.123456,
+        longitude=150.654321,
         wind_region="A2",
-        source="Prior Modos job 04625 reference input: Magenta NSW, Region A2",
+        source="Synthetic Region A2 serviceability validation input",
         confidence="high",
     )
     assessment = regional_wind_speed_assessment(
@@ -121,17 +135,16 @@ def _wind_region_a2_serviceability_reference_case() -> CalculationValidationCase
         _check_close("serviceability VR", assessment.vr_serv, 37.0),
     ]
     return _case_result(
-        case_id="modos-04625-a2-serviceability-reference",
+        case_id="wind-region-a2-serviceability",
         calculation_area="wind_inputs",
         description=(
-            "Validates the prior Modos 04625 check: Magenta NSW Region A2 reports "
-            "approximately 37 m/s serviceability regional wind speed. The packaged "
-            "AS/NZS calculation reports 37 m/s for both the Region A/A2 20-year "
-            "regional equation and the 25-year serviceability value."
+            "Validates a synthetic Region A2 serviceability case. The packaged AS/NZS "
+            "calculation reports 37 m/s for both the Region A/A2 20-year regional equation "
+            "and the 25-year serviceability value."
         ),
         checks=checks,
         notes=[
-            "Prior report wording used 20-year ARI serviceability; OpenWind-AU reports the "
+            "The case exercises a 20-year ARI request while OpenWind-AU separately reports the "
             "packaged 25-year serviceability value used by the current lookup workflow."
         ],
     )
@@ -148,6 +161,232 @@ def _shielding_ms_interpolation_case() -> CalculationValidationCaseResult:
         case_id="shielding-ms-table-interpolation",
         calculation_area="shielding",
         description="Validates piecewise-linear indicative Ms interpolation thresholds.",
+        checks=checks,
+    )
+
+
+def _terrain_height_multiplier_reference_case() -> CalculationValidationCaseResult:
+    checks = [
+        _check_close("TC3 at 10 m", indicative_mzcat("TC3", 10.0), 0.83),
+        _check_close("TC1.5 at 12.5 m", indicative_mzcat("TC1.5", 12.5), 1.0625),
+        _check_close("A0 at 50 m uses TC2", indicative_mzcat("TC4", 50.0, wind_region="A0"), 1.18),
+        _check_close(
+            "A0 above 100 m is constant",
+            indicative_mzcat("TC1", 150.0, wind_region="A0"),
+            1.24,
+        ),
+    ]
+    return _case_result(
+        case_id="terrain-height-table-interpolation",
+        calculation_area="wind_inputs",
+        description="Validates Table 4.1 nodes, combined interpolation, and Region A0 rules.",
+        checks=checks,
+    )
+
+
+def _mixed_terrain_clause_423_case() -> CalculationValidationCaseResult:
+    mixed_profile = MixedTerrainProfile.model_validate(
+        {
+            "direction": "N",
+            "source_reference": "Synthetic Clause 4.2.3 transition schedule",
+            "segments": [
+                {
+                    "start_distance_m": 0.0,
+                    "end_distance_m": 200.0,
+                    "terrain_category": "TC4",
+                    "source_reference": "Ignored near-site segment",
+                },
+                {
+                    "start_distance_m": 200.0,
+                    "end_distance_m": 450.0,
+                    "terrain_category": "TC2",
+                    "source_reference": "Equal-weight segment A",
+                },
+                {
+                    "start_distance_m": 450.0,
+                    "end_distance_m": 700.0,
+                    "terrain_category": "TC3",
+                    "source_reference": "Equal-weight segment B",
+                },
+            ],
+        }
+    )
+    mixed = calculate_mixed_terrain_assessment(
+        profile=mixed_profile,
+        assessment_height_z_m=10.0,
+        reference_height_h_m=10.0,
+        assessment_height_basis="average_roof_height_h",
+        wind_region="A2",
+    )
+    a0_profile = MixedTerrainProfile.model_validate(
+        {
+            "direction": "N",
+            "source_reference": "Synthetic incomplete A0 evidence schedule",
+            "segments": [
+                {
+                    "start_distance_m": 0.0,
+                    "end_distance_m": 100.0,
+                    "terrain_category": "TC4",
+                    "source_reference": "A0 evidence-only segment",
+                }
+            ],
+        }
+    )
+    a0 = calculate_mixed_terrain_assessment(
+        profile=a0_profile,
+        assessment_height_z_m=10.0,
+        assessment_height_basis="a0_workflow_reference_height",
+        wind_region="A0",
+    )
+    checks = [
+        _check_close("lag distance xi", mixed.lag_distance_xi_m, 200.0),
+        _check_close("averaging distance xa", mixed.averaging_distance_xa_m, 500.0),
+        _check_equal(
+            "included terrain categories",
+            [item.terrain_category for item in mixed.contributions],
+            ["TC2", "TC3"],
+        ),
+        _check_equal(
+            "included lengths",
+            [item.included_length_m for item in mixed.contributions],
+            [250.0, 250.0],
+        ),
+        _check_equal(
+            "distance weights",
+            [item.weight_fraction for item in mixed.contributions],
+            [0.5, 0.5],
+        ),
+        _check_close("weighted Mz,cat", mixed.weighted_mzcat, 0.915),
+        _check_equal("A0 mode", a0.mode, "a0_mandatory"),
+        _check_equal("A0 contribution count", len(a0.contributions), 0),
+        _check_close("A0 covered distance", a0.covered_distance_m, 0.0),
+        _check_close(
+            "A0 mandatory Mz,cat",
+            a0.weighted_mzcat,
+            indicative_mzcat("TC2", 10.0, wind_region="A0"),
+        ),
+    ]
+    return _case_result(
+        case_id="mixed-terrain-clause-4-2-3-reference",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates xi and xa geometry, ignored near-site terrain, equal-length Table 4.1 "
+            "weighting, and the evidence-only mandatory Region A0 path."
+        ),
+        checks=checks,
+    )
+
+
+def _topographic_multiplier_reference_case() -> CalculationValidationCaseResult:
+    common = {
+        "feature_type": "ridge",
+        "h_m": 30.0,
+        "lu_m": 75.0,
+        "x_m": 20.0,
+        "z_m": 10.0,
+        "average_roof_height_m": 10.0,
+        "site_elevation_m": 0.0,
+    }
+    region_a2 = calculate_topographic_multiplier(**common, wind_region="A2")
+    region_a0 = calculate_topographic_multiplier(**common, wind_region="A0")
+    region_a4 = calculate_topographic_multiplier(
+        **(common | {"site_elevation_m": 600.0}),
+        wind_region="A4",
+    )
+    checks = [
+        _check_close("A2 ridge Mh", region_a2.mh, 1.1887601887601889),
+        _check_close("A2 ridge Mt", region_a2.mt, 1.1887601887601889),
+        _check_close("A0 adjusted Mt", region_a0.mt, 1.0943800943800944),
+        _check_close("A4 elevation factor", region_a4.elevation_factor, 1.09),
+        _check_close("A4 adjusted Mt", region_a4.mt, 1.2957486057486058),
+    ]
+    return _case_result(
+        case_id="topographic-multiplier-clause-4-4-reference",
+        calculation_area="topography",
+        description="Validates Clause 4.4 ridge, Region A0, and Region A4 multiplier paths.",
+        checks=checks,
+    )
+
+
+def _site_wind_speed_precision_case() -> CalculationValidationCaseResult:
+    mt = calculate_topographic_multiplier(
+        feature_type="ridge",
+        h_m=30.0,
+        lu_m=75.0,
+        x_m=20.0,
+        z_m=10.0,
+        average_roof_height_m=10.0,
+        wind_region="A2",
+        site_elevation_m=0.0,
+    ).mt
+    region_a_mc = climate_change_multiplier("A2")
+    region_b2_mc = climate_change_multiplier("B2")
+    result = site_wind_speed(vr=45.0, mc=region_a_mc, md=0.85, mzcat=0.83, ms=0.85, mt=mt)
+    region_b2_result = site_wind_speed(
+        vr=45.0,
+        mc=region_b2_mc,
+        md=0.85,
+        mzcat=0.83,
+        ms=0.85,
+        mt=mt,
+    )
+    checks = [
+        _check_close("Region A2 climate-change multiplier Mc", region_a_mc, 1.0),
+        _check_close("Region B2 climate-change multiplier Mc", region_b2_mc, 1.05),
+        _check_close("full-precision Mt input", mt, 1.1887601887601889),
+        _check_close("full-precision Vsit,b product", result, 32.07913947876448),
+        _check_close("reported Vsit,b at 3 decimals", round(result, 3), 32.079),
+        _check_close("B2 climate-change uplifted Vsit,b", region_b2_result, 33.683096452702704),
+    ]
+    return _case_result(
+        case_id="site-wind-speed-full-precision-product",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates that Vsit,b uses full-precision multipliers and rounds only the "
+            "reported result."
+        ),
+        checks=checks,
+    )
+
+
+def _design_wind_speed_reference_case() -> CalculationValidationCaseResult:
+    direction_speeds = {
+        "N": 35.1,
+        "NE": 31.0,
+        "E": 35.1,
+        "SE": 39.3,
+        "S": 39.3,
+        "SW": 39.3,
+        "W": 41.3,
+        "NW": 39.3,
+    }
+    front = design_wind_speed(theta_degrees=270.0, direction_speeds=direction_speeds)
+    right = design_wind_speed(theta_degrees=0.0, direction_speeds=direction_speeds)
+    interpolated = design_wind_speed(
+        theta_degrees=337.5,
+        direction_speeds=direction_speeds,
+    )
+    checks = [
+        _check_close("west-facing Front Vdes,theta", front.design_wind_speed_m_s, 41.3),
+        _check_close("north-facing Right Vdes,theta", right.design_wind_speed_m_s, 39.3),
+        _check_equal(
+            "Front candidate bearings",
+            [item.bearing_degrees for item in front.candidates],
+            [225.0, 270.0, 315.0],
+        ),
+        _check_close(
+            "337.5-degree interpolated sector maximum",
+            interpolated.design_wind_speed_m_s,
+            40.3,
+        ),
+    ]
+    return _case_result(
+        case_id="design-wind-speed-clause-2-3-reference",
+        calculation_area="wind_inputs",
+        description=(
+            "Validates Clause 2.3 face bearings, circular linear interpolation, the "
+            "plus-or-minus 45-degree sector maximum, and ultimate design speed."
+        ),
         checks=checks,
     )
 
@@ -221,7 +460,11 @@ def _shielding_height_rejection_case() -> CalculationValidationCaseResult:
 
 
 def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 101, 104.9, 101, 100]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 101, 109.9, 101, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "no significant feature"),
         _check_close("reported H", feature.h_m, 0.0),
@@ -230,13 +473,17 @@ def _topography_flat_threshold_case() -> CalculationValidationCaseResult:
     return _case_result(
         case_id="topography-relief-threshold-reference",
         calculation_area="topography",
-        description="Validates that sub-5 m local relief is screened out.",
+        description="Validates the Clause 4.4.2 rule that sub-10 m feature relief is screened out.",
         checks=checks,
     )
 
 
 def _topography_ridge_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 105, 125, 105, 100]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 105, 125, 105, 100]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "ridge"),
         _check_close("crest RL", feature.crest_rl_m, 125.0),
@@ -255,7 +502,11 @@ def _topography_ridge_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_escarpment_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 100, 130, 132, 132]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 100, 130, 132, 132]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "escarpment"),
         _check_close("H", feature.h_m, 30.0),
@@ -273,7 +524,11 @@ def _topography_escarpment_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_valley_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([120, 110, 90, 110, 120]), 100)
+    feature = analyse_profile_topography(
+        _profile([120, 110, 90, 110, 120]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "valley"),
         _check_close("base RL", feature.base_rl_m, 90.0),
@@ -290,7 +545,11 @@ def _topography_valley_reference_case() -> CalculationValidationCaseResult:
 
 
 def _topography_hill_reference_case() -> CalculationValidationCaseResult:
-    feature = analyse_profile_topography(_profile([100, 105, 112, 122, 135]), 100)
+    feature = analyse_profile_topography(
+        _profile([100, 105, 112, 122, 135]),
+        100,
+        average_roof_height_m=20.0,
+    )
     checks = [
         _check_equal("feature type", feature.feature_type, "hill"),
         _check_close("crest RL", feature.crest_rl_m, 135.0),

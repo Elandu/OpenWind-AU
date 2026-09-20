@@ -212,6 +212,6 @@ def test_priority_order_manual_osm_levels_dsm_unknown() -> None:
     assert by_id["levels"].raw_source_height_source == "OSM_LEVELS"
     assert all(by_id[item].height_method == "dsm_dtm" for item in ("explicit", "levels", "dsm"))
     assert any(
-        sector.rejection_reason_counts.get("steep_upwind_ground_gradient", 0) > 0
+        any("common datum exceeds the subject building" in warning for warning in sector.warnings)
         for sector in result.shielding_sectors
     )

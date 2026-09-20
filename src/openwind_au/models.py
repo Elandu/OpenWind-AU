@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from openwind_au.standard_calculations import MAX_DIRECTION_MULTIPLIER
 
 DISCLAIMER = (
     "OpenWind-AU provides preliminary terrain and topographic analysis only. "
@@ -14,9 +17,56 @@ DISCLAIMER = (
 )
 SUPPORTED_LATITUDE_RANGE = (-44.5, -9.0)
 SUPPORTED_LONGITUDE_RANGE = (112.0, 154.5)
+MAX_MANUAL_OVERRIDES = 2_000
+MAX_REVIEWED_FOOTPRINTS = 1_000
+MAX_REVIEWED_GEOMETRY_RINGS = 32
+MAX_REVIEWED_GEOMETRY_POSITIONS = 5_000
+MAX_TOTAL_REVIEWED_GEOMETRY_POSITIONS = 20_000
+MAX_MZCAT_REVIEWS = 8
+MAX_CLASS_MULTIPLIER_OVERRIDES = 8
+MAX_WORKFLOW_OVERRIDES = 64
+MAX_MIXED_TERRAIN_PROFILES = 8
+MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE = 256
+MAX_MIXED_TERRAIN_DISTANCE_M = 100_000.0
 
 
-class GeocodeQueryRequest(BaseModel):
+class StrictRequestModel(BaseModel):
+    """Public request model that rejects typos and implicit JSON coercion."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        allow_inf_nan=False,
+        str_max_length=5_000,
+    )
+
+
+class ApiErrorResponse(BaseModel):
+    """Standard non-validation API error body."""
+
+    detail: str
+
+
+class ApiValidationErrorResponse(BaseModel):
+    """Request-validation or completed-result integrity error body."""
+
+    detail: str | list[dict[str, Any]]
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness response returned with either HTTP 200 or 503."""
+
+    status: Literal["ready", "not_ready"]
+    checks: dict[str, dict[str, Any]]
+
+
+class LivenessResponse(BaseModel):
+    """Process liveness response."""
+
+    status: Literal["ok"] = "ok"
+
+
+class GeocodeQueryRequest(StrictRequestModel):
     """Bounded address-search input kept out of access-log query strings."""
 
     query: str = Field(min_length=3, max_length=300)
@@ -31,10 +81,70 @@ class GeocodeQueryRequest(BaseModel):
         return cleaned
 
 
-class SiteAnalysisRequest(BaseModel):
-    """Input payload for a preliminary site wind terrain analysis."""
+class GeocodeResult(BaseModel):
+    """Resolved Australian address candidate."""
 
-    address: str | None = Field(default=None, description="Street address to geocode.")
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    latitude: float = Field(ge=SUPPORTED_LATITUDE_RANGE[0], le=SUPPORTED_LATITUDE_RANGE[1])
+    longitude: float = Field(ge=SUPPORTED_LONGITUDE_RANGE[0], le=SUPPORTED_LONGITUDE_RANGE[1])
+    display_name: str | None = None
+    source: str
+
+
+class GeocodeSuggestionsResponse(BaseModel):
+    """Bounded autocomplete result list."""
+
+    suggestions: list[GeocodeResult]
+
+
+class LocationRequest(StrictRequestModel):
+    """Shared, unambiguous address-or-coordinate request fields."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "title": "Address location",
+                    "required": ["address"],
+                    "properties": {
+                        "address": {"type": "string", "pattern": r".*\S.*"},
+                        "site_label": {"type": "null"},
+                        "latitude": {"type": "null"},
+                        "longitude": {"type": "null"},
+                    },
+                },
+                {
+                    "title": "Coordinate location",
+                    "required": ["latitude", "longitude"],
+                    "properties": {
+                        "latitude": {
+                            "type": "number",
+                            "minimum": SUPPORTED_LATITUDE_RANGE[0],
+                            "maximum": SUPPORTED_LATITUDE_RANGE[1],
+                        },
+                        "longitude": {
+                            "type": "number",
+                            "minimum": SUPPORTED_LONGITUDE_RANGE[0],
+                            "maximum": SUPPORTED_LONGITUDE_RANGE[1],
+                        },
+                        "address": {"type": "null"},
+                    },
+                },
+            ]
+        }
+    )
+
+    address: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Street address to geocode. Omit when coordinates are supplied.",
+    )
+    site_label: str | None = Field(
+        default=None,
+        max_length=300,
+        description="Display label for supplied coordinates; this value is not geocoded.",
+    )
     latitude: float | None = Field(
         default=None,
         ge=SUPPORTED_LATITUDE_RANGE[0],
@@ -45,9 +155,40 @@ class SiteAnalysisRequest(BaseModel):
         ge=SUPPORTED_LONGITUDE_RANGE[0],
         le=SUPPORTED_LONGITUDE_RANGE[1],
     )
+
+    @field_validator("address", "site_label")
+    @classmethod
+    def normalize_location_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_location(self) -> LocationRequest:
+        """Require exactly one location mode and keep labels coordinate-only."""
+
+        has_address = self.address is not None
+        has_coords = self.latitude is not None and self.longitude is not None
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Provide both latitude and longitude when using coordinates.")
+        if self.site_label is not None and not has_coords:
+            raise ValueError("site_label may only be supplied with latitude and longitude.")
+        if has_address and has_coords:
+            raise ValueError(
+                "Provide either address or latitude and longitude, not both. "
+                "Use site_label to describe supplied coordinates."
+            )
+        if not has_address and not has_coords:
+            raise ValueError("Provide either address or latitude and longitude.")
+        return self
+
+
+class SiteAnalysisRequest(LocationRequest):
+    """Input payload for a preliminary site wind terrain analysis."""
+
     building_height_m: float = Field(
         gt=0,
-        le=500,
+        le=200,
         description="Building height in metres.",
     )
     radius_m: int = Field(default=2000, description="Analysis radius in metres.")
@@ -55,22 +196,23 @@ class SiteAnalysisRequest(BaseModel):
     mzcat_recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
 
     @model_validator(mode="after")
-    def validate_location(self) -> SiteAnalysisRequest:
-        """Require either an address or a complete coordinate pair."""
-
-        has_address = bool(self.address and self.address.strip())
-        has_coords = self.latitude is not None and self.longitude is not None
-        if not has_address and not has_coords:
-            raise ValueError("Provide either address or latitude and longitude.")
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("Provide both latitude and longitude when using coordinates.")
+    def validate_analysis_radius(self) -> SiteAnalysisRequest:
         if self.radius_m not in {500, 1000, 2000, 4000}:
             raise ValueError("radius_m must be one of 500, 1000, 2000, or 4000.")
         return self
 
+    @property
+    def reference_height_m(self) -> float:
+        """Return the common AS/NZS reference height z / average roof height h."""
+
+        average_height = getattr(self, "average_roof_height_m", None)
+        return float(average_height or self.building_height_m)
+
 
 class SiteLocation(BaseModel):
     """Resolved site location."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     latitude: float
     longitude: float
@@ -179,8 +321,8 @@ class MzCatDirectionAssessment(BaseModel):
     azimuth_deg: float
     recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
     suggested_terrain_category_range: str
-    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
-    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+    lower_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
+    upper_category_bound: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
     assessment_height_m: float
     lower_indicative_mzcat: float
     upper_indicative_mzcat: float
@@ -189,7 +331,9 @@ class MzCatDirectionAssessment(BaseModel):
     recommended_mzcat: float | None = None
     recommendation_confidence: Literal["high", "medium", "low"] = "low"
     recommendation_reasoning: list[str] = Field(default_factory=list)
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
     final_mzcat: float | None = None
     reviewed_by: str | None = None
     review_notes: str | None = None
@@ -204,14 +348,16 @@ class MzCatDirectionAssessment(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class MzCatReviewSelection(BaseModel):
+class MzCatReviewSelection(StrictRequestModel):
     """Engineer-selected final Mz,cat fields supplied for reviewed reports."""
 
     direction: Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-    final_terrain_category: Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"] | None = None
-    final_mzcat: float | None = Field(default=None, gt=0)
-    reviewed_by: str | None = None
-    review_notes: str | None = None
+    final_terrain_category: (
+        Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"] | None
+    ) = None
+    final_mzcat: float | None = Field(default=None, gt=0, le=10)
+    reviewed_by: str | None = Field(default=None, max_length=200)
+    review_notes: str | None = Field(default=None, max_length=5_000)
     review_status: Literal["unreviewed", "accepted", "overridden"] = "unreviewed"
 
     @model_validator(mode="after")
@@ -225,6 +371,19 @@ class MzCatReviewSelection(BaseModel):
         return self
 
 
+class LookupProvenance(BaseModel):
+    """Source identity for one immutable calculation lookup snapshot."""
+
+    schema_version: int
+    standard_reference: str
+    review_status: str
+    reviewed_by: str | None = None
+    reviewed_on: str | None = None
+    values_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    independent_review_recorded: bool
+    source_reference: str
+
+
 class MzCatAssessmentResult(BaseModel):
     """Indicative Mz,cat assessment result for all review directions."""
 
@@ -232,6 +391,7 @@ class MzCatAssessmentResult(BaseModel):
     site: SiteLocation
     directions: list[MzCatDirectionAssessment]
     recommendation_mode: Literal["conservative", "best_estimate"] = "conservative"
+    lookup_provenance: LookupProvenance
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Indicative Mz,cat evidence is provided for engineering review only. OpenWind-AU does "
@@ -247,6 +407,7 @@ class TerrainCategoryEvidenceResult(BaseModel):
     site: SiteLocation
     directions: list[TerrainCategoryDirectionEvidence]
     mzcat_assessment: list[MzCatDirectionAssessment] = Field(default_factory=list)
+    mzcat_lookup_provenance: LookupProvenance
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "Terrain category evidence is provided for engineering review only. OpenWind-AU does "
@@ -255,20 +416,119 @@ class TerrainCategoryEvidenceResult(BaseModel):
     )
 
 
-class ObstructionManualOverride(BaseModel):
+class ObstructionManualOverride(StrictRequestModel):
     """Reviewed obstruction height data supplied by a user."""
 
-    obstruction_id: str
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        allow_inf_nan=False,
+        str_max_length=5_000,
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "required": ["height_m"],
+                    "properties": {"height_m": {"type": "number", "minimum": 0, "maximum": 500}},
+                },
+                {
+                    "required": ["building_levels"],
+                    "properties": {
+                        "building_levels": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 200,
+                        }
+                    },
+                },
+            ]
+        },
+    )
+
+    obstruction_id: str = Field(min_length=1, max_length=300, pattern=r".*\S.*")
     height_m: float | None = Field(default=None, ge=0, le=500)
     building_levels: float | None = Field(default=None, ge=0, le=200)
-    height_source: str = "manual_review"
-    notes: str | None = None
+    height_source: str = Field(default="manual_review", min_length=1, max_length=100)
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("obstruction_id", mode="before")
+    @classmethod
+    def normalize_obstruction_id(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_reviewed_height(self) -> ObstructionManualOverride:
+        if self.height_m is None and self.building_levels is None:
+            raise ValueError("Provide height_m or building_levels for a manual override.")
+        return self
 
 
-class ReviewedFootprint(BaseModel):
+def _finite_coordinate(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("Reviewed footprint coordinates must be numbers.")
+    try:
+        parsed = float(value)
+    except OverflowError as exc:
+        raise ValueError("Reviewed footprint coordinates must be finite.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError("Reviewed footprint coordinates must be finite.")
+    return parsed
+
+
+def _validate_reviewed_polygon_geometry(geometry: dict[str, Any]) -> int:
+    """Validate one bounded WGS84 Polygon and return its position count."""
+
+    unsupported_members = set(geometry) - {"type", "coordinates", "bbox"}
+    if unsupported_members:
+        raise ValueError("Reviewed footprint geometry contains unsupported members.")
+    if geometry.get("type") != "Polygon":
+        raise ValueError("Reviewed footprint geometry must be a GeoJSON Polygon.")
+    rings = geometry.get("coordinates")
+    if not isinstance(rings, list | tuple) or not rings:
+        raise ValueError("Reviewed footprint Polygon coordinates must contain a ring.")
+    if len(rings) > MAX_REVIEWED_GEOMETRY_RINGS:
+        raise ValueError(
+            f"Reviewed footprint geometry may contain at most {MAX_REVIEWED_GEOMETRY_RINGS} rings."
+        )
+
+    position_count = 0
+    for ring in rings:
+        if not isinstance(ring, list | tuple) or len(ring) < 4:
+            raise ValueError("Each reviewed footprint Polygon ring needs at least four positions.")
+        normalized_ring: list[tuple[float, float]] = []
+        for position in ring:
+            if not isinstance(position, list | tuple) or not 2 <= len(position) <= 3:
+                raise ValueError("Each reviewed footprint position needs two or three coordinates.")
+            longitude = _finite_coordinate(position[0])
+            latitude = _finite_coordinate(position[1])
+            if not SUPPORTED_LONGITUDE_RANGE[0] <= longitude <= SUPPORTED_LONGITUDE_RANGE[1]:
+                raise ValueError("Reviewed footprint longitude is outside the supported range.")
+            if not SUPPORTED_LATITUDE_RANGE[0] <= latitude <= SUPPORTED_LATITUDE_RANGE[1]:
+                raise ValueError("Reviewed footprint latitude is outside the supported range.")
+            if len(position) == 3:
+                _finite_coordinate(position[2])
+            normalized_ring.append((longitude, latitude))
+            position_count += 1
+            if position_count > MAX_REVIEWED_GEOMETRY_POSITIONS:
+                raise ValueError(
+                    f"Reviewed footprint geometry may contain at most "
+                    f"{MAX_REVIEWED_GEOMETRY_POSITIONS} positions."
+                )
+        if normalized_ring[0] != normalized_ring[-1]:
+            raise ValueError("Each reviewed footprint Polygon ring must be closed.")
+
+    bbox = geometry.get("bbox")
+    if bbox is not None:
+        if not isinstance(bbox, list | tuple) or len(bbox) not in {4, 6}:
+            raise ValueError("Reviewed footprint bbox must contain four or six coordinates.")
+        for coordinate in bbox:
+            _finite_coordinate(coordinate)
+    return position_count
+
+
+class ReviewedFootprint(StrictRequestModel):
     """Reviewed obstruction geometry supplied by a reviewed obstruction JSON file."""
 
-    id: str
+    id: str = Field(min_length=1, max_length=300, pattern=r".*\S.*")
     geometry: dict[str, Any]
     classification: Literal[
         "residential",
@@ -281,9 +541,9 @@ class ReviewedFootprint(BaseModel):
     ] = "unknown"
     height_m: float | None = Field(default=None, ge=0, le=500)
     building_levels: float | None = Field(default=None, ge=0, le=200)
-    source: str = "reviewed obstruction JSON"
+    source: str = Field(default="reviewed obstruction JSON", min_length=1, max_length=200)
     obstruction_source_type: Literal["building", "vegetation", "other", "unknown"] = "unknown"
-    source_dataset: str | None = None
+    source_dataset: str | None = Field(default=None, max_length=300)
     height_method: Literal[
         "manual",
         "dsm_dtm",
@@ -293,7 +553,18 @@ class ReviewedFootprint(BaseModel):
         "unknown",
     ] = "unknown"
     is_vegetation_candidate: bool = False
-    notes: str | None = None
+    notes: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def normalize_id(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("geometry")
+    @classmethod
+    def validate_geometry(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _validate_reviewed_polygon_geometry(value)
+        return value
 
 
 class ExcludedObstructionObject(BaseModel):
@@ -358,33 +629,54 @@ class PublicObstructionDataQuality(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class ObstructionInventoryRequest(BaseModel):
+def _validate_obstruction_review_inputs(
+    manual_overrides: list[ObstructionManualOverride],
+    reviewed_footprints: list[ReviewedFootprint],
+) -> None:
+    override_ids = [item.obstruction_id for item in manual_overrides]
+    if len(override_ids) != len(set(override_ids)):
+        raise ValueError("manual_overrides contains duplicate obstruction_id entries.")
+    footprint_ids = [item.id for item in reviewed_footprints]
+    if len(footprint_ids) != len(set(footprint_ids)):
+        raise ValueError("reviewed_footprints contains duplicate id entries.")
+    position_count = sum(
+        len(ring) for footprint in reviewed_footprints for ring in footprint.geometry["coordinates"]
+    )
+    if position_count > MAX_TOTAL_REVIEWED_GEOMETRY_POSITIONS:
+        raise ValueError(
+            f"reviewed_footprints may contain at most "
+            f"{MAX_TOTAL_REVIEWED_GEOMETRY_POSITIONS} total positions."
+        )
+
+
+class ObstructionInventoryRequest(LocationRequest):
     """Input payload for building obstruction inventory."""
 
-    address: str | None = Field(default=None, description="Street address to geocode.")
-    latitude: float | None = Field(
-        default=None,
-        ge=SUPPORTED_LATITUDE_RANGE[0],
-        le=SUPPORTED_LATITUDE_RANGE[1],
-    )
-    longitude: float | None = Field(
-        default=None,
-        ge=SUPPORTED_LONGITUDE_RANGE[0],
-        le=SUPPORTED_LONGITUDE_RANGE[1],
-    )
     radius_m: int = Field(default=500, ge=50, le=4000)
     building_height_m: float | None = Field(
         default=None,
         gt=0,
-        le=500,
+        le=200,
         description="Subject building height for preliminary shielding-sector analysis.",
+    )
+    subject_base_rl_m: float | None = Field(
+        default=None,
+        ge=-500,
+        le=10_000,
+        description="Reviewed subject-building base RL on the obstruction common datum.",
     )
     default_storey_height_m: float = Field(default=3.0, gt=0, le=6)
     residential_storey_height_m: float = Field(default=3.0, gt=0, le=6)
     residential_two_storey_height_m: float = Field(default=6.0, gt=0, le=12)
     commercial_storey_height_m: float = Field(default=4.0, gt=0, le=8)
-    manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
-    reviewed_footprints: list[ReviewedFootprint] = Field(default_factory=list)
+    manual_overrides: list[ObstructionManualOverride] = Field(
+        default_factory=list,
+        max_length=MAX_MANUAL_OVERRIDES,
+    )
+    reviewed_footprints: list[ReviewedFootprint] = Field(
+        default_factory=list,
+        max_length=MAX_REVIEWED_FOOTPRINTS,
+    )
     map_display_mode: Literal[
         "nearest_500",
         "shielding_candidates",
@@ -394,15 +686,8 @@ class ObstructionInventoryRequest(BaseModel):
     map_max_display_obstructions: int = Field(default=500, ge=1, le=5000)
 
     @model_validator(mode="after")
-    def validate_location(self) -> ObstructionInventoryRequest:
-        """Require either an address or a complete coordinate pair."""
-
-        has_address = bool(self.address and self.address.strip())
-        has_coords = self.latitude is not None and self.longitude is not None
-        if not has_address and not has_coords:
-            raise ValueError("Provide either address or latitude and longitude.")
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("Provide both latitude and longitude when using coordinates.")
+    def validate_review_inputs(self) -> ObstructionInventoryRequest:
+        _validate_obstruction_review_inputs(self.manual_overrides, self.reviewed_footprints)
         return self
 
 
@@ -410,6 +695,7 @@ class PublicObstructionInventoryInput(BaseModel):
     """Echoed inventory settings without repeating imported footprint geometry."""
 
     address: str | None = None
+    site_label: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     radius_m: int
@@ -502,6 +788,11 @@ class ShieldingSectorResult(BaseModel):
     sector_end_deg: float
     sector_radius_m: float
     subject_height_m: float
+    subject_base_rl_m: float | None = None
+    subject_top_rl_m: float | None = None
+    subject_rl_source: Literal["reviewed_base_rl", "site_ground_elevation"] = (
+        "site_ground_elevation"
+    )
     total_obstructions_in_sector: int = 0
     usable_height_count: int = 0
     rejected_height_below_z_count: int = 0
@@ -536,6 +827,7 @@ class ObstructionInventoryResult(BaseModel):
     height_source_summary: dict[str, int] = Field(default_factory=dict)
     data_quality: ObstructionDataQuality = Field(default_factory=ObstructionDataQuality)
     shielding_sectors: list[ShieldingSectorResult] = Field(default_factory=list)
+    ms_lookup_provenance: LookupProvenance | None = None
     data_source_status: Literal["ok", "unavailable"] = "ok"
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
@@ -556,9 +848,21 @@ class PublicObstructionInventoryResult(BaseModel):
     height_source_summary: dict[str, int] = Field(default_factory=dict)
     data_quality: PublicObstructionDataQuality = Field(default_factory=PublicObstructionDataQuality)
     shielding_sectors: list[ShieldingSectorResult] = Field(default_factory=list)
+    ms_lookup_provenance: LookupProvenance | None = None
     data_source_status: Literal["ok", "unavailable"] = "ok"
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str
+
+
+class FullAnalysisResult(BaseModel):
+    """Typed response for the combined legacy browser analysis workflow."""
+
+    site_analysis: SiteAnalysisResult
+    obstruction_inventory: PublicObstructionInventoryResult
+    terrain_category_evidence: TerrainCategoryEvidenceResult
+    profile_plot_html: str
+    terrain_category_map_html: str
+    combined_map_html: str
 
 
 class CombinedMapRequest(SiteAnalysisRequest):
@@ -575,8 +879,14 @@ class CombinedMapRequest(SiteAnalysisRequest):
     residential_storey_height_m: float = Field(default=3.0, gt=0, le=6)
     residential_two_storey_height_m: float = Field(default=6.0, gt=0, le=12)
     commercial_storey_height_m: float = Field(default=4.0, gt=0, le=8)
-    manual_overrides: list[ObstructionManualOverride] = Field(default_factory=list)
-    reviewed_footprints: list[ReviewedFootprint] = Field(default_factory=list)
+    manual_overrides: list[ObstructionManualOverride] = Field(
+        default_factory=list,
+        max_length=MAX_MANUAL_OVERRIDES,
+    )
+    reviewed_footprints: list[ReviewedFootprint] = Field(
+        default_factory=list,
+        max_length=MAX_REVIEWED_FOOTPRINTS,
+    )
     map_display_mode: Literal[
         "nearest_500",
         "shielding_candidates",
@@ -584,6 +894,20 @@ class CombinedMapRequest(SiteAnalysisRequest):
         "centroids_only",
     ] = "nearest_500"
     map_max_display_obstructions: int = Field(default=500, ge=1, le=5000)
+
+    @model_validator(mode="after")
+    def validate_review_inputs(self) -> CombinedMapRequest:
+        _validate_obstruction_review_inputs(self.manual_overrides, self.reviewed_footprints)
+        if (
+            self.reference_height_m <= 25.0
+            and self.obstruction_radius_m < 20.0 * self.reference_height_m
+        ):
+            raise ValueError(
+                "obstruction_radius_m must be at least 20 times average roof/reference "
+                "height h when h is 25 m or less, so the complete Clause 4.3.1 shielding "
+                "sector is assessed."
+            )
+        return self
 
 
 class TerrainCategoryEvidenceRequest(CombinedMapRequest):
@@ -593,13 +917,30 @@ class TerrainCategoryEvidenceRequest(CombinedMapRequest):
 class TerrainCategoryReportRequest(TerrainCategoryEvidenceRequest):
     """Request for terrain category reports with optional engineer Mz,cat reviews."""
 
-    mzcat_reviews: list[MzCatReviewSelection] = Field(default_factory=list)
+    mzcat_reviews: list[MzCatReviewSelection] = Field(
+        default_factory=list,
+        max_length=MAX_MZCAT_REVIEWS,
+    )
+
+    @model_validator(mode="after")
+    def validate_unique_mzcat_reviews(self) -> TerrainCategoryReportRequest:
+        directions = [item.direction for item in self.mzcat_reviews]
+        if len(directions) != len(set(directions)):
+            raise ValueError("mzcat_reviews contains duplicate directions.")
+        return self
 
 
 WindDirection = Literal["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-WindWorkflowVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
-AssessmentStatus = Literal["draft", "reviewed", "final"]
-TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC4"]
+BuildingPlanFace = Literal["Front", "Right", "Back", "Left"]
+WindWorkflowVariable = Literal["VR", "Mc", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
+WindWorkflowOverrideVariable = Literal["VR", "Md", "Mzcat", "Ms", "Mt", "Vsitb"]
+WindDirectionMultiplierCase = Literal[
+    "main_structure",
+    "cladding_or_immediate_support",
+    "circular_or_polygonal_chimney_tank_or_pole",
+]
+AssessmentStatus = Literal["draft", "reviewed"]
+TerrainCategoryLabel = Literal["TC1", "TC1.5", "TC2", "TC2.5", "TC3", "TC3.5", "TC4"]
 ShieldingClassLabel = Literal["FS", "PS", "NS"]
 TopographicClassLabel = Literal["T0", "T1", "T2", "T3", "T4", "T5"]
 WindRegionLabel = Literal[
@@ -616,16 +957,113 @@ WindRegionLabel = Literal[
     "C",
     "D",
 ]
+SpecificWindRegionLabel = Literal[
+    "A0",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "B1",
+    "B2",
+    "C",
+    "D",
+]
+ExposureWindRegionLabel = Literal[
+    "A0",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "B",
+    "B1",
+    "B2",
+    "C",
+    "D",
+]
+ClimateChangeWindRegionLabel = Literal[
+    "A",
+    "A0",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "B1",
+    "B2",
+    "C",
+    "D",
+]
 
 
-class WindRegionAssessment(BaseModel):
-    """Wind region assigned from bundled AS/NZS wind-region GIS polygons."""
+class MixedTerrainSegment(StrictRequestModel):
+    """One ordered upwind terrain-category interval measured from the site."""
+
+    start_distance_m: float = Field(ge=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    end_distance_m: float = Field(gt=0, le=MAX_MIXED_TERRAIN_DISTANCE_M)
+    terrain_category: TerrainCategoryLabel
+    source_reference: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_source_reference(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_distance_order(self) -> MixedTerrainSegment:
+        if self.end_distance_m <= self.start_distance_m:
+            raise ValueError("end_distance_m must be greater than start_distance_m.")
+        return self
+
+
+class MixedTerrainProfile(StrictRequestModel):
+    """Reviewed or user-supplied ordered terrain transitions for one wind direction."""
+
+    direction: WindDirection
+    segments: list[MixedTerrainSegment] = Field(
+        min_length=1,
+        max_length=MAX_MIXED_TERRAIN_SEGMENTS_PER_PROFILE,
+    )
+    source_reference: str | None = Field(default=None, max_length=1_000)
+
+    @field_validator("source_reference", mode="before")
+    @classmethod
+    def normalize_profile_source_reference(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @model_validator(mode="after")
+    def validate_ordered_contiguous_segments(self) -> MixedTerrainProfile:
+        previous_end: float | None = None
+        for index, segment in enumerate(self.segments):
+            if previous_end is not None and not math.isclose(
+                segment.start_distance_m,
+                previous_end,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                relation = "overlap" if segment.start_distance_m < previous_end else "gap"
+                raise ValueError(
+                    f"segments[{index}] has a {relation}; mixed-terrain segments must be "
+                    "ordered and contiguous."
+                )
+            previous_end = segment.end_distance_m
+        return self
+
+
+class PublicWindRegionAssessment(BaseModel):
+    """Serializable wind-region evidence included in completed workflow results."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     latitude: float
     longitude: float
     wind_region: WindRegionLabel
     region_subclassification: str | None = None
-    dataset_path: str | None = None
     dataset_name: str | None = None
     polygon_count: int | None = None
     available_region_names: list[str] = Field(default_factory=list)
@@ -633,15 +1071,47 @@ class WindRegionAssessment(BaseModel):
     confidence: Literal["high", "medium", "low"]
     distance_to_boundary_m: float | None = None
     near_boundary: bool = False
-    region_polygon: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
+
+
+class WindRegionAssessment(PublicWindRegionAssessment):
+    """Wind region assessment with server-only GIS geometry for map rendering."""
+
+    region_polygon: dict[str, Any] | None = Field(
+        default=None,
+        exclude=True,
+        description="Internal GIS geometry used by server-rendered map endpoints.",
+    )
+
+
+class WindRegionValidationResult(BaseModel):
+    """One published wind-region dataset validation outcome."""
+
+    site: str
+    latitude: float
+    longitude: float
+    expected_region: WindRegionLabel
+    warning: str | None = None
+    actual_region: WindRegionLabel | None = None
+    status: Literal["pass", "fail", "warning"]
+    confidence: Literal["high", "medium", "low"]
+    distance_to_boundary_m: float | None = None
+    diagnosis: str
 
 
 class RegionalWindSpeedAssessment(BaseModel):
     """VR lookup for the assessed wind region and selected annual probability."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     wind_region: WindRegionLabel
-    importance_level: str | None = None
+    importance_level: str | None = Field(
+        default=None,
+        description=(
+            "Optional report metadata copied from the workflow request. It does not select "
+            "or alter the annual exceedance probability or ARI."
+        ),
+    )
     ari_years: int
     annual_exceedance_probability: str
     vr_ult: float | None = None
@@ -655,6 +1125,8 @@ class RegionalWindSpeedAssessment(BaseModel):
 class DirectionMultiplierRow(BaseModel):
     """Directional Md value for one cardinal/intercardinal direction."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     direction: WindDirection
     md: float | None = None
     is_governing: bool = False
@@ -662,6 +1134,8 @@ class DirectionMultiplierRow(BaseModel):
 
 class DirectionMultiplierAssessment(BaseModel):
     """Direction multiplier table selected from the assessed wind region."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     wind_region: WindRegionLabel
     source_table: str
@@ -672,14 +1146,14 @@ class DirectionMultiplierAssessment(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class WindVariableOverride(BaseModel):
+class WindVariableOverride(StrictRequestModel):
     """Optional override for a calculated wind workflow variable."""
 
-    variable: WindWorkflowVariable
+    variable: WindWorkflowOverrideVariable
     direction: WindDirection | None = None
     override_value: float = Field(gt=0, le=500)
-    reason: str = Field(min_length=1)
-    label: str | None = None
+    reason: str = Field(min_length=1, max_length=2_000)
+    label: str | None = Field(default=None, max_length=300)
 
     @model_validator(mode="after")
     def validate_direction_scope(self) -> WindVariableOverride:
@@ -687,10 +1161,21 @@ class WindVariableOverride(BaseModel):
             raise ValueError("VR is non-directional; omit direction for a VR override.")
         if self.variable != "VR" and self.direction is None:
             raise ValueError(f"direction is required for a {self.variable} override.")
+        maximum_by_variable = {
+            "VR": 200.0,
+            "Md": MAX_DIRECTION_MULTIPLIER,
+            "Mzcat": 10.0,
+            "Ms": 1.0,
+            "Mt": 10.0,
+            "Vsitb": 500.0,
+        }
+        maximum = maximum_by_variable[self.variable]
+        if self.override_value > maximum:
+            raise ValueError(f"{self.variable} override_value must not exceed {maximum:g}.")
         return self
 
 
-class WindClassMultiplierOverride(BaseModel):
+class WindClassMultiplierOverride(StrictRequestModel):
     """Optional reviewed class inputs for directional Mz,cat, Ms, and Mt values."""
 
     direction: WindDirection
@@ -698,10 +1183,10 @@ class WindClassMultiplierOverride(BaseModel):
     shielding_class: ShieldingClassLabel | None = None
     topographic_class: TopographicClassLabel | None = None
     mzcat: float | None = Field(default=None, gt=0, le=10)
-    ms: float | None = Field(default=None, gt=0, le=10)
+    ms: float | None = Field(default=None, gt=0, le=1)
     mt: float | None = Field(default=None, gt=0, le=10)
-    reason: str = Field(min_length=1)
-    source_reference: str | None = None
+    reason: str = Field(min_length=1, max_length=2_000)
+    source_reference: str | None = Field(default=None, max_length=1_000)
 
     @model_validator(mode="after")
     def validate_class_value_pairs(self) -> WindClassMultiplierOverride:
@@ -725,41 +1210,206 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
     review and does not calculate pressures.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        allow_inf_nan=False,
+        str_max_length=5_000,
+    )
 
-    project_number: str | None = None
-    annual_exceedance_probability: str = "1/500"
-    importance_level: str | None = None
-    user_assumptions: str | None = None
+    project_number: str | None = Field(default=None, max_length=200)
+    annual_exceedance_probability: str = Field(
+        default="1/500",
+        min_length=1,
+        max_length=50,
+        description="User-selected AEP/ARI input used to select the regional wind speed.",
+    )
+    importance_level: str | None = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Optional report metadata only. It does not select or alter "
+            "annual_exceedance_probability."
+        ),
+    )
+    user_assumptions: str | None = Field(default=None, max_length=5_000)
     structure_class: Literal["building", "house", "monopole", "tower", "other"] | None = None
-    structure_type: str | None = None
-    building_dimensions: str | None = None
-    structure_orientation_deg: float | None = Field(default=None, ge=-90, le=90)
+    structure_type: str | None = Field(default=None, max_length=300)
+    wind_direction_multiplier_case: WindDirectionMultiplierCase = "main_structure"
+    building_dimensions: str | None = Field(
+        default=None,
+        max_length=300,
+        description=(
+            "Deprecated legacy free-text building dimension metadata retained for migration. "
+            "It does not define the structured footprint or drive calculations. Omit this field "
+            "when building_width_m and building_length_m are used."
+        ),
+        json_schema_extra={"deprecated": True},
+    )
+    structure_orientation_deg: float | None = Field(
+        default=None,
+        ge=0,
+        lt=360,
+        description=(
+            "Engineering azimuth beta for the building theta=0/front axis, in degrees "
+            "clockwise from true North in the range [0, 360). Right, back, and left "
+            "are beta + 90, + 180, and + 270 degrees respectively. The four axes drive "
+            "the Clause 2.3 building-orthogonal ultimate design wind speeds."
+        ),
+    )
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
     building_width_m: float | None = Field(default=None, gt=0, le=5000)
     building_length_m: float | None = Field(default=None, gt=0, le=5000)
     roof_pitch_deg: float | None = Field(default=None, ge=0, le=90)
-    average_height_m: float | None = Field(default=None, gt=0, le=500)
-    base_rl_m: float | None = None
-    design_life_years: int | None = Field(default=None, gt=0, le=1000)
+    average_roof_height_m: float | None = Field(
+        default=None,
+        gt=0,
+        le=200,
+        validation_alias=AliasChoices("average_roof_height_m", "average_height_m"),
+        description=(
+            "Average roof height h in metres for Mz,cat, shielding, and topographic calculations."
+        ),
+    )
+    base_rl_m: float | None = Field(default=None, ge=-500, le=10_000)
+    design_life_years: int | None = Field(
+        default=None,
+        gt=0,
+        le=1000,
+        description=(
+            "Optional report metadata only. It does not derive or alter the selected AEP/ARI."
+        ),
+    )
     assessment_status: AssessmentStatus = "draft"
-    engineer_notes: str | None = None
-    class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(default_factory=list)
-    workflow_overrides: list[WindVariableOverride] = Field(default_factory=list)
+    reviewed_by: str | None = Field(default=None, max_length=200)
+    engineer_notes: str | None = Field(default=None, max_length=5000)
+    mixed_terrain_profiles: list[MixedTerrainProfile] = Field(
+        default_factory=list,
+        max_length=MAX_MIXED_TERRAIN_PROFILES,
+        description=(
+            "Optional ordered upwind terrain-category transitions used for Clause 4.2.3 "
+            "distance-weighted Mz,cat calculations. Distances are measured from the site."
+        ),
+    )
+    class_multiplier_overrides: list[WindClassMultiplierOverride] = Field(
+        default_factory=list,
+        max_length=MAX_CLASS_MULTIPLIER_OVERRIDES,
+    )
+    workflow_overrides: list[WindVariableOverride] = Field(
+        default_factory=list,
+        max_length=MAX_WORKFLOW_OVERRIDES,
+    )
+
+    @field_validator("assessment_status", mode="before")
+    @classmethod
+    def reject_final_issue_status(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip().lower() == "final":
+            raise ValueError(
+                "Final issue is not supported. Use draft or reviewed for this workflow."
+            )
+        return value
+
+    @field_validator("reviewed_by", "engineer_notes", mode="before")
+    @classmethod
+    def normalize_review_text(cls, value: Any) -> Any:
+        if value is None or not isinstance(value, str):
+            return value
+        return value.strip() or None
 
     @model_validator(mode="after")
-    def validate_unique_overrides(self) -> WindWorkflowRequest:
+    def validate_workflow_contract(self) -> WindWorkflowRequest:
         workflow_keys = [(item.variable, item.direction) for item in self.workflow_overrides]
         if len(workflow_keys) != len(set(workflow_keys)):
             raise ValueError("workflow_overrides contains duplicate variable/direction entries.")
         class_directions = [item.direction for item in self.class_multiplier_overrides]
         if len(class_directions) != len(set(class_directions)):
             raise ValueError("class_multiplier_overrides contains duplicate directions.")
+        profile_directions = [item.direction for item in self.mixed_terrain_profiles]
+        if len(profile_directions) != len(set(profile_directions)):
+            raise ValueError("mixed_terrain_profiles contains duplicate directions.")
+        terrain_override_directions = {
+            item.direction
+            for item in self.class_multiplier_overrides
+            if item.terrain_category is not None or item.mzcat is not None
+        }
+        conflicting_directions = sorted(
+            set(profile_directions) & terrain_override_directions,
+            key=("N", "NE", "E", "SE", "S", "SW", "W", "NW").index,
+        )
+        if conflicting_directions:
+            raise ValueError(
+                "mixed_terrain_profiles cannot be combined with a terrain-category or "
+                "Mz,cat class override for the same direction: " + ", ".join(conflicting_directions)
+            )
+        if self.assessment_status == "reviewed" and not self.reviewed_by:
+            raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
+        if self.assessment_status == "reviewed" and not self.engineer_notes:
+            raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if self.building_dimensions is not None and (
+            self.building_width_m is not None or self.building_length_m is not None
+        ):
+            raise ValueError(
+                "Deprecated building_dimensions cannot be combined with structured "
+                "building_width_m or building_length_m."
+            )
+        if (self.building_width_m is None) != (self.building_length_m is None):
+            raise ValueError(
+                "building_width_m and building_length_m must be provided together, or both omitted."
+            )
+        if (
+            self.average_roof_height_m is not None
+            and self.average_roof_height_m > self.building_height_m
+        ):
+            raise ValueError("Average roof height must not exceed the overall building height.")
         return self
+
+
+class MixedTerrainSegmentContribution(BaseModel):
+    """One Table 4.1 contribution inside a Clause 4.2.3 averaging window."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    start_distance_m: float
+    end_distance_m: float
+    clipped_start_distance_m: float
+    clipped_end_distance_m: float
+    included_length_m: float
+    weight_fraction: float
+    terrain_category: TerrainCategoryLabel
+    table_mzcat: float
+    weighted_contribution: float
+    source_reference: str
+
+
+class MixedTerrainAssessment(BaseModel):
+    """Traceable Clause 4.2.3 calculation for one wind direction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    direction: WindDirection
+    reference_height_h_m: float | None = None
+    assessment_height_z_m: float
+    assessment_height_basis: Literal[
+        "average_roof_height_h",
+        "explicit_height_z",
+        "a0_workflow_reference_height",
+    ]
+    lag_distance_xi_m: float
+    averaging_distance_xa_m: float
+    window_start_distance_m: float
+    window_end_distance_m: float
+    covered_distance_m: float
+    mode: Literal["homogeneous", "mixed_weighted", "a0_mandatory"]
+    contributions: list[MixedTerrainSegmentContribution] = Field(default_factory=list)
+    weighted_mzcat: float
+    profile_source_reference: str | None = None
+    lookup_source_reference: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WindVariableAssessment(BaseModel):
     """Reviewable value for one AS/NZS site wind workflow variable."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     variable: WindWorkflowVariable
     label: str
@@ -787,8 +1437,11 @@ class WindVariableAssessment(BaseModel):
 class SiteWindSpeedRow(BaseModel):
     """Directional Vsit,b row assembled from reviewed workflow variables."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     direction: WindDirection
     vr: float | None = None
+    mc: float | None = None
     md: float | None = None
     mzcat: float | None = None
     ms: float | None = None
@@ -800,27 +1453,81 @@ class SiteWindSpeedRow(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class DesignWindSpeedCandidate(BaseModel):
+    """One interpolated Vsit,b candidate inside a Clause 2.3 design sector."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    beta_deg: float
+    vsitb_mps: float
+
+
+class DesignWindSpeedRow(BaseModel):
+    """Building-orthogonal ultimate design wind speed for one plan face."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    face: BuildingPlanFace
+    theta_deg: float
+    beta_deg: float
+    sector_start_beta_deg: float
+    sector_end_beta_deg: float
+    candidates: list[DesignWindSpeedCandidate]
+    raw_vdes_theta_mps: float
+    vdes_theta_mps: float
+    minimum_uls_applied: bool = False
+    is_governing: bool = False
+
+
 class WindWorkflowResult(BaseModel):
-    """AS/NZS 1170.2 site wind workflow result through Vsit,b."""
+    """AS/NZS 1170.2 workflow result through Vsit,b and Vdes,theta."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     input: WindWorkflowRequest
     site: SiteLocation
-    wind_region_assessment: WindRegionAssessment | None = None
-    regional_wind_speed_assessment: RegionalWindSpeedAssessment | None = None
-    direction_multiplier_assessment: DirectionMultiplierAssessment | None = None
-    assessment_status: AssessmentStatus = "draft"
-    engineer_notes: str | None = None
-    overrides_applied: list[WindVariableOverride] = Field(default_factory=list)
+    wind_region_assessment: PublicWindRegionAssessment
+    regional_wind_speed_assessment: RegionalWindSpeedAssessment
+    direction_multiplier_assessment: DirectionMultiplierAssessment
     variables: list[WindVariableAssessment]
     directional_vsitb: list[SiteWindSpeedRow]
+    mixed_terrain_assessments: list[MixedTerrainAssessment] = Field(default_factory=list)
+    design_wind_speeds: list[DesignWindSpeedRow] = Field(default_factory=list)
+    governing_directions: list[WindDirection] = Field(default_factory=list)
     governing_direction: WindDirection | None = None
     governing_vsitb: float | None = None
+    governing_vdes_faces: list[BuildingPlanFace] = Field(default_factory=list)
+    governing_vdes_mps: float | None = None
+    design_wind_speed_basis: str = (
+        "AS/NZS 1170.2:2021 Clause 2.3: maximum linearly interpolated Vsit,b "
+        "within beta = theta +/-45 degrees; ultimate Vdes,theta >= 30 m/s."
+    )
+    integrity_token: str | None = Field(
+        default=None,
+        description="Server-issued integrity token required by completed-result report routes.",
+    )
     evidence_references: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
-        "OpenWind-AU organises preliminary site wind evidence through Vsit,b for "
-        "engineering review. It does not calculate final pressures and does not certify "
-        "AS/NZS 1170.2 compliance."
+        "OpenWind-AU organises site wind evidence through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta for engineering review. Pressure coefficients and "
+        "design pressures are outside this workflow."
+    )
+
+
+class CompletedWindWorkflowPdfRequest(BaseModel):
+    """Signed workflow result plus a browser-captured presentation map."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    result: WindWorkflowResult
+    map_screenshot: str | None = Field(
+        default=None,
+        max_length=3_000_000,
+        description=(
+            "Optional browser-captured map as an exact base64 PNG or JPEG data URI. "
+            "The signed workflow result remains the source of numerical report values."
+        ),
     )
 
 

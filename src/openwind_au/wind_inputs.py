@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
-from importlib import resources
-from pathlib import Path
 from typing import Any
 
 import folium
 from shapely.geometry import mapping, shape
 
+from openwind_au.errors import ServiceNotReadyError
 from openwind_au.models import (
     DirectionMultiplierAssessment,
     DirectionMultiplierRow,
@@ -22,18 +20,39 @@ from openwind_au.models import (
 )
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    SUPPORTED_AU_WIND_REGIONS,
+    direction_multiplier_row_issues,
     regional_wind_speed,
     table_region_key,
 )
+from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
+    MD_EXPECTED_SHA256_ENV,
+    MD_TABLE_ENV,
+    TRUSTED_PACKAGED_VALUES_SHA256,
+    VR_DATA_FILE,
+    VR_EXPECTED_SHA256_ENV,
+    VR_TABLE_ENV,
+    load_lookup_data,
+    load_packaged_lookup_data,
+    lookup_metadata_warnings,
+    lookup_provenance_issues,
+    source_reference,
+    trusted_values_sha256,
+)
 from openwind_au.wind_region import assess_wind_region, wind_region_debug
 
-VR_TABLE_ENV = "OPENWIND_VR_TABLE_PATH"
-MD_TABLE_ENV = "OPENWIND_MD_TABLE_PATH"
-VR_DATA_FILE = "regional_wind_speeds.json"
-MD_DATA_FILE = "direction_multipliers.json"
-VERIFIED_LOOKUP_REVIEW_STATUS = "verified_against_standard"
-VR_METADATA_WARNING = "VR lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
-MD_METADATA_WARNING = "Md lookup table metadata is not marked verified against AS/NZS 1170.2:2021."
+VR_METADATA_WARNING = "VR lookup table does not have complete independent reviewer/date metadata."
+MD_METADATA_WARNING = "Md lookup table does not have complete independent reviewer/date metadata."
+VR_EQUATION_REFERENCE = "AS/NZS 1170.2:2021 Table 3.1(A) regional equation"
+VR_SOURCE_CLAUSE = "Section 3"
+VR_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Section 3 Table 3.1(A)"
+VR_SOURCE_TABLE = "Table 3.1(A) - Regional wind speeds - Australia"
+MD_SOURCE_CLAUSE = "Section 3"
+MD_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Section 3 Table 3.2(A)"
+MD_SOURCE_TABLE = "Table 3.2(A) - Wind direction multiplier (Md) - Australia"
+EXPECTED_VR_TABLE_REGIONS = ("A", "B", "C", "D")
+EXPECTED_MD_TABLE_REGIONS = ("A0", "A1", "A2", "A3", "A4", "A5", "B1", "B2", "C", "D")
 
 
 def regional_wind_speed_assessment(
@@ -47,23 +66,42 @@ def regional_wind_speed_assessment(
     data = load_vr_tables()
     ari_years = parse_ari_years(annual_exceedance_probability)
     table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
-    table = data.get("tables", {}).get(table_key, {})
     source = source_reference(data)
     warnings = [
         "VR values are table lookups for engineering review; confirm against the current "
         "project standard."
     ]
+    if wind_region.wind_region in {"C", "D"}:
+        if os.environ.get(VR_TABLE_ENV):
+            warnings.append(
+                f"Region {wind_region.wind_region} requires distance-based coastal VR "
+                "interpolation. Automatic coastal interpolation is not implemented; treat an "
+                "exact configured row as site-specific only when its interpolation has been "
+                "independently reviewed."
+            )
+        else:
+            warnings.append(
+                f"VR uses the Region {wind_region.wind_region} maximum from Table 3.1(A). "
+                "The required distance-based interpolation from the smoothed coastline is not "
+                "implemented."
+            )
     warnings.extend(lookup_metadata_warnings(data, VR_METADATA_WARNING))
-    if os.environ.get(VR_TABLE_ENV):
-        vr_ult, interpolation = lookup_vr(table.get("ultimate", {}), ari_years)
-        vr_serv, service_note = lookup_vr(table.get("serviceability", {}), 25)
-    else:
-        vr_ult = regional_wind_speed(wind_region.wind_region, ari_years)
-        vr_serv = regional_wind_speed(wind_region.wind_region, 25)
-        interpolation = (
-            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
-            "rounded to the nearest 1 m/s."
-        )
+    vr_ult, interpolation = configured_regional_wind_speed(
+        wind_region.wind_region,
+        ari_years,
+        lookup_data=data,
+    )
+    if not os.environ.get(VR_TABLE_ENV) or (
+        interpolation is not None and "regional equation" in interpolation
+    ):
+        source = VR_EQUATION_REFERENCE
+    vr_serv, service_note = configured_regional_wind_speed(
+        wind_region.wind_region,
+        25,
+        lookup_data=data,
+        serviceability=True,
+    )
+    if not os.environ.get(VR_TABLE_ENV):
         service_note = None
     if vr_ult is None:
         warnings.append(
@@ -82,6 +120,11 @@ def regional_wind_speed_assessment(
         f"Ultimate ARI: {ari_years} years",
         "Serviceability ARI: 25 years",
     ]
+    if wind_region.wind_region in {"C", "D"} and not os.environ.get(VR_TABLE_ENV):
+        lookup_values.append(
+            f"Regional speed basis: Region {wind_region.wind_region} maximum; coastal "
+            "interpolation not applied"
+        )
     lookup_values.append(
         f"VR,ult: {vr_ult:.1f} m/s" if vr_ult is not None else "VR,ult: manual input required"
     )
@@ -107,9 +150,27 @@ def direction_multiplier_assessment(
 ) -> DirectionMultiplierAssessment:
     """Return Md values for all eight directions."""
 
+    if wind_region.wind_region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in A0, A1, A2, A3, A4, or A5."
+        )
+    if wind_region.wind_region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in B1 or B2."
+        )
     data = load_md_tables()
-    table_key = table_region_key(wind_region.wind_region, data.get("tables", {}))
-    values = data.get("tables", {}).get(table_key, {})
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.2(A) Md lookup: tables must be an object")
+    table_key = table_region_key(wind_region.wind_region, tables)
+    values = tables.get(table_key, {})
+    issues = direction_multiplier_row_issues(values)
+    if issues:
+        raise ServiceNotReadyError(
+            f"Invalid Table 3.2(A) Md row for {wind_region.wind_region}: {'; '.join(issues)}"
+        )
     source = source_reference(data)
     numeric_values = [
         float(values[direction]) for direction in DIRECTIONS if values.get(direction) is not None
@@ -168,7 +229,7 @@ def wind_region_map_html(site: SiteLocation, assessment: WindRegionAssessment) -
     ).add_to(fmap)
     try:
         diagnostics = wind_region_debug(site, include_geometry=True)
-    except ValueError:
+    except (ServiceNotReadyError, ValueError):
         diagnostics = None
     if diagnostics:
         for neighbour in diagnostics.get("neighbouring_polygons", []):
@@ -270,7 +331,7 @@ def run_wind_region_validation_cases() -> list[dict[str, Any]]:
             confidence = assessment.confidence
             distance = assessment.distance_to_boundary_m
             diagnosis = validation_diagnosis(case, assessment, status)
-        except ValueError as exc:
+        except (ServiceNotReadyError, ValueError) as exc:
             actual = None
             status = "warning"
             confidence = "low"
@@ -336,63 +397,275 @@ def lookup_vr(
     table: dict[str, Any] | dict[int, Any],
     ari_years: int,
 ) -> tuple[float | None, str | None]:
-    """Return VR from a table, interpolating only between available ARI rows."""
+    """Return an exact configured VR row without inventing intermediate values."""
 
-    numeric_table = {int(year): float(value) for year, value in table.items() if value is not None}
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    if 1 < ari_years < 5:
+        raise ValueError(
+            "AS/NZS 1170.2:2021 Table 3.1(A) defines V1 and the regional equation for R >= 5; "
+            "R must be 1 or at least 5 years."
+        )
+
+    numeric_table = _validated_vr_row(table)
     if not numeric_table:
         return None, None
     if ari_years in numeric_table:
         return numeric_table[ari_years], None
-    years = sorted(numeric_table)
-    if ari_years <= years[0] or ari_years >= years[-1]:
-        return None, f"ARI {ari_years} years is outside the VR table range; manual input required."
-    lower = max(year for year in years if year < ari_years)
-    upper = min(year for year in years if year > ari_years)
-    ratio = (math.log(ari_years) - math.log(lower)) / (math.log(upper) - math.log(lower))
-    value = numeric_table[lower] + (numeric_table[upper] - numeric_table[lower]) * ratio
-    return round(value, 1), f"Interpolated between {lower} and {upper} year ARI rows."
+    return None, f"ARI {ari_years} years is not an exact configured VR row; manual input required."
+
+
+def vr_table_issues(value: Any) -> list[str]:
+    """Return structural and numeric failures for one configured regional VR table."""
+
+    if not isinstance(value, dict):
+        return ["region table must be an object"]
+    issues: list[str] = []
+    allowed_members = {"ultimate", "serviceability"}
+    unexpected = sorted(str(member) for member in value if member not in allowed_members)
+    if unexpected:
+        issues.append(f"unexpected members: {', '.join(unexpected)}")
+    for value_kind in ("ultimate", "serviceability"):
+        row = value.get(value_kind)
+        if not isinstance(row, dict) or not row:
+            issues.append(f"{value_kind} must be a non-empty object")
+            continue
+        try:
+            _validated_vr_row(row)
+        except ServiceNotReadyError as exc:
+            issues.append(f"{value_kind}: {exc}")
+    return issues
+
+
+def _validated_vr_row(table: Any) -> dict[int, float]:
+    """Normalize one configured VR row only after strict schema validation."""
+
+    if not isinstance(table, dict):
+        raise ServiceNotReadyError("VR row must be an object")
+    numeric_table: dict[int, float] = {}
+    for raw_year, raw_value in table.items():
+        if isinstance(raw_year, bool):
+            raise ServiceNotReadyError("VR ARI keys must be positive integer years")
+        if isinstance(raw_year, int):
+            year = raw_year
+        elif isinstance(raw_year, str) and re.fullmatch(r"[1-9]\d*", raw_year):
+            try:
+                year = int(raw_year)
+            except (OverflowError, ValueError) as exc:
+                raise ServiceNotReadyError(
+                    "VR ARI key must be a canonical positive integer year"
+                ) from exc
+        else:
+            raise ServiceNotReadyError("VR ARI key must be a canonical positive integer year")
+        if year != 1 and year < 5:
+            raise ServiceNotReadyError(
+                f"VR ARI {year} is outside Table 3.1(A); use 1 or at least 5 years"
+            )
+        if year in numeric_table:
+            raise ServiceNotReadyError(f"VR row contains duplicate normalized ARI {year}")
+        try:
+            numeric_value = float(raw_value)
+        except (OverflowError, TypeError, ValueError):
+            numeric_value = math.nan
+        if isinstance(raw_value, bool) or not isinstance(raw_value, int | float):
+            numeric_value = math.nan
+        if not math.isfinite(numeric_value) or not 0 < numeric_value <= 200:
+            raise ServiceNotReadyError(
+                "VR value for the configured ARI must be a finite number greater than 0 "
+                "and not greater than 200 m/s"
+            )
+        numeric_table[year] = numeric_value
+    return numeric_table
+
+
+def _vr_row_matches_packaged_table(
+    *,
+    wind_region: str,
+    value_kind: str,
+    configured_row: dict[str, Any] | dict[int, Any],
+) -> bool:
+    """Return whether a configured row is the unchanged packaged standard row."""
+
+    packaged = load_packaged_lookup_data(VR_DATA_FILE)
+    packaged_tables = packaged.get("tables", {})
+    packaged_key = table_region_key(wind_region, packaged_tables)
+    packaged_region = packaged_tables.get(packaged_key, {})
+    packaged_row = packaged_region.get(value_kind, {}) if isinstance(packaged_region, dict) else {}
+    if not isinstance(packaged_row, dict):
+        return False
+    configured_values = _validated_vr_row(configured_row)
+    packaged_values = _validated_vr_row(packaged_row)
+    return configured_values == packaged_values
+
+
+def configured_regional_wind_speed(
+    wind_region: str,
+    ari_years: int,
+    *,
+    lookup_data: dict[str, Any] | None = None,
+    serviceability: bool = False,
+) -> tuple[float | None, str | None]:
+    """Return VR through the same equation-or-configured-table path used by the API."""
+
+    if wind_region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {wind_region}")
+    if ari_years < 1:
+        raise ValueError("Annual recurrence interval must be at least 1 year.")
+    if 1 < ari_years < 5:
+        raise ValueError(
+            "AS/NZS 1170.2:2021 Table 3.1(A) defines V1 and the regional equation for R >= 5; "
+            "R must be 1 or at least 5 years."
+        )
+    if not os.environ.get(VR_TABLE_ENV):
+        note = (
+            "Calculated from AS/NZS 1170.2:2021 Table 3.1(A) regional equation and "
+            "rounded to the nearest 1 m/s."
+        )
+        if wind_region in {"C", "D"}:
+            note += (
+                f" This is the Region {wind_region} maximum; distance-based interpolation "
+                "from the smoothed coastline is not implemented."
+            )
+        return (
+            regional_wind_speed(wind_region, ari_years),
+            note,
+        )
+
+    data = lookup_data if lookup_data is not None else load_vr_tables()
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.1(A) VR lookup: tables must be an object")
+    table_key = table_region_key(wind_region, tables)
+    table = tables.get(table_key, {})
+    issues = vr_table_issues(table)
+    if issues:
+        raise ServiceNotReadyError(
+            f"Invalid Table 3.1(A) VR table for {wind_region}: {'; '.join(issues)}"
+        )
+    value_kind = "serviceability" if serviceability else "ultimate"
+    configured_row = table[value_kind]
+    exact_value, note = lookup_vr(configured_row, ari_years)
+    if exact_value is not None:
+        return exact_value, None
+    if _vr_row_matches_packaged_table(
+        wind_region=wind_region,
+        value_kind=value_kind,
+        configured_row=configured_row,
+    ):
+        note = (
+            "Configured VR rows match the packaged Table 3.1(A) values; calculated from the "
+            "regional equation and rounded to the nearest 1 m/s."
+        )
+        if wind_region in {"C", "D"}:
+            note += (
+                f" This is the Region {wind_region} maximum; distance-based interpolation "
+                "from the smoothed coastline is not implemented."
+            )
+        return regional_wind_speed(wind_region, ari_years), note
+    return None, note
+
+
+def vr_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 3.1(A) structure, source, and digest validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=VR_DATA_FILE,
+            expected_digest_env=VR_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[VR_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=VR_SOURCE_CLAUSE,
+            expected_standard_reference=VR_STANDARD_REFERENCE,
+            expected_table=VR_SOURCE_TABLE,
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+            payload_key="tables",
+        )
+    )
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        return [*issues, "tables must be an object"]
+    missing = [region for region in EXPECTED_VR_TABLE_REGIONS if region not in tables]
+    unexpected = [str(region) for region in tables if region not in EXPECTED_VR_TABLE_REGIONS]
+    if missing:
+        issues.append(f"tables is missing regions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"tables contains unexpected regions: {', '.join(sorted(unexpected))}")
+    for region in EXPECTED_VR_TABLE_REGIONS:
+        issues.extend(f"{region}: {issue}" for issue in vr_table_issues(tables.get(region)))
+    return issues
+
+
+def md_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 3.2(A) structure, source, and digest validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=MD_DATA_FILE,
+            expected_digest_env=MD_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[MD_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=MD_SOURCE_CLAUSE,
+            expected_standard_reference=MD_STANDARD_REFERENCE,
+            expected_table=MD_SOURCE_TABLE,
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+            payload_key="tables",
+        )
+    )
+    tables = data.get("tables")
+    if not isinstance(tables, dict):
+        return [*issues, "tables must be an object"]
+    missing = [region for region in EXPECTED_MD_TABLE_REGIONS if region not in tables]
+    unexpected = [str(region) for region in tables if region not in EXPECTED_MD_TABLE_REGIONS]
+    if missing:
+        issues.append(f"tables is missing regions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"tables contains unexpected regions: {', '.join(sorted(unexpected))}")
+    for region in EXPECTED_MD_TABLE_REGIONS:
+        issues.extend(
+            f"{region}: {issue}" for issue in direction_multiplier_row_issues(tables.get(region))
+        )
+    return issues
 
 
 def load_vr_tables() -> dict[str, Any]:
     """Load editable regional wind speed lookup data."""
 
-    return load_lookup_data(VR_TABLE_ENV, VR_DATA_FILE)
+    data = load_lookup_data(VR_TABLE_ENV, VR_DATA_FILE)
+    issues = vr_lookup_issues(data, require_reviewed=False)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.1(A) VR lookup data: {'; '.join(issues)}")
+    return data
 
 
 def load_md_tables() -> dict[str, Any]:
     """Load editable direction multiplier lookup data."""
 
-    return load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
-
-
-def load_lookup_data(env_var: str, package_file: str) -> dict[str, Any]:
-    """Load lookup JSON from an env override or packaged data file."""
-
-    configured = os.environ.get(env_var)
-    if configured:
-        path = Path(configured)
-        return json.loads(path.read_text(encoding="utf-8"))
-    data_path = resources.files("openwind_au.data").joinpath(package_file)
-    return json.loads(data_path.read_text(encoding="utf-8"))
-
-
-def lookup_metadata_warnings(data: dict[str, Any], warning: str) -> list[str]:
-    """Return a warning when lookup source metadata is not marked verified."""
-
-    source = data.get("source", {})
-    if source.get("review_status") == VERIFIED_LOOKUP_REVIEW_STATUS:
-        return []
-    return [warning]
-
-
-def source_reference(data: dict[str, Any]) -> str:
-    """Build a compact source reference string from lookup metadata."""
-
-    source = data.get("source", {})
-    parts = [
-        source.get("title"),
-        source.get("standard_reference"),
-        source.get("review_status"),
-        source.get("status"),
-    ]
-    return "; ".join(str(part) for part in parts if part)
+    data = load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
+    issues = md_lookup_issues(data, require_reviewed=False)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.2(A) Md lookup data: {'; '.join(issues)}")
+    return data

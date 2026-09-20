@@ -7,15 +7,41 @@ validation before non-expert users should rely on the output.
 
 ## Current Position
 
-- `VR` has packaged AS/NZS 1170.2:2021 lookup data with review metadata.
-- The packaged `Md` data has reviewed rows for the Australian 2021 production regions `A0-A5`,
-  `B1`, `B2`, `C`, and `D`. Readiness checks the labels actually exposed by the configured GIS
-  dataset, so a custom generic or unknown region remains blocked unless it has a reviewed row.
+- `VR` has packaged AS/NZS 1170.2:2021 lookup data and source metadata; named independent
+  reviewer/date sign-off remains pending.
+- The packaged `Md` data has rows for the Australian 2021 production regions `A0-A5`, `B1`,
+  `B2`, `C`, and `D`, but named independent reviewer/date sign-off remains pending. Readiness
+  checks both that sign-off and the labels actually exposed by the configured GIS dataset, so a
+  custom generic or unknown region remains blocked unless it has an approved row.
+- `Mc` is now a first-class Clause 3.4/Table 3.3 factor in the workflow, reports, integrity seal,
+  API and MCP tools. Generic Region B is rejected because B1 and B2 use different values.
+- Clause 3.3 `Md = 1.0` cases are explicit and enforced for chimneys/tanks/poles and B2/C/D
+  cladding or immediate supports.
+- `Mz,cat` Table 4.1 and `Ms` Table 4.2 values now have structured packaged assets, source/table
+  metadata, canonical value digests, deployment overrides, deterministic snapshots, and readiness
+  checks. Independent named reviewer/date sign-off is still required before a certified release.
 - `Mz,cat`, `Ms`, and `Mt` are still review workflows, not certified design outputs.
-- Reference calculation 7989 can be reproduced through `/api/reference-validation/7989`.
-- Applying reviewed class overrides for reference calculation 7989 matches all directional
-  `Mz,cat`, `Ms`, and `Mt` comparison points, which confirms the workflow can carry reviewed
-  classes through the calculation.
+- Workflow reports omit certification claims and do not display an issue status or reviewer label.
+  `assessment_status`, `reviewed_by`, and `engineer_notes` remain optional
+  legacy/API-compatibility request metadata; the browser has no review/status controls and omits
+  them, while the server defaults `assessment_status` to `draft`.
+- Completed-result report routes verify a server-issued HMAC token and deployment readiness
+  requires a durable shared signing key, so a modified browser/API payload cannot be rendered as
+  an authentic completed result.
+- Public assessment JSON omits local wind-region dataset paths and raw region geometry; diagnostic
+  routes are hidden unless explicitly enabled for a trusted local session.
+- The OSM outage cache now uses coordinate-obscuring hashed filenames, strict payload validation,
+  atomic writes, 25 MiB per-entry and 256 MiB/512-entry quotas, and 30-day expiry. Cache payloads
+  still contain location and footprint data and require operator-controlled storage permissions.
+- Production mode now requires a trusted Host allowlist, disables interactive API documentation,
+  bounds request bodies and request collections, rejects ambiguous JSON, sanitises validation
+  errors, adds browser security headers, and fails assessment traffic closed on readiness.
+- The anonymized class-level reference can be reproduced through
+  `/api/reference-validation/anonymized`; its OSM-derived geometry is translated and stripped of
+  original identifiers and tags.
+- Applying the encoded reviewed class overrides makes all 24 class-label comparison points match.
+  This checks override transport and class mapping only; numeric `Mz,cat`, `Ms`, and `Mt`
+  calculations are covered separately by deterministic calculation tests.
 - The default public-data run still differs from the reference classes, which means the automated
   evidence-to-class logic is not ready to stand alone.
 
@@ -34,7 +60,7 @@ third-party binary format.
 | Need | Current / Candidate Source | Consumer-Ready Requirement |
 | --- | --- | --- |
 | Terrain DEM | Geoscience Australia 1-second SRTM-derived DEM, NASA SRTM, or configured DEM rasters | Local cache with versioned metadata, datum notes, and fallback behaviour |
-| Wind lookup data | AS/NZS 1170.2:2021 and AS 4055:2021 verified tables | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
+| Wind lookup data | Derived AS/NZS 1170.2:2021 assets with named independent sign-off still pending; separate AS 4055 work remains | Structured JSON/SQLite tables with reviewer sign-off and deterministic tests |
 | Point elevation | Configured DEM first; Open-Meteo opt-in fallback/comparison provider | Source provenance in every report and clear warnings for external API data |
 | Map context | OSM, MapTiler/Stadia, ESRI imagery, or project-configured tiles | Attribution, key management, and offline/error behaviour |
 | Address search | Photon autocomplete plus deliberate Nominatim single-address resolution | Self-hosted or contracted provider capacity, caching, attribution, and outage handling |
@@ -42,26 +68,38 @@ third-party binary format.
 
 ## Must-Fix Before Consumer Release
 
-1. Create authoritative lookup assets for `Mz,cat`, `Ms`, `Mt`, AS 4055 classes, pressure
-   coefficients, and any height/terrain interpolation rules that are intended to be automated.
-2. Add a standard-table verification workflow that checks every derived lookup table against a
-   reviewer-approved source snapshot without exposing licensed source text.
-3. Expand reference validation beyond job 7989 to cover multiple regions, terrain categories,
-   shielding states, heights, and topographic classes.
+1. Create authoritative lookup assets for the remaining `Mt`, AS 4055 classes, pressure
+   coefficients, and any further rules intended to be automated.
+2. Add independent named reviewer/date sign-off to every derived lookup and extend the current
+   deterministic snapshots and digests to all remaining tables without exposing licensed text.
+3. Expand reference validation beyond the anonymized baseline to cover multiple regions, terrain
+   categories, shielding states, heights, and topographic classes.
 4. Promote `Mz,cat`, `Ms`, and `Mt` from indicative to reviewed/certified only after the lookup
    tables, class selection logic, and edge cases have independent engineering sign-off.
-5. Add consumer-facing guardrails: project setup wizard, explicit standard/version selection,
-   required engineer review states, report watermarking, and blocked export when critical inputs
-   are missing.
+5. Complete consumer-facing guardrails beyond signed-result integrity and strict request
+   validation: add project setup, explicit standard/version selection, and blocked export when
+   critical inputs are missing.
 6. Replace live-network assumptions with cache-first data services and visible data-source health
    checks.
 7. Add licensing and attribution checks for all bundled and live data sources.
+8. Add production GIS detection and source referencing of ordered Clause 4.2.3 terrain-transition
+   distances; the non-A0 weighted calculation already accepts complete `mixed_terrain_profiles`,
+   while A0 profiles are evidence-only. Also complete cyclonic C/D coastal interpolation and the
+   Clause 4.4.2 most-adverse
+   cross-section/escarpment checks.
+9. Validate the production wind-region boundary dataset against an Amendment 2-reviewed edition
+   and record a content digest in result provenance.
+10. Complete consistent provider redirect/SSRF controls, bounded response downloads and total
+    deadlines, and concurrency/rate limits before exposing live public provider integrations at
+    consumer scale. OSM cache quotas, expiry, strict reads, and atomic writes are implemented, but
+    they do not replace those outstanding network controls.
 
 ## Release Gate
 
 A consumer-ready release should not be tagged until:
 
 - `GET /health` returns HTTP 200 with `status: "ready"` under the production configuration;
+- `openwind-au check` returns exit status 0 for that same production configuration;
 - full test suite and lint pass;
 - reference validations pass for a representative project set;
 - all bundled lookup assets have source metadata and reviewer approval;

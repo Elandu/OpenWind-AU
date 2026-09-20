@@ -2,12 +2,43 @@
 
 from __future__ import annotations
 
-import json
+import logging
 import math
-from importlib import resources
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
+from openwind_au.errors import ServiceNotReadyError
+from openwind_au.standard_lookup_tables import (
+    MD_DATA_FILE,
+    MD_TABLE_ENV,
+    MS_DATA_FILE,
+    MS_EXPECTED_SHA256_ENV,
+    MS_TABLE_ENV,
+    TRUSTED_PACKAGED_VALUES_SHA256,
+    finite_lookup_number,
+    load_lookup_data,
+    lookup_metadata_warnings,
+    lookup_provenance_issues,
+    source_reference,
+    trusted_values_sha256,
+)
+
 DIRECTIONS: tuple[str, ...] = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+SUPPORTED_AU_WIND_REGIONS: tuple[str, ...] = (
+    "A",
+    "A0",
+    "A1",
+    "A2",
+    "A3",
+    "A4",
+    "A5",
+    "B",
+    "B1",
+    "B2",
+    "C",
+    "D",
+)
 REGIONAL_WIND_SPEED_EQUATIONS: dict[str, tuple[float, float]] = {
     "A": (67.0, 41.0),
     "B": (106.0, 92.0),
@@ -20,6 +51,50 @@ REGIONAL_WIND_SPEED_V1: dict[str, float] = {
     "C": 23.0,
     "D": 23.0,
 }
+CLIMATE_CHANGE_MULTIPLIERS: dict[str, float] = {
+    "A": 1.0,
+    "A0": 1.0,
+    "A1": 1.0,
+    "A2": 1.0,
+    "A3": 1.0,
+    "A4": 1.0,
+    "A5": 1.0,
+    "B1": 1.0,
+    "B2": 1.05,
+    "C": 1.05,
+    "D": 1.05,
+}
+MC_SOURCE_CLAUSE = "Clause 3.4"
+MC_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 3.4, Table 3.3"
+MS_METADATA_WARNING = "Ms lookup table does not have complete independent reviewer/date metadata."
+LOGGER = logging.getLogger(__name__)
+MS_SOURCE_CLAUSE = "Clause 4.3"
+MS_STANDARD_REFERENCE = "AS/NZS 1170.2:2021 Clause 4.3, Table 4.2"
+EXPECTED_SHIELDING_PARAMETER_NODES: tuple[float, ...] = (1.5, 3.0, 6.0, 12.0)
+EXPECTED_SHIELDING_REDUCTION_HEIGHT_LIMIT_M = 25.0
+MAX_DIRECTION_MULTIPLIER = 2.0
+ULTIMATE_DESIGN_WIND_SPEED_MINIMUM_M_S = 30.0
+
+
+@dataclass(frozen=True)
+class DesignWindSpeedCandidate:
+    """One site-wind-speed value considered over a design-direction sector."""
+
+    bearing_degrees: float
+    site_wind_speed_m_s: float
+
+
+@dataclass(frozen=True)
+class DesignWindSpeedResult:
+    """Deterministic Clause 2.3 design-wind-speed calculation detail."""
+
+    theta_degrees: float
+    sector_start_degrees: float
+    sector_end_degrees: float
+    candidates: tuple[DesignWindSpeedCandidate, ...]
+    raw_maximum_m_s: float
+    design_wind_speed_m_s: float
+    minimum_applied: bool
 
 
 def table_region_key(region: str, tables: dict[str, Any]) -> str:
@@ -41,6 +116,8 @@ def regional_wind_speed(region: str, ari_years: int) -> float:
     to the nearest 1 m/s. The R=1 row is an explicit table value.
     """
 
+    if region not in SUPPORTED_AU_WIND_REGIONS:
+        raise ValueError(f"Unsupported Australian wind region: {region}")
     if ari_years < 1:
         raise ValueError("Annual recurrence interval must be at least 1 year.")
     base_region = table_region_key(region, REGIONAL_WIND_SPEED_EQUATIONS)
@@ -58,32 +135,336 @@ def regional_wind_speed(region: str, ari_years: int) -> float:
     return float(math.floor(unrounded + 0.5))
 
 
-def direction_multiplier_values(region: str) -> dict[str, float]:
-    """Load the packaged Table 3.2(A) direction multipliers for a region."""
+def climate_change_multiplier(region: str) -> float:
+    """Return the Australian climate-change multiplier Mc for a wind region.
 
-    path = resources.files("openwind_au.data").joinpath("direction_multipliers.json")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    table_key = table_region_key(region, data.get("tables", {}))
-    row = data.get("tables", {}).get(table_key)
-    if not row:
+    AS/NZS 1170.2:2021 Table 3.3 distinguishes B1 and B2, so a legacy generic
+    ``B`` classification is rejected rather than silently selecting either value.
+    """
+
+    if region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.3 climate-change multiplier Mc; "
+            "confirm whether the site is in B1 or B2."
+        )
+    try:
+        return CLIMATE_CHANGE_MULTIPLIERS[region]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported Australian wind region: {region}") from exc
+
+
+def direction_multiplier_values(
+    region: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Load the configured Table 3.2(A) direction multipliers for a region."""
+
+    if region not in SUPPORTED_AU_WIND_REGIONS:
         raise ValueError(f"Unsupported Australian wind region: {region}")
+    if region == "A":
+        raise ValueError(
+            "Wind region A is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in A0, A1, A2, A3, A4, or A5."
+        )
+    if region == "B":
+        raise ValueError(
+            "Wind region B is ambiguous for Table 3.2(A) direction multiplier Md; "
+            "confirm whether the site is in B1 or B2."
+        )
+    lookup = data if data is not None else load_lookup_data(MD_TABLE_ENV, MD_DATA_FILE)
+    tables = lookup.get("tables")
+    if not isinstance(tables, dict):
+        raise ServiceNotReadyError("Invalid Table 3.2(A) Md lookup: tables must be an object")
+    table_key = table_region_key(region, tables)
+    row = tables.get(table_key)
+    issues = direction_multiplier_row_issues(row)
+    if issues:
+        raise ServiceNotReadyError(f"Invalid Table 3.2(A) Md row for {region}: {'; '.join(issues)}")
     return {direction: float(row[direction]) for direction in DIRECTIONS}
 
 
-def ms_from_shielding_parameter(s: float) -> float:
+def direction_multiplier_row_issues(row: Any) -> list[str]:
+    """Return structural and numeric failures for one configured Md row."""
+
+    if not isinstance(row, dict):
+        return ["row must be an object"]
+    issues = []
+    missing = [direction for direction in DIRECTIONS if direction not in row]
+    unexpected = [str(direction) for direction in row if direction not in DIRECTIONS]
+    if missing:
+        issues.append(f"missing directions: {', '.join(missing)}")
+    if unexpected:
+        issues.append(f"unexpected directions: {', '.join(sorted(unexpected))}")
+    for direction in DIRECTIONS:
+        value = row.get(direction)
+        try:
+            numeric_value = float(value)
+        except (OverflowError, TypeError, ValueError):
+            numeric_value = math.nan
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            numeric_value = math.nan
+        if not math.isfinite(numeric_value) or not 0 < numeric_value <= MAX_DIRECTION_MULTIPLIER:
+            issues.append(
+                f"{direction} must be a finite number greater than 0 and not greater than "
+                f"{MAX_DIRECTION_MULTIPLIER:g}"
+            )
+    return issues
+
+
+def ms_from_shielding_parameter(
+    s: float,
+    data: dict[str, Any] | None = None,
+) -> float:
     """Return Ms by linear interpolation from AS/NZS 1170.2:2021 Table 4.2."""
 
     if not math.isfinite(s):
         raise ValueError("Shielding parameter s must be finite.")
     if s < 0:
         raise ValueError("Shielding parameter s must not be negative.")
-    if s <= 1.5:
-        return 0.7
-    if s >= 12.0:
-        return 1.0
-    points = [(1.5, 0.7), (3.0, 0.8), (6.0, 0.9), (12.0, 1.0)]
+    lookup = data if data is not None else load_ms_table()
+    issues = shielding_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
+    points = [(float(point["s"]), float(point["ms"])) for point in lookup["values"]["points"]]
+    if s <= points[0][0]:
+        return points[0][1]
+    if s >= points[-1][0]:
+        return points[-1][1]
     for (s0, ms0), (s1, ms1) in zip(points, points[1:], strict=True):
         if s <= s1:
             ratio = (s - s0) / (s1 - s0)
             return ms0 + ratio * (ms1 - ms0)
-    return 1.0
+    return points[-1][1]
+
+
+def load_ms_table() -> dict[str, Any]:
+    """Load editable shielding-multiplier lookup data."""
+
+    data = load_lookup_data(MS_TABLE_ENV, MS_DATA_FILE)
+    issues = shielding_lookup_issues(data, require_reviewed=False)
+    if issues:
+        LOGGER.error("Configured Table 4.2 lookup is invalid: %s", "; ".join(issues))
+        raise ServiceNotReadyError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
+    return data
+
+
+def shielding_reduction_height_limit_m(data: dict[str, Any] | None = None) -> float:
+    """Return the Table 4.2 shielding-reduction building-height limit."""
+
+    lookup = data if data is not None else load_ms_table()
+    issues = shielding_lookup_issues(lookup, require_reviewed=False)
+    if issues:
+        raise ValueError(f"Invalid Table 4.2 lookup data: {'; '.join(issues)}")
+    return float(lookup["values"]["maximum_reduction_building_height_m"])
+
+
+def shielding_lookup_warnings(data: dict[str, Any] | None = None) -> list[str]:
+    """Return source-review warnings for the active Table 4.2 lookup."""
+
+    lookup = data if data is not None else load_ms_table()
+    return lookup_metadata_warnings(lookup, MS_METADATA_WARNING)
+
+
+def shielding_source_reference(data: dict[str, Any] | None = None) -> str:
+    """Return the active Table 4.2 source reference."""
+
+    lookup = data if data is not None else load_ms_table()
+    return source_reference(lookup)
+
+
+def shielding_lookup_issues(
+    data: dict[str, Any],
+    *,
+    require_reviewed: bool = True,
+) -> list[str]:
+    """Return Table 4.2 structure and provenance validation failures."""
+
+    try:
+        expected_digest = trusted_values_sha256(
+            package_file=MS_DATA_FILE,
+            expected_digest_env=MS_EXPECTED_SHA256_ENV,
+        )
+    except ValueError as exc:
+        issues = [str(exc)]
+        expected_digest = TRUSTED_PACKAGED_VALUES_SHA256[MS_DATA_FILE]
+    else:
+        issues = []
+    issues.extend(
+        lookup_provenance_issues(
+            data,
+            expected_clause=MS_SOURCE_CLAUSE,
+            expected_standard_reference=MS_STANDARD_REFERENCE,
+            expected_table="Table 4.2",
+            expected_values_sha256=expected_digest,
+            require_reviewed=require_reviewed,
+        )
+    )
+    values = data.get("values")
+    if not isinstance(values, dict):
+        return [*issues, "values must be an object"]
+    if values.get("below_first_point") != "use_first_ms":
+        issues.append("below_first_point must be use_first_ms")
+    if values.get("above_last_point") != "use_last_ms":
+        issues.append("above_last_point must be use_last_ms")
+    if values.get("interpolation") != "linear":
+        issues.append("interpolation must be linear")
+    limit = values.get("maximum_reduction_building_height_m")
+    if limit != EXPECTED_SHIELDING_REDUCTION_HEIGHT_LIMIT_M:
+        issues.append("maximum_reduction_building_height_m must be the normative 25 m")
+    raw_points = values.get("points")
+    if not isinstance(raw_points, list) or len(raw_points) != len(
+        EXPECTED_SHIELDING_PARAMETER_NODES
+    ):
+        return [*issues, "points must contain the four normative Table 4.2 rows"]
+    points: list[tuple[float, float]] = []
+    for index, point in enumerate(raw_points):
+        if not isinstance(point, dict):
+            issues.append(f"points[{index}] must be an object")
+            continue
+        s_value = point.get("s")
+        ms_value = point.get("ms")
+        if not finite_lookup_number(s_value, minimum=0, minimum_inclusive=True):
+            issues.append(f"points[{index}].s must be finite and non-negative")
+            continue
+        if not finite_lookup_number(ms_value, minimum=0, maximum=1):
+            issues.append(f"points[{index}].ms must be finite and between 0 and 1")
+            continue
+        points.append((float(s_value), float(ms_value)))
+    if len(points) == len(raw_points):
+        if tuple(point[0] for point in points) != EXPECTED_SHIELDING_PARAMETER_NODES:
+            issues.append("shielding parameter points must use the normative Table 4.2 nodes")
+        if any(
+            current[0] >= following[0]
+            for current, following in zip(points, points[1:], strict=False)
+        ):
+            issues.append("shielding parameter points must be strictly increasing")
+        if any(
+            current[1] > following[1]
+            for current, following in zip(points, points[1:], strict=False)
+        ):
+            issues.append("Ms values must be non-decreasing")
+    return issues
+
+
+def site_wind_speed(
+    *,
+    vr: float,
+    mc: float,
+    md: float,
+    mzcat: float,
+    ms: float,
+    mt: float,
+) -> float:
+    """Calculate Vsit,b from the six Clause 2.2 site-wind inputs."""
+
+    inputs = {"VR": vr, "Mc": mc, "Md": md, "Mz,cat": mzcat, "Ms": ms, "Mt": mt}
+    invalid = [name for name, value in inputs.items() if not finite_lookup_number(value, minimum=0)]
+    if invalid:
+        raise ValueError(f"Site-wind inputs must be positive and finite: {', '.join(invalid)}")
+    return float(vr) * float(mc) * float(md) * float(mzcat) * float(ms) * float(mt)
+
+
+def design_wind_speed(
+    *,
+    theta_degrees: float,
+    direction_speeds: Mapping[str, float],
+    ultimate_limit_state: bool = True,
+) -> DesignWindSpeedResult:
+    """Calculate Vdes,theta from eight directional site wind speeds.
+
+    Site wind speed is linearly interpolated between the 45-degree direction
+    knots. The maximum is evaluated over the closed sector from theta - 45
+    degrees to theta + 45 degrees. For an ultimate limit state, the returned
+    design wind speed is not permitted to be less than 30 m/s.
+    """
+
+    if (
+        isinstance(theta_degrees, bool)
+        or not isinstance(theta_degrees, int | float)
+        or not math.isfinite(theta_degrees)
+        or not 0 <= theta_degrees < 360
+    ):
+        raise ValueError("Design orientation theta must be finite and in the range [0, 360).")
+    if not isinstance(direction_speeds, Mapping):
+        raise ValueError("Directional site wind speeds must be a mapping.")
+    if not isinstance(ultimate_limit_state, bool):
+        raise ValueError("ultimate_limit_state must be a boolean.")
+    missing = [direction for direction in DIRECTIONS if direction not in direction_speeds]
+    unexpected = sorted(
+        str(direction) for direction in direction_speeds if direction not in DIRECTIONS
+    )
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing directions: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected directions: {', '.join(unexpected)}")
+        raise ValueError(
+            f"Directional site wind speeds must contain exactly N through NW: {'; '.join(details)}"
+        )
+
+    speeds: tuple[float, ...] = tuple(
+        _validated_direction_speed(direction, direction_speeds[direction])
+        for direction in DIRECTIONS
+    )
+    theta = float(theta_degrees)
+    unwrapped_start = theta - 45.0
+    unwrapped_end = theta + 45.0
+    first_knot_index = math.ceil(unwrapped_start / 45.0)
+    last_knot_index = math.floor(unwrapped_end / 45.0)
+    candidate_bearings = {unwrapped_start, unwrapped_end}
+    candidate_bearings.update(
+        knot_index * 45.0 for knot_index in range(first_knot_index, last_knot_index + 1)
+    )
+    candidates = tuple(
+        DesignWindSpeedCandidate(
+            bearing_degrees=_normalise_bearing(unwrapped_bearing),
+            site_wind_speed_m_s=_interpolated_direction_speed(unwrapped_bearing, speeds),
+        )
+        for unwrapped_bearing in sorted(candidate_bearings)
+    )
+    raw_maximum = max(candidate.site_wind_speed_m_s for candidate in candidates)
+    design_speed = (
+        max(raw_maximum, ULTIMATE_DESIGN_WIND_SPEED_MINIMUM_M_S)
+        if ultimate_limit_state
+        else raw_maximum
+    )
+    return DesignWindSpeedResult(
+        theta_degrees=theta,
+        sector_start_degrees=_normalise_bearing(unwrapped_start),
+        sector_end_degrees=_normalise_bearing(unwrapped_end),
+        candidates=candidates,
+        raw_maximum_m_s=raw_maximum,
+        design_wind_speed_m_s=design_speed,
+        minimum_applied=design_speed > raw_maximum,
+    )
+
+
+def _validated_direction_speed(direction: str, value: float) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"Directional site wind speed {direction} must be positive and finite.")
+    return float(value)
+
+
+def _normalise_bearing(bearing_degrees: float) -> float:
+    normalised = bearing_degrees % 360.0
+    return 0.0 if normalised == 0 else normalised
+
+
+def _interpolated_direction_speed(
+    bearing_degrees: float,
+    direction_speeds: tuple[float, ...],
+) -> float:
+    bearing = _normalise_bearing(bearing_degrees)
+    lower_index = int(math.floor(bearing / 45.0))
+    lower_bearing = lower_index * 45.0
+    fraction = (bearing - lower_bearing) / 45.0
+    upper_index = (lower_index + 1) % len(DIRECTIONS)
+    return direction_speeds[lower_index] + fraction * (
+        direction_speeds[upper_index] - direction_speeds[lower_index]
+    )

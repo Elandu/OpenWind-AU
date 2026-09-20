@@ -3,34 +3,144 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import math
 import os
-from typing import Any
+from collections.abc import Sequence
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
+from typing_extensions import TypedDict
 
-from openwind_au.mzcat import indicative_mzcat
+from openwind_au import __version__
+from openwind_au.mixed_terrain import calculate_mixed_terrain_assessment
+from openwind_au.models import (
+    ClimateChangeWindRegionLabel,
+    ExposureWindRegionLabel,
+    MixedTerrainProfile,
+    MixedTerrainSegment,
+    SpecificWindRegionLabel,
+    TerrainCategoryLabel,
+    WindDirection,
+    WindDirectionMultiplierCase,
+    WindRegionLabel,
+)
+from openwind_au.mzcat import indicative_mzcat, load_mzcat_table, mzcat_lookup_warnings
 from openwind_au.standard_calculations import (
     DIRECTIONS,
+    MAX_DIRECTION_MULTIPLIER,
+    climate_change_multiplier,
+    design_wind_speed,
     direction_multiplier_values,
+    load_ms_table,
     ms_from_shielding_parameter,
-    regional_wind_speed,
+    shielding_lookup_warnings,
+    shielding_reduction_height_limit_m,
+    site_wind_speed,
+)
+from openwind_au.standard_lookup_tables import (
+    AS_NZS_1170_2_EDITION,
+    lookup_metadata_warnings,
+    lookup_provenance_snapshot,
+    source_reference,
 )
 from openwind_au.topographic_multiplier import (
     calculate_topographic_multiplier as calculate_mt,
 )
+from openwind_au.wind_inputs import (
+    MD_METADATA_WARNING,
+    VR_EQUATION_REFERENCE,
+    VR_METADATA_WARNING,
+    VR_TABLE_ENV,
+    configured_regional_wind_speed,
+    load_md_tables,
+    load_vr_tables,
+)
 
-STANDARD = "AS/NZS 1170.2:2021 incorporating Amendments 1 and 2"
+STANDARD = AS_NZS_1170_2_EDITION
+MCP_TRANSPORTS = ("stdio", "streamable-http")
+LOOPBACK_ALLOWED_HOSTS = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+LOOPBACK_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:*",
+    "http://localhost:*",
+    "http://[::1]:*",
+]
+
+FeatureType = Literal["hill", "ridge", "escarpment", "valley", "no significant feature"]
+StructureClass = Literal["building", "house", "monopole", "tower", "other"]
+AriYears = Annotated[
+    int,
+    Field(
+        strict=True,
+        ge=1,
+        description="Annual recurrence interval in years; use 1 or at least 5 without an override.",
+    ),
+]
+ReferenceHeight = Annotated[float, Field(strict=True, ge=0, le=200, allow_inf_nan=False)]
+PositiveHeight = Annotated[float, Field(strict=True, gt=0, le=200, allow_inf_nan=False)]
+TopographicHeight = Annotated[float, Field(strict=True, ge=0, le=100_000, allow_inf_nan=False)]
+TopographicDistance = Annotated[float, Field(strict=True, ge=0, le=1_000_000, allow_inf_nan=False)]
+SiteElevation = Annotated[float, Field(strict=True, ge=-500, le=10_000, allow_inf_nan=False)]
+ShieldingParameter = Annotated[float, Field(strict=True, ge=0, le=1_000_000, allow_inf_nan=False)]
+PositiveWindValue = Annotated[float, Field(strict=True, gt=0, le=200, allow_inf_nan=False)]
+EngineeringAzimuth = Annotated[
+    float,
+    Field(
+        strict=True,
+        ge=0,
+        lt=360,
+        allow_inf_nan=False,
+        description="Engineering azimuth in degrees clockwise from true North.",
+    ),
+]
+PositiveMultiplier = Annotated[float, Field(strict=True, gt=0, le=10, allow_inf_nan=False)]
+ClimateChangeMultiplierValue = Annotated[
+    float,
+    Field(strict=True, gt=0, le=2, allow_inf_nan=False),
+]
+DirectionMultiplierValue = Annotated[
+    float,
+    Field(strict=True, gt=0, le=MAX_DIRECTION_MULTIPLIER, allow_inf_nan=False),
+]
+ShieldingMultiplierValue = Annotated[
+    float,
+    Field(strict=True, gt=0, le=1, allow_inf_nan=False),
+]
+StrictBoolean = Annotated[bool, Field(strict=True)]
+MixedTerrainSegments = Annotated[
+    list[MixedTerrainSegment],
+    Field(min_length=1, max_length=256),
+]
+ProfileSourceReference = Annotated[str | None, Field(max_length=1_000)]
+
+
+class CalculationResult(TypedDict):
+    """Stable envelope returned by every OpenWind-AU MCP calculation tool."""
+
+    standard: str
+    clause: str
+    inputs: dict[str, Any]
+    outputs: dict[str, Any]
+    warnings: list[str]
+    engineering_review_required: bool
+
 
 mcp = FastMCP(
     "OpenWind-AU",
     instructions=(
-        "Traceable Australian site-wind calculations through Vsit,b. Inputs that depend on "
-        "site classification or survey evidence must be reviewed by a competent engineer."
+        "Traceable Australian site-wind calculations through cardinal Vsit,b and "
+        "building-orthogonal Vdes,theta. Inputs that depend on site classification or survey "
+        "evidence must be reviewed by a competent engineer."
     ),
     stateless_http=True,
     json_response=True,
 )
+# FastMCP v1 does not expose the low-level server version in its constructor. Setting the
+# supported Server attribute ensures initialize reports the application release, not the SDK.
+mcp._mcp_server.version = __version__
 
 
 def _result(
@@ -39,7 +149,7 @@ def _result(
     inputs: dict[str, Any],
     outputs: dict[str, Any],
     warnings: list[str] | None = None,
-) -> dict[str, Any]:
+) -> CalculationResult:
     return {
         "standard": STANDARD,
         "clause": clause,
@@ -73,62 +183,185 @@ def _finite_value(
     return number
 
 
+def _regional_wind_speed(wind_region: str, ari_years: int) -> tuple[float, list[str], str]:
+    """Resolve ultimate VR through the API's equation-or-configured-table path."""
+
+    data = load_vr_tables()
+    vr, note = configured_regional_wind_speed(
+        wind_region,
+        ari_years,
+        lookup_data=data,
+    )
+    if vr is None:
+        raise ValueError(
+            "Configured regional wind speed table has no ultimate value for "
+            f"{wind_region} at ARI {ari_years} years; manual input is required."
+        )
+    warnings = lookup_metadata_warnings(data, VR_METADATA_WARNING)
+    if note:
+        warnings.append(note)
+    configured_table = bool(os.environ.get(VR_TABLE_ENV))
+    if configured_table and note is None:
+        warnings.append(
+            f"Selected the exact {ari_years}-year ARI row from the configured VR table."
+        )
+    selected_source = (
+        source_reference(data) if configured_table and note is None else VR_EQUATION_REFERENCE
+    )
+    return vr, warnings, selected_source
+
+
+def _direction_multipliers(
+    wind_region: SpecificWindRegionLabel,
+) -> tuple[dict[str, float], list[str], str]:
+    """Resolve Md values and provenance from one validated lookup snapshot."""
+
+    data = load_md_tables()
+    multipliers = direction_multiplier_values(wind_region, data=data)
+    warnings = lookup_metadata_warnings(data, MD_METADATA_WARNING)
+    return multipliers, warnings, source_reference(data)
+
+
 @mcp.tool()
-def calculate_regional_wind_speed(wind_region: str, ari_years: int) -> dict[str, Any]:
+def calculate_regional_wind_speed(
+    wind_region: WindRegionLabel,
+    ari_years: AriYears,
+) -> CalculationResult:
     """Calculate Australian regional wind speed VR for a reviewed region and ARI."""
 
-    vr = regional_wind_speed(wind_region, ari_years)
+    vr, lookup_warnings, selected_source = _regional_wind_speed(wind_region, ari_years)
     return _result(
         clause="Table 3.1(A)",
         inputs={"wind_region": wind_region, "ari_years": ari_years},
-        outputs={"vr_mps": vr},
-        warnings=["Confirm the wind-region boundary and applicable NCC jurisdictional variations."],
-    )
-
-
-@mcp.tool()
-def get_direction_multipliers(wind_region: str) -> dict[str, Any]:
-    """Return the eight Australian wind direction multipliers Md for a reviewed region."""
-
-    multipliers = direction_multiplier_values(wind_region)
-    return _result(
-        clause="Table 3.2(A)",
-        inputs={"wind_region": wind_region},
-        outputs={"md": multipliers, "any_direction_md": 1.0},
-    )
-
-
-@mcp.tool()
-def calculate_terrain_height_multiplier(
-    terrain_category: str,
-    height_m: float,
-    wind_region: str,
-) -> dict[str, Any]:
-    """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
-
-    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
-    mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
-    return _result(
-        clause="Clauses 4.2.2 and 4.2.3; Table 4.1",
-        inputs={
-            "terrain_category": terrain_category,
-            "height_m": height_m,
-            "wind_region": wind_region,
-        },
-        outputs={"mzcat": round(mzcat, 6)},
+        outputs={"vr_mps": vr, "source_reference": selected_source},
         warnings=[
-            "The terrain category and any mixed-fetch weighted averaging must be "
-            "reviewed separately."
+            "Confirm the wind-region boundary and applicable NCC jurisdictional variations.",
+            *lookup_warnings,
         ],
     )
 
 
 @mcp.tool()
+def calculate_climate_change_multiplier(
+    wind_region: ClimateChangeWindRegionLabel,
+) -> CalculationResult:
+    """Return climate-change multiplier Mc for a reviewed Australian wind region."""
+
+    mc = climate_change_multiplier(wind_region)
+    return _result(
+        clause="Clause 3.4; Table 3.3",
+        inputs={"wind_region": wind_region},
+        outputs={"mc": mc},
+    )
+
+
+@mcp.tool()
+def get_direction_multipliers(wind_region: SpecificWindRegionLabel) -> CalculationResult:
+    """Return the eight Australian wind direction multipliers Md for a reviewed region."""
+
+    multipliers, warnings, selected_source = _direction_multipliers(wind_region)
+    return _result(
+        clause="Table 3.2(A)",
+        inputs={"wind_region": wind_region},
+        outputs={
+            "md": multipliers,
+            "any_direction_md": 1.0,
+            "source_reference": selected_source,
+        },
+        warnings=warnings,
+    )
+
+
+@mcp.tool()
+def calculate_terrain_height_multiplier(
+    terrain_category: TerrainCategoryLabel,
+    height_m: PositiveHeight,
+    wind_region: ExposureWindRegionLabel,
+) -> CalculationResult:
+    """Calculate Mz,cat from a reviewed terrain category, height, and wind region."""
+
+    height_m = _finite_value("Height", height_m, minimum=0, maximum=200, minimum_inclusive=False)
+    lookup = load_mzcat_table()
+    mzcat = indicative_mzcat(
+        terrain_category,
+        height_m,
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
+    return _result(
+        clause="Clause 4.2.2; Table 4.1",
+        inputs={
+            "terrain_category": terrain_category,
+            "height_m": height_m,
+            "wind_region": wind_region,
+        },
+        outputs={
+            "mzcat": round(mzcat, 6),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
+        warnings=[
+            "This single-category tool does not perform Clause 4.2.3 weighting; use "
+            "calculate_mixed_terrain_height_multiplier when a complete reviewed transition "
+            "schedule is available.",
+            *mzcat_lookup_warnings(lookup),
+        ],
+    )
+
+
+@mcp.tool()
+def calculate_mixed_terrain_height_multiplier(
+    direction: WindDirection,
+    assessment_height_z_m: PositiveHeight,
+    wind_region: ExposureWindRegionLabel,
+    segments: MixedTerrainSegments,
+    profile_source_reference: ProfileSourceReference = None,
+) -> CalculationResult:
+    """Calculate Clause 4.2.3 Mz,cat from ordered upwind terrain transitions."""
+
+    height = _finite_value(
+        "Assessment height z",
+        assessment_height_z_m,
+        minimum=0,
+        maximum=200,
+        minimum_inclusive=False,
+    )
+    profile = MixedTerrainProfile(
+        direction=direction,
+        segments=segments,
+        source_reference=profile_source_reference,
+    )
+    lookup = load_mzcat_table()
+    assessment = calculate_mixed_terrain_assessment(
+        profile=profile,
+        assessment_height_z_m=height,
+        assessment_height_basis="explicit_height_z",
+        wind_region=wind_region,
+        lookup_data=lookup,
+    )
+    return _result(
+        clause="Clause 4.2.3; Table 4.1",
+        inputs={
+            "direction": direction,
+            "assessment_height_z_m": height,
+            "wind_region": wind_region,
+            "segments": [segment.model_dump(mode="json") for segment in segments],
+            "profile_source_reference": profile.source_reference,
+        },
+        outputs={
+            "mzcat": assessment.weighted_mzcat,
+            "mixed_terrain_assessment": assessment.model_dump(mode="json"),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
+        warnings=[*assessment.warnings, *mzcat_lookup_warnings(lookup)],
+    )
+
+
+@mcp.tool()
 def calculate_shielding_multiplier(
-    shielding_parameter: float,
-    building_height_m: float,
-) -> dict[str, Any]:
-    """Calculate Ms from a reviewed shielding parameter and building height."""
+    shielding_parameter: ShieldingParameter,
+    average_roof_height_m: PositiveHeight,
+) -> CalculationResult:
+    """Calculate Ms from a reviewed shielding parameter and average roof height."""
 
     shielding_parameter = _finite_value(
         "Shielding parameter s",
@@ -136,41 +369,47 @@ def calculate_shielding_multiplier(
         minimum=0,
         maximum=1_000_000,
     )
-    building_height_m = _finite_value(
-        "Building height",
-        building_height_m,
+    average_roof_height_m = _finite_value(
+        "Average roof height",
+        average_roof_height_m,
         minimum=0,
-        maximum=500,
+        maximum=200,
         minimum_inclusive=False,
     )
-    warnings: list[str] = []
-    if building_height_m > 25.0:
+    lookup = load_ms_table()
+    warnings = shielding_lookup_warnings(lookup)
+    height_limit_m = shielding_reduction_height_limit_m(lookup)
+    if average_roof_height_m > height_limit_m:
         ms = 1.0
-        warnings.append("Clause 4.3.1 requires Ms = 1.0 when h > 25 m.")
+        warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
     else:
-        ms = ms_from_shielding_parameter(shielding_parameter)
+        ms = ms_from_shielding_parameter(shielding_parameter, data=lookup)
     return _result(
         clause="Clause 4.3; Table 4.2",
         inputs={
             "shielding_parameter": shielding_parameter,
-            "building_height_m": building_height_m,
+            "average_roof_height_m": average_roof_height_m,
         },
-        outputs={"ms": round(ms, 6)},
+        outputs={
+            "ms": round(ms, 6),
+            "ms_lookup_provenance": lookup_provenance_snapshot(lookup),
+        },
         warnings=warnings,
     )
 
 
 @mcp.tool()
 def calculate_topographic_wind_multiplier(
-    feature_type: str,
-    h_m: float,
-    lu_m: float,
-    x_m: float,
-    z_m: float,
-    wind_region: str,
-    site_elevation_m: float,
-    site_is_downwind: bool = True,
-) -> dict[str, Any]:
+    feature_type: FeatureType,
+    h_m: TopographicHeight,
+    lu_m: TopographicDistance,
+    x_m: TopographicDistance,
+    z_m: ReferenceHeight,
+    average_roof_height_m: PositiveHeight,
+    wind_region: ExposureWindRegionLabel,
+    site_elevation_m: SiteElevation,
+    site_is_downwind: StrictBoolean = True,
+) -> CalculationResult:
     """Calculate Mt from reviewed Clause 4.4 hill, ridge, or escarpment geometry."""
 
     calculation = calculate_mt(
@@ -179,10 +418,16 @@ def calculate_topographic_wind_multiplier(
         lu_m=lu_m,
         x_m=x_m,
         z_m=z_m,
+        average_roof_height_m=average_roof_height_m,
         wind_region=wind_region,
         site_elevation_m=site_elevation_m,
         site_is_downwind=site_is_downwind,
     )
+    if not calculation.geometry_resolved:
+        raise ValueError(
+            "Topographic Lu is required for a qualifying hill, ridge, or escarpment; "
+            "Mt and Vsit,b are blocked until geometry is resolved."
+        )
     return _result(
         clause="Clause 4.4",
         inputs={
@@ -191,6 +436,7 @@ def calculate_topographic_wind_multiplier(
             "lu_m": lu_m,
             "x_m": x_m,
             "z_m": z_m,
+            "average_roof_height_m": average_roof_height_m,
             "wind_region": wind_region,
             "site_elevation_m": site_elevation_m,
             "site_is_downwind": site_is_downwind,
@@ -201,6 +447,8 @@ def calculate_topographic_wind_multiplier(
             "mlee": round(calculation.mlee, 6),
             "elevation_factor": round(calculation.elevation_factor, 6),
             "slope_parameter": round(calculation.slope_parameter, 6),
+            "minimum_feature_height_m": calculation.minimum_feature_height_m,
+            "geometry_resolved": calculation.geometry_resolved,
             "l1_m": calculation.l1_m,
             "l2_m": calculation.l2_m,
             "equation": calculation.equation,
@@ -211,12 +459,13 @@ def calculate_topographic_wind_multiplier(
 
 @mcp.tool()
 def calculate_site_wind_speed(
-    vr_mps: float,
-    md: float,
-    mzcat: float,
-    ms: float,
-    mt: float,
-) -> dict[str, Any]:
+    vr_mps: PositiveWindValue,
+    mc: ClimateChangeMultiplierValue,
+    md: DirectionMultiplierValue,
+    mzcat: PositiveMultiplier,
+    ms: ShieldingMultiplierValue,
+    mt: PositiveMultiplier,
+) -> CalculationResult:
     """Calculate site wind speed Vsit,b from reviewed multiplier inputs."""
 
     values = {
@@ -227,7 +476,14 @@ def calculate_site_wind_speed(
             maximum=200,
             minimum_inclusive=False,
         ),
-        "md": _finite_value("Md", md, minimum=0, maximum=10, minimum_inclusive=False),
+        "mc": _finite_value("Mc", mc, minimum=0, maximum=2, minimum_inclusive=False),
+        "md": _finite_value(
+            "Md",
+            md,
+            minimum=0,
+            maximum=MAX_DIRECTION_MULTIPLIER,
+            minimum_inclusive=False,
+        ),
         "mzcat": _finite_value(
             "Mz,cat",
             mzcat,
@@ -235,46 +491,187 @@ def calculate_site_wind_speed(
             maximum=10,
             minimum_inclusive=False,
         ),
-        "ms": _finite_value("Ms", ms, minimum=0, maximum=10, minimum_inclusive=False),
+        "ms": _finite_value("Ms", ms, minimum=0, maximum=1, minimum_inclusive=False),
         "mt": _finite_value("Mt", mt, minimum=0, maximum=10, minimum_inclusive=False),
     }
-    vsitb = vr_mps * md * mzcat * ms * mt
+    vsitb = site_wind_speed(
+        vr=values["vr_mps"],
+        mc=values["mc"],
+        md=values["md"],
+        mzcat=values["mzcat"],
+        ms=values["ms"],
+        mt=values["mt"],
+    )
     return _result(
-        clause="Clause 2.3",
+        clause="Clause 2.2",
         inputs=values,
         outputs={"vsitb_mps": round(vsitb, 6)},
     )
 
 
 @mcp.tool()
+def calculate_design_wind_speeds(
+    front_beta_deg: EngineeringAzimuth,
+    north_mps: PositiveWindValue,
+    northeast_mps: PositiveWindValue,
+    east_mps: PositiveWindValue,
+    southeast_mps: PositiveWindValue,
+    south_mps: PositiveWindValue,
+    southwest_mps: PositiveWindValue,
+    west_mps: PositiveWindValue,
+    northwest_mps: PositiveWindValue,
+) -> CalculationResult:
+    """Calculate four Clause 2.3 ultimate Vdes,theta values from cardinal Vsit,b."""
+
+    direction_speeds = {
+        "N": _finite_value(
+            "North Vsit,b", north_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "NE": _finite_value(
+            "Northeast Vsit,b",
+            northeast_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "E": _finite_value(
+            "East Vsit,b", east_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "SE": _finite_value(
+            "Southeast Vsit,b",
+            southeast_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "S": _finite_value(
+            "South Vsit,b", south_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "SW": _finite_value(
+            "Southwest Vsit,b",
+            southwest_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+        "W": _finite_value(
+            "West Vsit,b", west_mps, minimum=0, maximum=200, minimum_inclusive=False
+        ),
+        "NW": _finite_value(
+            "Northwest Vsit,b",
+            northwest_mps,
+            minimum=0,
+            maximum=200,
+            minimum_inclusive=False,
+        ),
+    }
+    front_beta = _finite_value(
+        "Front beta",
+        front_beta_deg,
+        minimum=0,
+        maximum=360,
+    )
+    if front_beta >= 360:
+        raise ValueError("Front beta must be less than 360 degrees.")
+    face_offsets = (("Front", 0.0), ("Right", 90.0), ("Back", 180.0), ("Left", 270.0))
+    rows = []
+    for face, theta_deg in face_offsets:
+        beta_deg = (front_beta + theta_deg) % 360.0
+        calculation = design_wind_speed(
+            theta_degrees=beta_deg,
+            direction_speeds=direction_speeds,
+            ultimate_limit_state=True,
+        )
+        rows.append(
+            {
+                "face": face,
+                "theta_deg": theta_deg,
+                "beta_deg": beta_deg,
+                "sector_start_beta_deg": calculation.sector_start_degrees,
+                "sector_end_beta_deg": calculation.sector_end_degrees,
+                "candidates": [
+                    {
+                        "beta_deg": candidate.bearing_degrees,
+                        "vsitb_mps": round(candidate.site_wind_speed_m_s, 6),
+                    }
+                    for candidate in calculation.candidates
+                ],
+                "raw_vdes_theta_mps": round(calculation.raw_maximum_m_s, 6),
+                "vdes_theta_mps": round(calculation.design_wind_speed_m_s, 6),
+                "minimum_uls_applied": calculation.minimum_applied,
+            }
+        )
+    governing_value = max(float(row["vdes_theta_mps"]) for row in rows)
+    governing_faces = [
+        str(row["face"])
+        for row in rows
+        if math.isclose(
+            float(row["vdes_theta_mps"]),
+            governing_value,
+            rel_tol=1e-12,
+            abs_tol=1e-9,
+        )
+    ]
+    return _result(
+        clause="Clause 2.3",
+        inputs={
+            "front_beta_deg": front_beta,
+            "directional_vsitb_mps": direction_speeds,
+            "limit_state": "ultimate",
+        },
+        outputs={
+            "design_wind_speeds": rows,
+            "governing_faces": governing_faces,
+            "governing_vdes_theta_mps": governing_value,
+        },
+        warnings=[
+            "Front beta is clockwise from true North; Right, Back, and Left are beta +90, "
+            "+180, and +270 degrees.",
+            "The 30 m/s Clause 2.3 minimum is applied because this tool returns ultimate "
+            "design wind speeds.",
+        ],
+    )
+
+
+@mcp.tool()
 def calculate_all_wind_variables(
-    wind_region: str,
-    ari_years: int,
-    direction: str,
-    terrain_category: str,
-    height_m: float,
-    shielding_parameter: float,
-    building_height_m: float,
-    feature_type: str,
-    h_m: float,
-    lu_m: float,
-    x_m: float,
-    site_elevation_m: float,
-    site_is_downwind: bool = True,
-) -> dict[str, Any]:
-    """Calculate VR, Md, Mz,cat, Ms, Mt, and Vsit,b from reviewed inputs."""
+    wind_region: SpecificWindRegionLabel,
+    ari_years: AriYears,
+    direction: WindDirection,
+    wind_direction_multiplier_case: WindDirectionMultiplierCase,
+    terrain_category: TerrainCategoryLabel,
+    average_roof_height_m: PositiveHeight,
+    shielding_parameter: ShieldingParameter,
+    building_height_m: PositiveHeight,
+    feature_type: FeatureType,
+    h_m: TopographicHeight,
+    lu_m: TopographicDistance,
+    x_m: TopographicDistance,
+    site_elevation_m: SiteElevation,
+    site_is_downwind: StrictBoolean = True,
+    structure_class: StructureClass | None = None,
+) -> CalculationResult:
+    """Calculate VR, Mc, Md, Mz,cat, Ms, Mt, and Vsit,b from reviewed inputs."""
 
     direction = direction.upper()
     if direction not in DIRECTIONS:
         raise ValueError(f"Direction must be one of: {', '.join(DIRECTIONS)}")
-    height_m = _finite_value("Height", height_m, minimum=0, maximum=500, minimum_inclusive=False)
+    average_roof_height_m = _finite_value(
+        "Average roof height",
+        average_roof_height_m,
+        minimum=0,
+        maximum=200,
+        minimum_inclusive=False,
+    )
     building_height_m = _finite_value(
         "Building height",
         building_height_m,
         minimum=0,
-        maximum=500,
+        maximum=200,
         minimum_inclusive=False,
     )
+    if average_roof_height_m > building_height_m:
+        raise ValueError("Average roof height must not exceed the overall building height.")
     shielding_parameter = _finite_value(
         "Shielding parameter s",
         shielding_parameter,
@@ -291,36 +688,91 @@ def calculate_all_wind_variables(
         maximum=10_000,
     )
 
-    vr = regional_wind_speed(wind_region, ari_years)
-    md = direction_multiplier_values(wind_region)[direction]
-    mzcat = indicative_mzcat(terrain_category, height_m, wind_region=wind_region)
-    ms = 1.0 if building_height_m > 25.0 else ms_from_shielding_parameter(shielding_parameter)
+    vr, vr_warnings, vr_source = _regional_wind_speed(wind_region, ari_years)
+    mc = climate_change_multiplier(wind_region)
+    mandatory_md = (
+        wind_direction_multiplier_case == "circular_or_polygonal_chimney_tank_or_pole"
+        or structure_class == "monopole"
+        or (
+            wind_direction_multiplier_case == "cladding_or_immediate_support"
+            and wind_region in {"B2", "C", "D"}
+        )
+    )
+    md_warnings: list[str] = []
+    if mandatory_md:
+        md = 1.0
+        md_source = f"{STANDARD} Clause 3.3"
+        md_lookup_source = None
+    else:
+        multipliers, md_warnings, md_lookup_source = _direction_multipliers(wind_region)
+        md = multipliers[direction]
+        md_source = f"{STANDARD} Table 3.2(A)"
+    mzcat_lookup = load_mzcat_table()
+    mzcat = indicative_mzcat(
+        terrain_category,
+        average_roof_height_m,
+        wind_region=wind_region,
+        lookup_data=mzcat_lookup,
+    )
+    ms_lookup = load_ms_table()
+    height_limit_m = shielding_reduction_height_limit_m(ms_lookup)
+    ms = (
+        1.0
+        if average_roof_height_m > height_limit_m
+        else ms_from_shielding_parameter(shielding_parameter, data=ms_lookup)
+    )
     mt_calculation = calculate_mt(
         feature_type=feature_type,
         h_m=h_m,
         lu_m=lu_m,
         x_m=x_m,
-        z_m=height_m,
+        z_m=average_roof_height_m,
+        average_roof_height_m=average_roof_height_m,
         wind_region=wind_region,
         site_elevation_m=site_elevation_m,
         site_is_downwind=site_is_downwind,
     )
-    vsitb = vr * md * mzcat * ms * mt_calculation.mt
-    warnings = list(mt_calculation.warnings)
-    if building_height_m > 25.0:
-        warnings.append("Clause 4.3.1 requires Ms = 1.0 when h > 25 m.")
+    if not mt_calculation.geometry_resolved:
+        raise ValueError(
+            "Topographic Lu is required for a qualifying hill, ridge, or escarpment; "
+            "Mt and Vsit,b are blocked until geometry is resolved."
+        )
+    vsitb = site_wind_speed(
+        vr=vr,
+        mc=mc,
+        md=md,
+        mzcat=mzcat,
+        ms=ms,
+        mt=mt_calculation.mt,
+    )
+    warnings = [
+        *vr_warnings,
+        *md_warnings,
+        *mzcat_lookup_warnings(mzcat_lookup),
+        *shielding_lookup_warnings(ms_lookup),
+        *mt_calculation.warnings,
+    ]
+    if average_roof_height_m > height_limit_m:
+        warnings.append(f"Clause 4.3.1 requires Ms = 1.0 when h > {height_limit_m:g} m.")
+    if mandatory_md:
+        warnings.append(
+            "Clause 3.3 requires Md = 1.0 for the effective design case, structure class, "
+            "and wind region."
+        )
     warnings.append(
         "Terrain, shielding, topographic geometry, wind region, and jurisdictional variations "
         "must be independently reviewed."
     )
     return _result(
-        clause="Clauses 2.3, 3.2, 3.3, 4.2, 4.3 and 4.4",
+        clause="Clauses 2.2, 3.2, 3.3, 3.4, 4.2, 4.3 and 4.4",
         inputs={
             "wind_region": wind_region,
             "ari_years": ari_years,
             "direction": direction,
+            "wind_direction_multiplier_case": wind_direction_multiplier_case,
+            "structure_class": structure_class,
             "terrain_category": terrain_category,
-            "height_m": height_m,
+            "average_roof_height_m": average_roof_height_m,
             "shielding_parameter": shielding_parameter,
             "building_height_m": building_height_m,
             "feature_type": feature_type,
@@ -332,9 +784,15 @@ def calculate_all_wind_variables(
         },
         outputs={
             "vr_mps": vr,
+            "vr_source_reference": vr_source,
+            "mc": mc,
             "md": md,
+            "md_source_reference": md_source,
+            "md_lookup_source_reference": md_lookup_source,
             "mzcat": round(mzcat, 6),
+            "mzcat_lookup_provenance": lookup_provenance_snapshot(mzcat_lookup),
             "ms": round(ms, 6),
+            "ms_lookup_provenance": lookup_provenance_snapshot(ms_lookup),
             "mt": round(mt_calculation.mt, 6),
             "vsitb_mps": round(vsitb, 6),
         },
@@ -342,26 +800,319 @@ def calculate_all_wind_variables(
     )
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     """Run the MCP server over stdio or Streamable HTTP."""
 
-    parser = argparse.ArgumentParser(description="Run the OpenWind-AU MCP server.")
+    parser = argparse.ArgumentParser(
+        prog="openwind-au-mcp",
+        description="Run the OpenWind-AU MCP server.",
+    )
     parser.add_argument(
         "--transport",
-        choices=("stdio", "streamable-http"),
-        default=os.environ.get("OPENWIND_MCP_TRANSPORT", "stdio"),
+        choices=MCP_TRANSPORTS,
+        default=None,
+        help="MCP transport (default: OPENWIND_MCP_TRANSPORT or stdio)",
     )
-    parser.add_argument("--host", default=os.environ.get("OPENWIND_MCP_HOST", "127.0.0.1"))
+    parser.add_argument(
+        "--host",
+        type=_host,
+        default=None,
+        help="HTTP bind host (default: OPENWIND_MCP_HOST or 127.0.0.1)",
+    )
     parser.add_argument(
         "--port",
-        type=int,
-        default=int(os.environ.get("OPENWIND_MCP_PORT", "8001")),
+        type=_port,
+        default=None,
+        help="HTTP bind port (default: OPENWIND_MCP_PORT or 8001)",
     )
-    args = parser.parse_args()
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
-    mcp.run(transport=args.transport)
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        type=_allowed_host,
+        default=None,
+        help=(
+            "Trusted HTTP Host header, repeatable. Required for wildcard binds; "
+            "default: OPENWIND_MCP_ALLOWED_HOSTS."
+        ),
+    )
+    parser.add_argument(
+        "--allowed-origin",
+        action="append",
+        type=_allowed_origin,
+        default=None,
+        help=(
+            "Trusted browser Origin, repeatable. Default: OPENWIND_MCP_ALLOWED_ORIGINS "
+            "or origins derived from allowed hosts."
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    transport = args.transport
+    if transport is None:
+        transport = _environment_value(
+            parser,
+            "OPENWIND_MCP_TRANSPORT",
+            "stdio",
+            _transport,
+        )
+    host = args.host
+    if host is None:
+        host = _environment_value(parser, "OPENWIND_MCP_HOST", "127.0.0.1", _host)
+    port = args.port
+    if port is None:
+        port = _environment_value(parser, "OPENWIND_MCP_PORT", "8001", _port)
+    allowed_hosts = args.allowed_host
+    if allowed_hosts is None:
+        allowed_hosts = _environment_list(
+            parser,
+            "OPENWIND_MCP_ALLOWED_HOSTS",
+            _allowed_host,
+        )
+    allowed_origins = args.allowed_origin
+    if allowed_origins is None:
+        allowed_origins = _environment_list(
+            parser,
+            "OPENWIND_MCP_ALLOWED_ORIGINS",
+            _allowed_origin,
+        )
+
+    mcp.settings.host = host
+    mcp.settings.port = port
+    if transport == "streamable-http":
+        mcp.settings.transport_security = _transport_security_settings(
+            parser,
+            bind_host=host,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
+    mcp.run(transport=transport)
+    return 0
+
+
+def _environment_value(
+    parser: argparse.ArgumentParser,
+    name: str,
+    fallback: str,
+    converter,
+):
+    """Validate one MCP environment default and surface an argparse diagnostic."""
+
+    try:
+        return converter(os.environ.get(name, fallback))
+    except argparse.ArgumentTypeError as exc:
+        parser.error(f"{name}: {exc}")
+
+
+def _environment_list(
+    parser: argparse.ArgumentParser,
+    name: str,
+    converter,
+) -> list[str]:
+    """Parse a comma-separated MCP security allowlist."""
+
+    raw_value = os.environ.get(name, "")
+    if not raw_value.strip():
+        return []
+    values: list[str] = []
+    for raw_item in raw_value.split(","):
+        try:
+            values.append(converter(raw_item))
+        except argparse.ArgumentTypeError as exc:
+            parser.error(f"{name}: {exc}")
+    return values
+
+
+def _transport(value: str) -> str:
+    """Parse one supported MCP transport."""
+
+    transport = value.strip()
+    if transport not in MCP_TRANSPORTS:
+        choices = ", ".join(MCP_TRANSPORTS)
+        raise argparse.ArgumentTypeError(f"transport must be one of: {choices}")
+    return transport
+
+
+def _host(value: str) -> str:
+    """Reject an empty MCP bind host."""
+
+    host = value.strip()
+    if not host:
+        raise argparse.ArgumentTypeError("host must not be empty")
+    if any(character.isspace() for character in host) or "/" in host or "@" in host or "*" in host:
+        raise argparse.ArgumentTypeError("host must be a hostname or IP address without a port")
+    if ":" in host:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "host must be a hostname or IP address without a port"
+            ) from exc
+    return host
+
+
+def _port(value: str) -> int:
+    """Parse one valid MCP TCP port."""
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("port must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def _allowed_host(value: str) -> str:
+    """Validate one trusted Host-header value."""
+
+    allowed_host = value.strip()
+    if not allowed_host:
+        raise argparse.ArgumentTypeError("allowed host must not be empty")
+    if (
+        any(character.isspace() for character in allowed_host)
+        or "/" in allowed_host
+        or "@" in allowed_host
+        or ("*" in allowed_host and not allowed_host.endswith(":*"))
+    ):
+        raise argparse.ArgumentTypeError(
+            "allowed host must be a hostname, IP, host:port, or host:* pattern"
+        )
+    if allowed_host.startswith("["):
+        closing_bracket = allowed_host.find("]")
+        if closing_bracket < 0:
+            raise argparse.ArgumentTypeError("allowed host contains an invalid bracketed IPv6 IP")
+        address_text = allowed_host[1:closing_bracket]
+        suffix = allowed_host[closing_bracket + 1 :]
+        try:
+            address = ipaddress.ip_address(address_text)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "allowed host contains an invalid bracketed IPv6 IP"
+            ) from exc
+        if address.version != 6 or (suffix and not _valid_port_suffix(suffix)):
+            raise argparse.ArgumentTypeError(
+                "allowed host must be a hostname, IP, host:port, or host:* pattern"
+            )
+        return allowed_host
+    if ":" in allowed_host:
+        try:
+            address = ipaddress.ip_address(allowed_host)
+        except ValueError:
+            hostname, port = allowed_host.rsplit(":", 1)
+            if not hostname or ":" in hostname or not _valid_port_suffix(f":{port}"):
+                raise argparse.ArgumentTypeError(
+                    "IPv6 allowed hosts must be a bare IP or use [address]:port syntax"
+                ) from None
+            return allowed_host
+        if address.version == 6:
+            return f"[{allowed_host}]"
+    return allowed_host
+
+
+def _allowed_origin(value: str) -> str:
+    """Validate one trusted browser Origin-header value."""
+
+    allowed_origin = value.strip().rstrip("/")
+    try:
+        parsed = urlsplit(allowed_origin)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("allowed origin contains an invalid host") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise argparse.ArgumentTypeError(
+            "allowed origin must be an http(s) origin without credentials or a path"
+        )
+    return allowed_origin
+
+
+def _transport_security_settings(
+    parser: argparse.ArgumentParser,
+    *,
+    bind_host: str,
+    allowed_hosts: Sequence[str],
+    allowed_origins: Sequence[str],
+) -> TransportSecuritySettings:
+    """Build a protected HTTP allowlist for the selected bind interface."""
+
+    trusted_hosts = list(LOOPBACK_ALLOWED_HOSTS)
+    requested_hosts = list(allowed_hosts)
+    wildcard_bind = _is_wildcard_bind_host(bind_host)
+    if wildcard_bind and not requested_hosts:
+        parser.error(
+            "--allowed-host or OPENWIND_MCP_ALLOWED_HOSTS is required when binding "
+            f"Streamable HTTP to {bind_host}"
+        )
+    if not wildcard_bind:
+        requested_hosts.append(_host_header_name(bind_host))
+    for allowed_host in requested_hosts:
+        if allowed_host not in trusted_hosts:
+            trusted_hosts.append(allowed_host)
+        if not _host_has_port_pattern(allowed_host):
+            wildcard_port = f"{allowed_host}:*"
+            if wildcard_port not in trusted_hosts:
+                trusted_hosts.append(wildcard_port)
+
+    trusted_origins = list(LOOPBACK_ALLOWED_ORIGINS)
+    derived_origins = [
+        f"{scheme}://{allowed_host}"
+        for allowed_host in trusted_hosts
+        if allowed_host not in LOOPBACK_ALLOWED_HOSTS
+        for scheme in ("http", "https")
+    ]
+    for allowed_origin in [*derived_origins, *allowed_origins]:
+        if allowed_origin not in trusted_origins:
+            trusted_origins.append(allowed_origin)
+
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=trusted_hosts,
+        allowed_origins=trusted_origins,
+    )
+
+
+def _host_header_name(bind_host: str) -> str:
+    """Return the Host-header representation for a concrete bind host."""
+
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    return f"[{bind_host}]" if address.version == 6 else bind_host
+
+
+def _is_wildcard_bind_host(bind_host: str) -> bool:
+    """Return whether a bind address listens on every interface."""
+
+    try:
+        return ipaddress.ip_address(bind_host).is_unspecified
+    except ValueError:
+        return False
+
+
+def _host_has_port_pattern(allowed_host: str) -> bool:
+    """Return whether an allowed Host value already fixes or wildcards a port."""
+
+    if allowed_host.startswith("["):
+        return "]:" in allowed_host
+    return allowed_host.count(":") == 1
+
+
+def _valid_port_suffix(suffix: str) -> bool:
+    """Return whether a Host allowlist suffix is :*, or a valid TCP port."""
+
+    if suffix == ":*":
+        return True
+    if not suffix.startswith(":") or not suffix[1:].isdigit():
+        return False
+    return 1 <= int(suffix[1:]) <= 65535
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Literal
 
 from jinja2 import Template
@@ -13,6 +12,7 @@ from pydantic import BaseModel, Field
 from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import DEMProvider, SRTMProvider
 from openwind_au.models import SiteAnalysisRequest, SiteAnalysisResult
+from openwind_au.report_lineage import CALCULATION_BASIS_REPORT_TEXT
 
 ValidationStatus = Literal["pass", "warn", "fail"]
 ExpectedFeatureType = Literal[
@@ -22,11 +22,6 @@ ExpectedFeatureType = Literal[
     "valley",
     "no significant feature",
 ]
-
-CALCULATION_BASIS_DOC_PATH = Path("docs/calculation-basis.md")
-CALCULATION_BASIS_REPORT_TEXT = (
-    "Calculation basis and data lineage reference: docs/calculation-basis.md."
-)
 
 VALIDATION_DISCLAIMER = (
     "Validation cases are broad qualitative checks against representative Australian terrain "
@@ -245,13 +240,10 @@ def render_validation_report_html(report: ValidationReport) -> str:
     )
 
 
-def calculation_basis_report_reference() -> str | None:
-    """Return the calculation-basis report note when the docs file is available."""
+def calculation_basis_report_reference() -> str:
+    """Return a revision-pinned calculation-basis reference in every installation."""
 
-    repo_root = Path(__file__).resolve().parents[2]
-    if (repo_root / CALCULATION_BASIS_DOC_PATH).exists():
-        return CALCULATION_BASIS_REPORT_TEXT
-    return None
+    return CALCULATION_BASIS_REPORT_TEXT
 
 
 def _evaluate_flat_expectation(

@@ -24,7 +24,10 @@ certified design tool. Suitable for exploration, review, contribution, and regre
 
 ## What It Does
 
-- Accepts an Australian street address or latitude/longitude.
+- Accepts either an Australian street address or latitude/longitude, with an optional non-geocoded
+  `site_label` for map-selected coordinates.
+- Keeps the Design building's position, breadth/depth, and full-circle front-face engineering
+  azimuth synchronized between the map, form, saved project state, and assessment request.
 - Generates 8-direction terrain profiles: N, NE, E, SE, S, SW, W, and NW.
 - Supports analysis radii of 500 m, 1000 m, 2000 m, and 4000 m.
 - Performs conservative rule-based screening for candidate ridge, hill, escarpment, valley, or no
@@ -47,9 +50,14 @@ certified design tool. Suitable for exploration, review, contribution, and regre
   AS/NZS 1170.2:2021 Clause 4.4 equations, including Australian A0 and A4 adjustments.
 - Generates directional terrain category evidence for engineer review, including built-up,
   vegetation, open-terrain, obstruction density, height, confidence, and suggested range evidence.
+- Calculates Clause 4.2.3 distance-weighted `Mz,cat` for supplied complete, ordered,
+  source-referenced non-A0 terrain-transition profiles. Region A0 keeps its mandatory
+  terrain-independent value and treats supplied profiles as evidence only; aggregate GIS sector
+  evidence does not infer transition distances.
 - Exports JSON, HTML, and PDF reports.
 - Provides qualitative validation checks against representative Australian terrain examples.
-- Exposes traceable `VR`, `Md`, `Mz,cat`, `Ms`, `Mt`, and `Vsit,b` tools through an MCP server.
+- Exposes traceable `VR`, `Mc`, `Md`, `Mz,cat`, `Ms`, `Mt`, `Vsit,b`, and Clause 2.3
+  building-orthogonal `Vdes,theta` tools through an MCP server.
 
 ## What It Does Not Do
 
@@ -57,7 +65,8 @@ OpenWind-AU does not produce:
 
 - certified topographic multipliers without review of the DEM-derived feature geometry;
 - final terrain category assignments;
-- final `Mz,cat` design values;
+- automatic terrain-transition detection from aggregate built-up, vegetation, or open-terrain
+  sector percentages;
 - design wind pressures;
 - AS 4055 wind classifications;
 - certified shielding multiplier `Ms`;
@@ -90,6 +99,26 @@ Screenshot coverage is tracked in [`docs/screenshots.md`](docs/screenshots.md):
 
 ## Quick Start
 
+If you have a wheel artifact built from this exact commit, install it in a fresh virtual
+environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install .\openwind_au-0.8.0-py3-none-any.whl
+openwind-au --help
+openwind-au-mcp --help
+openwind-au check --json
+openwind-au
+```
+
+`openwind-au check --json` intentionally reports `not_ready` with exit status 1 until the
+production datasets, signing key, and engineering review metadata are configured. That diagnostic
+does not mean the wheel failed to install.
+
+For a development checkout, install from source:
+
 ```bash
 git clone https://github.com/Elandu/OpenWind-AU.git
 cd OpenWind-AU
@@ -119,6 +148,19 @@ http://127.0.0.1:8000/site-analysis
 http://127.0.0.1:8000/terrain-category
 ```
 
+Before routing production assessment traffic, run the same readiness checks used by `/health`
+without starting a server:
+
+```bash
+openwind-au check
+openwind-au check --json
+```
+
+The command exits with status 0 only when the deployment is ready and status 1 when any required
+dataset, reviewed lookup, digest, signing key, or DEM check fails. A source checkout without the
+project-specific production inputs is expected to report `NOT_READY`. Invalid command-line usage
+exits with status 2.
+
 ## Microsoft Building Footprint Cache
 
 Microsoft publishes [Australia Building Footprints](https://github.com/microsoft/AustraliaBuildingFootprints)
@@ -142,6 +184,10 @@ GeoJSONL URLs, allowing OpenWind-AU to fetch only the tile required for the curr
 index and tile URLs (including redirects) must use HTTPS. Remote indexes are limited to 2 MiB,
 tiles are limited to 50 MiB, and an optional per-tile `sha256` is verified before a supported
 GeoJSON file is installed atomically in the cache.
+
+Successful OSM fallback queries use a separate bounded outage cache. Its hashed filenames,
+atomic-write and retention limits, location-data privacy implications, and deletion procedure are
+documented in [Installation](docs/installation.md#optional-microsoft-building-footprint-cache).
 
 ## Wind Region GIS Dataset
 
@@ -169,6 +215,7 @@ a production wind-region map.
 - [Running locally](docs/running-locally.md)
 - [Workflow guide](docs/workflow.md)
 - [Calculation basis and data lineage](docs/calculation-basis.md)
+- [Base AS/NZS 1170.2:2021 verification matrix](docs/base-standard-verification.md)
 - [Reviewer checklist](docs/reviewer-checklist.md)
 - [API usage](docs/api.md)
 - [MCP server](docs/mcp.md)
@@ -176,6 +223,7 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
+- [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-workflow-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
 ## API Overview
@@ -202,6 +250,9 @@ GET  /health
 POST /api/geocode/suggest
 POST /api/geocode/resolve
 POST /api/analyse
+POST /api/wind-workflow
+POST /api/wind-workflow/stream
+POST /api/wind-workflow/map
 POST /api/export/json
 POST /api/report/html
 POST /api/report/pdf
@@ -229,7 +280,12 @@ GET  /api/validation/report/html
 
 `/health/live` is the process-liveness probe. `/health` is the stricter assessment-readiness probe
 and returns HTTP 503 with component checks until required production datasets, reviewed lookup
-tables, and the configured DEM provider/cache are usable.
+tables (`VR`, `Md`, `Mz,cat`, and `Ms`), matching lookup digests, and the configured DEM
+provider/cache are usable. All four lookup assets are digest-protected: `VR` and `Md` hash their
+canonical `tables` objects, while `Mz,cat` and `Ms` hash their canonical `values` objects.
+Completed-result report endpoints also require the unmodified `integrity_token` returned by the
+workflow. Production deployments must configure the same 32-byte-or-longer
+`OPENWIND_RESULT_SIGNING_KEY` on every API worker.
 
 ## Example Outputs
 

@@ -9,7 +9,9 @@ from openwind_au.analysis import run_site_analysis
 from openwind_au.dem import DEMProvider
 from openwind_au.models import ObstructionInventoryRequest, SiteAnalysisRequest
 from openwind_au.obstructions import run_obstruction_inventory
+from openwind_au.report_lineage import CALCULATION_BASIS_URL
 from openwind_au.reports import (
+    _wind_pdf_lineage_reference,
     combined_map_html,
     map_html,
     obstruction_map_html,
@@ -25,6 +27,25 @@ from openwind_au.terrain_category import run_terrain_category_evidence
 class FlatDEM(DEMProvider):
     def elevation(self, latitude: float, longitude: float) -> float:
         return 50.0
+
+
+def test_calculation_basis_lineage_uses_an_immutable_commit() -> None:
+    assert re.fullmatch(
+        r"https://github\.com/Elandu/OpenWind-AU/blob/[0-9a-f]{40}/docs/calculation-basis\.md",
+        CALCULATION_BASIS_URL,
+    )
+
+
+def test_wind_pdf_lineage_is_compact_clickable_and_immutable() -> None:
+    revision = CALCULATION_BASIS_URL.split("/blob/", maxsplit=1)[1].split("/", maxsplit=1)[0]
+    reference = _wind_pdf_lineage_reference()
+
+    assert f'href="{CALCULATION_BASIS_URL}"' in reference
+    assert f"source snapshot {revision}" in reference
+    assert CALCULATION_BASIS_URL not in reference.replace(
+        f'href="{CALCULATION_BASIS_URL}"',
+        "",
+    )
 
 
 def test_report_helpers_render_outputs() -> None:
@@ -54,7 +75,7 @@ def test_report_helpers_render_outputs() -> None:
     assert "Preliminary Topographic Screening" in html
     assert "no significant feature" in html
     assert "competent engineer" in html
-    assert "Calculation basis and data lineage reference: docs/calculation-basis.md" in html
+    assert CALCULATION_BASIS_URL in html
     assert "plotly" in plot.lower()
     assert "Plotly.newPlot" in plot
     assert 'src="/vendor/plotly.min.js"' in plot
@@ -208,6 +229,19 @@ def test_combined_map_shows_clean_workflow_layers_by_default() -> None:
     assert "Design building" in html
     assert "openWindDesignBuilding" in html
     assert "orientation_options" in html
+    assert '"orientation_options": [0, 45, 90, 135, 180, 225, 270, 315]' in html
+    assert "normalizeOrientation" in html
+    assert "return rounded >= 360 ? 0 : rounded;" in html
+    assert "nearestOrientationOption" not in html
+    assert '{ label: "Front", theta: 0 }' in html
+    assert '{ label: "Right", theta: 90 }' in html
+    assert '{ label: "Back", theta: 180 }' in html
+    assert '{ label: "Left", theta: 270 }' in html
+    assert "clockwise from North" in html
+    assert "startResizeDrag" in html
+    assert "applyResizeFromLatLng" in html
+    assert "renderResizeHandles" in html
+    assert "dimensions_modified" in html
     assert "Building footprints (source context)" not in html
     assert "OSM fallback and matched attributes" not in html
     assert "Vegetation polygons" not in html
