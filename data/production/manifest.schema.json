@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Elandu/OpenWind-AU/data/production/manifest.schema.json",
+  "title": "OpenWind-AU production data bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "bundle_id", "status", "created_on", "assets"],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$"
+    },
+    "status": {
+      "enum": ["draft", "approved"]
+    },
+    "created_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "approved_by": {
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "approved_on": {
+      "type": ["string", "null"],
+      "format": "date"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    }
+  },
+  "$defs": {
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "kind",
+        "version",
+        "sha256",
+        "source_reference",
+        "licence_or_terms"
+      ],
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,99}$"
+        },
+        "kind": {
+          "enum": [
+            "wind_region_gis",
+            "dem",
+            "building_footprints",
+            "vr_lookup",
+            "md_lookup",
+            "mzcat_lookup",
+            "ms_lookup",
+            "other"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_reference": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "licence_or_terms": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "reviewed_by": {
+          "type": ["string", "null"],
+          "maxLength": 200
+        },
+        "reviewed_on": {
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    }
+  }
+}

@@ -10,6 +10,8 @@ Use this checklist before tagging a public release.
 - Run `node --check src/openwind_au/static/wind_workflow.js` and
   `node --test tests/js/*.test.cjs`.
 - Run `uv lock --check` and `uv audit --locked --preview-features audit-command`.
+- Validate `data/validation/golden-case.schema.json` and the production bundle manifest files.
+- Build the production container and smoke-test `openwind-au --help` inside it.
 - Confirm CI passes on the release branch.
 
 ## Documentation
@@ -31,6 +33,15 @@ Use this checklist before tagging a public release.
 - Refresh `examples/sample_analysis.json` if API fields changed.
 - Refresh `examples/sample_report.html` if report layout changed.
 - Refresh `examples/sample_validation_report.html` if validation output changed.
+
+## Engineering Validation
+
+- Complete the applicable-edition review tracked in issue #11; do not invent reviewer metadata.
+- Confirm the independent golden-case suite tracked in issue #12 passes against intermediate and
+  final calculation values.
+- Confirm the Region C/D coastal and Clause 4.4.2 release gaps are closed or the release remains
+  explicitly preliminary.
+- Confirm the selected production data bundle is approved, digest-checked, and traceable.
 
 ## Validation
 

@@ -67,6 +67,13 @@ These items should not be described as certified OpenWind-AU outputs:
 - Automatic detection of source-referenced Clause 4.2.3 terrain-transition distances from
   aggregate GIS sector evidence.
 
+## Current v0.8 Release Gates
+
+The active engineering release plan is tracked in [docs/v0.8-release-plan.md](docs/v0.8-release-plan.md)
+and GitHub issues #11-#18. The core blockers are independent standards verification, an independent
+golden-case suite, the remaining C/D coastal and Clause 4.4.2 normative gaps, and a reproducible
+production data bundle. Design-pressure work is explicitly post-v0.8.
+
 ## Near-Term Improvements
 
 - Expand independent Clause 2.3 validation for the implemented conversion from cardinal-direction

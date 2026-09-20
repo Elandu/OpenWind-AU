@@ -14,13 +14,9 @@ dist/
 .DS_Store
 .idea/
 .vscode/
-.codex/
 tmp/
+.local/
 data/cache/
 data/wind-region/
 reports/
 .server.pid
-.codex/
-tmp/
-.local/
-.slim/deepwork/

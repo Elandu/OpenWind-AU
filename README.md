@@ -223,6 +223,9 @@ a production wind-region map.
 - [Validation framework](docs/validation.md)
 - [Limitations and engineering review](docs/limitations.md)
 - [Release checklist](docs/release.md)
+- [v0.8 engineering release plan](docs/v0.8-release-plan.md)
+- [Engineering validation protocol](docs/engineering-validation.md)
+- [Production data bundle](docs/production-data-bundle.md)
 - [Unreleased v0.8.0 milestone changes](CHANGELOG.md#v080-unreleased---standards-provenance-and-workflow-guardrails)
 - [v0.6.0 release notes](docs/releases/v0.6.0.md)
 
@@ -323,8 +326,7 @@ CI runs these checks through GitHub Actions.
 
 ## Roadmap
 
-See [`ROADMAP.md`](ROADMAP.md). Near-term work focuses on better validation examples, clearer
-confidence reporting, improved public documentation, and design-certification readiness.
+See [`ROADMAP.md`](ROADMAP.md) and the [v0.8 engineering release plan](docs/v0.8-release-plan.md). Near-term work is gated by independent standards verification, independently calculated golden cases, completion of the remaining normative site-wind-speed gaps, and reproducible production data provenance.
 
 ## Contributing
 

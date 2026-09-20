@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "bundle_id": "example-not-approved",
+  "status": "draft",
+  "created_on": "2026-09-21",
+  "approved_by": null,
+  "approved_on": null,
+  "notes": "Example structure only. Replace every placeholder digest and source reference with reviewed production data before use.",
+  "assets": [
+    {
+      "asset_id": "wind-region-gis",
+      "kind": "wind_region_gis",
+      "version": "replace-with-source-version",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "source_reference": "Replace with the authoritative dataset catalogue and local bundle source.",
+      "licence_or_terms": "Replace with the applicable dataset licence or terms.",
+      "reviewed_by": null,
+      "reviewed_on": null,
+      "notes": "Draft example only."
+    }
+  ]
+}

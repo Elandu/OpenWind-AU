@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Elandu/OpenWind-AU/data/validation/golden-case.schema.json",
+  "title": "OpenWind-AU engineering golden case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "title",
+    "standard_reference",
+    "source_reference",
+    "reviewed_by",
+    "reviewed_on",
+    "request",
+    "expected"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "standard_reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "source_reference": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "reviewed_by": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "reviewed_on": {
+      "type": "string",
+      "format": "date"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "request": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vr_m_s", "mc", "directions"],
+      "properties": {
+        "vr_m_s": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "mc": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "directions": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "propertyNames": {
+            "enum": ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/directionalExpected"
+          }
+        },
+        "design_wind_speeds": {
+          "type": "object",
+          "propertyNames": {
+            "enum": ["front", "right", "back", "left"]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/expectedNumber"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "expectedNumber": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "abs_tolerance"],
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "abs_tolerance": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "directionalExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["md", "mzcat", "ms", "mt", "vsitb_m_s"],
+      "properties": {
+        "md": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "mzcat": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "ms": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "mt": {
+          "$ref": "#/$defs/expectedNumber"
+        },
+        "vsitb_m_s": {
+          "$ref": "#/$defs/expectedNumber"
+        }
+      }
+    }
+  }
+}

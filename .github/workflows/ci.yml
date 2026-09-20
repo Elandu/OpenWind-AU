@@ -63,6 +63,33 @@ jobs:
       - name: Test the locked dependency graph
         run: uv run --locked --no-sync pytest
 
+  contracts:
+    name: Validate repository contracts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Validate JSON contract files
+        run: |
+          python -m json.tool data/validation/golden-case.schema.json > /dev/null
+          python -m json.tool data/production/manifest.schema.json > /dev/null
+          python -m json.tool data/production/manifest.example.json > /dev/null
+
+      - name: Check container configuration
+        run: |
+          test -f Dockerfile
+          test -f .dockerignore
+          test -f .env.example
+          grep -q "^USER openwind$" Dockerfile
+          grep -q "/health/live" Dockerfile
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -97,9 +124,24 @@ jobs:
       - name: Pytest
         run: pytest
 
+  container:
+    name: Build production container
+    needs: [frontend, lockfile, test, contracts]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build --pull -t openwind-au:ci .
+
+      - name: Smoke-test image entry point
+        run: docker run --rm openwind-au:ci openwind-au --help
+
   package:
     name: Build consumer artifacts
-    needs: [frontend, lockfile, test]
+    needs: [frontend, lockfile, test, contracts]
     runs-on: ubuntu-latest
 
     steps:
