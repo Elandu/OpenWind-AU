@@ -1150,6 +1150,7 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert validation.status_code == 200
     assert all(item["status"] == "pass" for item in validation.json())
 
+
 def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "SRTMProvider", lambda: FlatDEM())
     calls = {"inventory": 0}
