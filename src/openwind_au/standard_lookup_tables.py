@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Shared loading and provenance checks for editable AS/NZS lookup data."""
 
 from __future__ import annotations
