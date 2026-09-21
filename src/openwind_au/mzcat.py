@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Indicative Mz,cat assessment from terrain-category evidence."""
 
 from __future__ import annotations
