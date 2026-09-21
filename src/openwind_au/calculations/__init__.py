@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Host-facing calculation registry for OpenWind-AU.
 
 The public functions in the existing OpenWind modules remain the source of truth.

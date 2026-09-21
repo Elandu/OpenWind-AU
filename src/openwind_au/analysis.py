@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Terrain profile and preliminary site analysis orchestration."""
 
 from __future__ import annotations
