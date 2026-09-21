@@ -96,3 +96,14 @@ def test_descriptors_do_not_expose_executor() -> None:
     assert "executor" not in descriptor
     assert descriptor["standard"]["name"] == "AS/NZS 1170.2"
     assert descriptor["standard"]["edition"] == "2021"
+
+
+def test_plugin_publishes_source_and_licence_provenance(monkeypatch) -> None:
+    monkeypatch.setenv("OPENWIND_SOURCE_REVISION", "openwind-test-revision")
+
+    plugin = get_plugin()
+    descriptor = plugin.descriptor()
+
+    assert descriptor["revision"] == "openwind-test-revision"
+    assert descriptor["license"] == "AGPL-3.0-only"
+    assert descriptor["source"] == "https://github.com/Elandu/OpenWind-AU"
