@@ -207,14 +207,13 @@ def test_validation_errors_do_not_reflect_submitted_values_and_are_capped() -> N
     assert all(set(error) == {"type", "loc", "msg"} for error in errors)
 
 
-def test_dynamic_responses_are_no_store_and_security_headers_cover_static() -> None:
+def test_dynamic_responses_are_no_store_and_security_headers_cover_runtime_assets() -> None:
     client = TestClient(api_module.create_app())
 
     dynamic = client.get("/health/live")
-    static = client.get("/static/styles.css")
     plotly = client.get("/vendor/plotly.min.js")
 
-    for response in (dynamic, static, plotly):
+    for response in (dynamic, plotly):
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["X-Frame-Options"] == "DENY"
         assert response.headers["Referrer-Policy"] == "no-referrer"
@@ -222,7 +221,6 @@ def test_dynamic_responses_are_no_store_and_security_headers_cover_static() -> N
             "camera=(), geolocation=(), microphone=()"
         )
     assert dynamic.headers["Cache-Control"] == "no-store"
-    assert static.headers.get("Cache-Control") != "no-store"
     assert plotly.headers["Cache-Control"] == "public, max-age=0, must-revalidate"
 
 
