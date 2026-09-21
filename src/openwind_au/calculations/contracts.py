@@ -78,12 +78,18 @@ class CalculationPlugin:
     name: str
     version: str
     calculations: tuple[CalculationDefinition, ...]
+    revision: str | None = None
+    license: str | None = None
+    source: str | None = None
 
     def descriptor(self) -> JsonObject:
         return {
             "id": self.id,
             "name": self.name,
             "version": self.version,
+            "revision": self.revision,
+            "license": self.license,
+            "source": self.source,
             "calculations": [definition.descriptor() for definition in self.calculations],
         }
 
