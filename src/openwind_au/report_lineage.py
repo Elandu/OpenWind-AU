@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Stable, installed-package report lineage references."""
 
 from __future__ import annotations

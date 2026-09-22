@@ -344,3 +344,18 @@ See [`CHANGELOG.md`](CHANGELOG.md).
 ## Licence
 
 GNU Affero General Public License v3. See [`LICENSE`](LICENSE).
+
+
+## Licence and provenance
+
+OpenWind-AU is licensed under `AGPL-3.0-only`. See `LICENSE` and `NOTICE`.
+
+Canonical source: https://github.com/Elandu/OpenWind-AU
+
+Every OpenCalcs plugin descriptor published by OpenWind-AU includes the engine
+version, source revision when available, licence identifier, and canonical source URL.
+OpenCalcs uses this metadata to preserve engine provenance in calculation outputs
+and saved engineering records.
+
+Substantive Python source files carry SPDX licence and copyright headers so that
+licensing context remains attached when individual files are copied out of the repository.

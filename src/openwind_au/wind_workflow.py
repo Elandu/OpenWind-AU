@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """AS/NZS 1170.2 workflow through reviewed Vsit,b and Vdes,theta."""
 
 from __future__ import annotations

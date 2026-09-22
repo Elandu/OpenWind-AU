@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """FastAPI application for OpenWind-AU."""
 
 from __future__ import annotations
@@ -12,7 +15,6 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from plotly.offline import get_plotlyjs
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -133,8 +135,6 @@ from openwind_au.wind_region import (
 )
 from openwind_au.wind_workflow import effective_direction_multiplier_assessment, run_wind_workflow
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = PACKAGE_DIR / "static"
 LOGGER = logging.getLogger(__name__)
 MAX_OBSTRUCTION_IMPORT_BYTES = 1_000_000
 MAX_VALIDATION_ERROR_ITEMS = 50
@@ -409,28 +409,6 @@ def create_app() -> FastAPI:
             status_code=502,
             content={"detail": DEPENDENCY_FAILURE_DETAIL},
         )
-
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
-
-    @app.get("/wind-workflow", response_class=HTMLResponse)
-    def wind_workflow_page() -> str:
-        return (STATIC_DIR / "wind_workflow.html").read_text(encoding="utf-8")
-
-    @app.get("/site-analysis", response_class=HTMLResponse)
-    def site_analysis_page() -> str:
-        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-
-    @app.get("/terrain-category", response_class=HTMLResponse)
-    def terrain_category_page() -> str:
-        return (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-
-    @app.get("/validation", response_class=HTMLResponse)
-    def validation_page() -> str:
-        return (STATIC_DIR / "validation.html").read_text(encoding="utf-8")
 
     @app.get("/health/live", response_model=LivenessResponse)
     def liveness() -> LivenessResponse:

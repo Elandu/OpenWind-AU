@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Rule-based preliminary topographic feature screening."""
 
 from __future__ import annotations

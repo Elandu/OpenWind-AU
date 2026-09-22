@@ -1,0 +1,20 @@
+OpenWind-AU
+Copyright (c) 2026 Elandu and contributors
+
+OpenWind-AU is licensed under the GNU Affero General Public License v3.0 only
+(AGPL-3.0-only). See LICENSE for the full licence text.
+
+Canonical source:
+https://github.com/Elandu/OpenWind-AU
+
+OpenWind-AU calculation modules expose source, licence, version and revision
+metadata through the OpenCalcs plugin contract so engineering records can
+identify the software used to produce them.
+
+If you modify OpenWind-AU and make the modified program available for remote
+network interaction, the AGPL requires that users be offered the corresponding
+source code for the version with which they interact.
+
+The OpenWind-AU name and branding are not granted for use beyond rights that
+may otherwise exist under applicable law. The software licence does not grant
+trademark rights.

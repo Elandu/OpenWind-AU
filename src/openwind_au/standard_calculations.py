@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Elandu and contributors
+
 """Lightweight, deterministic AS/NZS 1170.2 calculation primitives."""
 
 from __future__ import annotations

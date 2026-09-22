@@ -63,6 +63,9 @@ dev = [
 openwind-au = "openwind_au.main:main"
 openwind-au-mcp = "openwind_au.mcp_server:main"
 
+[project.entry-points."opencalcs.plugins"]
+openwind_au = "openwind_au.plugin:get_plugin"
+
 [project.urls]
 Repository = "https://github.com/Elandu/OpenWind-AU"
 Issues = "https://github.com/Elandu/OpenWind-AU/issues"

@@ -10,29 +10,6 @@ permissions:
   contents: read
 
 jobs:
-  frontend:
-    name: Test browser state flows
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "24"
-          package-manager-cache: false
-
-      - name: Check browser scripts
-        run: |
-          node --check src/openwind_au/static/app.js
-          node --check src/openwind_au/static/validation.js
-          node --check src/openwind_au/static/wind_workflow.js
-
-      - name: Test browser state flows
-        run: node --test tests/js/*.test.cjs
-
   lockfile:
     name: Verify dependency lock
     runs-on: ubuntu-latest
@@ -126,7 +103,7 @@ jobs:
 
   container:
     name: Build production container
-    needs: [frontend, lockfile, test, contracts]
+    needs: [lockfile, test, contracts]
     runs-on: ubuntu-latest
 
     steps:
@@ -141,7 +118,7 @@ jobs:
 
   package:
     name: Build consumer artifacts
-    needs: [frontend, lockfile, test, contracts]
+    needs: [lockfile, test, contracts]
     runs-on: ubuntu-latest
 
     steps:
@@ -178,7 +155,6 @@ jobs:
               "openwind_au/report_lineage.py",
               "openwind_au/result_integrity.py",
               "openwind_au/standard_lookup_tables.py",
-              "openwind_au/static/wind_workflow.js",
           }
           missing = required - names
           assert not missing, f"Wheel is missing required runtime files: {sorted(missing)}"

@@ -334,27 +334,6 @@ def test_pdf_report_failure_hides_internal_details_and_logs_incident(
     assert "font-cache failure" in caplog.text
 
 
-def test_vendored_map_assets_are_served() -> None:
-    client = TestClient(api_module.create_app())
-
-    for path in (
-        "/static/vendor/leaflet/leaflet.js",
-        "/static/vendor/leaflet/leaflet.css",
-        "/static/vendor/jquery/jquery-3.7.1.min.js",
-        "/static/vendor/bootstrap/bootstrap.bundle.min.js",
-        "/static/vendor/fontawesome/all.min.css",
-    ):
-        response = client.get(path)
-        assert response.status_code == 200, path
-        assert response.content
-
-    plotly = client.get("/vendor/plotly.min.js")
-    assert plotly.status_code == 200
-    assert plotly.headers["content-type"].startswith("application/javascript")
-    assert plotly.headers["cache-control"] == "public, max-age=0, must-revalidate"
-    assert b"plotly.js" in plotly.content[:500]
-
-
 def test_geocode_suggest_endpoint(monkeypatch) -> None:
     def fake_suggestions(query, limit=5):
         assert query == "macquarie"
@@ -473,13 +452,10 @@ def test_validation_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(validation_module, "SRTMProvider", lambda: FlatDEM())
     client = TestClient(api_module.create_app())
 
-    page = client.get("/validation")
     cases = client.get("/api/validation/cases")
     report = client.get("/api/validation")
     html = client.get("/api/validation/report/html")
 
-    assert page.status_code == 200
-    assert "Validation Scope" in page.text
     assert cases.status_code == 200
     assert len(cases.json()) >= 5
     assert report.status_code == 200
@@ -1153,7 +1129,6 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     report = client.post("/api/terrain-category/report/html", json=payload)
     cases = client.get("/api/terrain-category/validation/cases")
     validation = client.get("/api/terrain-category/validation")
-    page = client.get("/terrain-category")
 
     assert evidence.status_code == 200
     body = evidence.json()
@@ -1174,22 +1149,6 @@ def test_terrain_category_evidence_endpoints(monkeypatch) -> None:
     assert len(cases.json()) == 6
     assert validation.status_code == 200
     assert all(item["status"] == "pass" for item in validation.json())
-    assert page.status_code == 200
-    assert 'id="visual-evidence"' in page.text
-    assert "Map and Terrain Chart" in page.text
-    assert "Shielding and topographic evidence map" in page.text
-    assert "Terrain profile chart" in page.text
-    assert "Advanced inputs" in page.text
-    assert "Terrain profile summaries" in page.text
-    assert "Analysis diagnostics" in page.text
-    assert "Terrain category sectors and evidence" in page.text
-    assert page.text.index("Map and Terrain Chart") < page.text.index("Terrain profile summaries")
-    assert 'id="terrain-evidence"' in page.text
-    assert 'id="shielding-evidence"' in page.text
-    assert 'id="topographic-evidence"' in page.text
-    assert 'id="profiles"' in page.text
-    assert 'id="latitude" name="latitude" type="number" step="any"' in page.text
-    assert 'id="longitude" name="longitude" type="number" step="any"' in page.text
 
 
 def test_full_analysis_endpoint_runs_browser_workflow_once(monkeypatch) -> None:
