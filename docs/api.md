@@ -91,6 +91,75 @@ The response includes:
 - preliminary topographic screening results for each direction;
 - assumptions, limitations, and disclaimer text.
 
+## AS 4055:2021 Housing Path
+
+```text
+POST /api/as4055/classification
+POST /api/as4055/housing-loads
+POST /api/as4055/housing-assessment
+POST /api/as4055/pressure-zones
+POST /api/as4055/roof-anchoring
+POST /api/as4055/racking-pressure
+```
+
+This preliminary path is separate from AS/NZS 1170.2. The classification request supplies NCC
+building class and the Clause 1.2 dimensions, plus already-assessed wind region, terrain,
+topographic, and shielding categories. Regions C and D also require a distance and an explicit
+coast/boundary basis. The response includes the N/C site class, roof (`r`) and wall (`w`) classes,
+both class speeds, source references, and a lookup digest. Table 2.2 `NA` cases and scope failures
+return an error/referral instead of an AS/NZS 1170.2 fallback.
+
+The housing-load request uses that classification and caller-supplied tributary areas tagged with
+the AS 4055 pressure zone. It returns external, internal, and net pressure/force cases and uplift
+by roof load path. The combined `housing-assessment` endpoint (registry ID
+`au.wind.as4055.housing_assessment`) classifies the site, partitions supported pressure zones,
+and returns separate serviceability and ultimate surface loads and Table 4 anchoring,
+plus ultimate racking demands for every supplied storey and direction.
+
+The combined path accepts a simple rectangular flat or symmetric gable house without
+overhangs or subfloors. Supply `geometry`, reviewed `site_conditions`, `roof_form`,
+`roof_type` (`tile` or `sheet`), `storeys` (1 or 2),
+`all_cladding_resists_design_wind`, `site_review_reference`, and `racking_elevations`.
+Each elevation has `wind_on` (`side` or `end`), `storey` (`single_or_upper` or `lower`),
+`elevation_area_m2`, `storey_height_m`, `floor_depth_m`, and `area_review_reference`.
+Both directions are required for each storey. Storey heights plus the inter-storey floor
+must match eaves height. Tables 5.2(B-M) are restricted to their 2.4 m storeys, 0.3 m floor,
+4-16 m width and 0-35 degree pitch; gable-end wind uses Table 5.2(A).
+
+The three separate extension endpoints expose automatic zone areas, Table 4 anchoring and
+Tables 5.2(A-M) racking selection. Anchoring includes the table's dead-load allowance;
+do not deduct it again or add Section 3 cladding suction to it. Roof/wall structural and
+cladding areas represent separate load paths and must not be summed together.
+
+Site categories and racking elevation areas still require reviewed evidence. Individual
+window/door corner zoning, complex roofs, capacity design and independent sign-off remain
+outside the automatic path. All AS 4055 results remain preliminary. See the
+[AS 4055 review package](review-packages/as4055-2021/README.md).
+
+### AS/NZS 1170.2 pressures and frame loads
+
+The OpenCalcs registry method `au.wind.frame_loads` accepts `pressure_cases`, `panels`,
+and `tributary_members`. Each case names its exact source run, direction, limit state,
+external/internal design speeds and dynamic-sensitivity decision. Each panel supplies
+reviewed aggregate external/internal shape factors, area and review references. Tributary
+members specify member ID and length, segment limits, tributary width, local force axis,
+axis reference and whether its positive direction points inward.
+
+For example, external/internal speeds 40/30 m/s with shape factors 0.8/0.2 give
+`p_net = 0.0006 * (40^2 * 0.8 - 30^2 * 0.2) = 0.66 kPa` inward. A 12 m2 panel
+assigned over a 6 m segment with 2 m tributary width gives `1.32 kN/m`, or `7.92 kN`.
+These are arithmetic fixture values; they do not select coefficients for a real building.
+
+The result includes `panel_pressures`, rich `member_loads` provenance and the compact
+`member_distributed_loads` array consumed by Frame analysis. Link that exact saved output
+to `/model/member_distributed_loads`. The source-run field in a standalone request is a
+caller reference; authenticated OpenCalcs links provide verified database provenance.
+When linking design speeds in OpenCalcs, link both speed fields individually from the same
+saved wind run and set the case's `source_run_id` to that run ID. The linked runners reject
+partial, mixed-source or mismatched links. Direct unlinked requests remain caller assertions.
+Dynamic-sensitive structures and inclined normal-to-axis projection are unsupported.
+Load combinations and member/connection capacity checks require separate review.
+
 `POST /api/full-analysis` runs the combined site, obstruction, terrain-category, wind-input, and
 map workflow used by the legacy dashboard. New integrations should prefer the explicit
 `/api/wind-workflow` contract when they need the signed directional site-wind result.

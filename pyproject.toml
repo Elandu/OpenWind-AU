@@ -36,6 +36,7 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "pydantic>=2.11,<3",
+  "jsonschema>=4.22,<5",
   "typing-extensions>=4.12; python_version < '3.13'",
   "numpy>=1.26",
   "scipy>=1.11",
@@ -75,6 +76,12 @@ packages = ["src/openwind_au"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "data/validation/anonymized_reference_osm_footprints.json" = "openwind_au/data/anonymized_reference_osm_footprints.json"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "src", "tests", "docs", "data/production", "data/validation",
+  "README.md", "LICENSE", "pyproject.toml", "uv.lock",
+]
 
 [tool.ruff]
 line-length = 100

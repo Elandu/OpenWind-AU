@@ -27,9 +27,12 @@ before the app is created:
 
 ```powershell
 $env:OPENWIND_ENVIRONMENT="production"
-$env:OPENWIND_TRUSTED_HOSTS="wind.example.com"
+$env:OPENWIND_TRUSTED_HOSTS="wind.example.com,localhost"
 openwind-au serve --host 0.0.0.0 --port 8080
 ```
+
+Keep `localhost` in this allowlist when OpenCalcs runs the OpenWind workflow through its in-process
+ASGI app; that call uses `localhost` as its Host header and does not make a network request.
 
 Production mode disables the interactive OpenAPI documentation and fails closed with HTTP 503 on
 assessment and completed-report routes until the shared readiness report is `ready`. Liveness,

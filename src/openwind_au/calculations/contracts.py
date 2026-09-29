@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from jsonschema import Draft202012Validator, ValidationError
+
 JsonObject = dict[str, Any]
 CalculationExecutor = Callable[[Mapping[str, Any]], JsonObject]
 
@@ -52,7 +54,16 @@ class CalculationDefinition:
     standard: StandardReference | None = None
 
     def run(self, inputs: Mapping[str, Any]) -> JsonObject:
-        """Execute this definition without altering the underlying calculation."""
+        """Validate inputs, then execute this definition without changing its calculation."""
+
+        if not isinstance(inputs, Mapping):
+            raise ValueError("Calculation inputs must be an object.")
+
+        try:
+            Draft202012Validator(self.input_schema).validate(dict(inputs))
+        except ValidationError as exc:
+            path = ".".join(str(part) for part in exc.absolute_path) or "<root>"
+            raise ValueError(f"Invalid calculation input at {path}: {exc.message}") from exc
 
         return self.executor(inputs)
 

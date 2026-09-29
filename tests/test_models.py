@@ -137,6 +137,31 @@ def test_wind_workflow_accepts_structured_building_inputs() -> None:
     assert request.reference_height_m == 3
 
 
+@pytest.mark.parametrize("structure_class", ["monopole", "tower", "other"])
+def test_wind_workflow_rejects_building_orientation_for_non_building_class(
+    structure_class: str,
+) -> None:
+    with pytest.raises(ValidationError, match="building-orthogonal design wind speeds"):
+        WindWorkflowRequest(
+            latitude=-34.550445,
+            longitude=150.848728,
+            building_height_m=10,
+            structure_class=structure_class,
+            structure_orientation_deg=0,
+        )
+
+
+def test_wind_workflow_allows_non_building_class_without_building_orientation() -> None:
+    request = WindWorkflowRequest(
+        latitude=-34.550445,
+        longitude=150.848728,
+        building_height_m=10,
+        structure_class="tower",
+    )
+
+    assert request.structure_orientation_deg is None
+
+
 def test_wind_workflow_normalizes_legacy_average_height_alias() -> None:
     request = WindWorkflowRequest.model_validate(
         {
