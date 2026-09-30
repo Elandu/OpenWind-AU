@@ -1348,10 +1348,11 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
             raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
-        if (
-            self.structure_orientation_deg is not None
-            and self.structure_class not in {None, "building", "house"}
-        ):
+        if self.structure_orientation_deg is not None and self.structure_class not in {
+            None,
+            "building",
+            "house",
+        }:
             raise ValueError(
                 "Clause 2.3 building-orthogonal design wind speeds are only supported for "
                 "building or house structure classes; remove structure_orientation_deg for "
