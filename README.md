@@ -67,14 +67,21 @@ OpenWind-AU does not produce:
 - final terrain category assignments;
 - automatic terrain-transition detection from aggregate built-up, vegetation, or open-terrain
   sector percentages;
-- design wind pressures;
-- AS 4055 wind classifications;
+- automatic AS/NZS 1170.2 pressure coefficient or design combination selection;
+- independently approved AS 4055 wind classifications;
 - certified shielding multiplier `Ms`;
 - certified design compliance.
 
 Outputs are preliminary and must be reviewed by a competent engineer. Public DEM data may not
 reflect local survey levels, recent earthworks, retaining structures, vegetation, or built
 obstructions.
+
+The OpenCalcs registry includes reviewed AS/NZS 1170.2 pressure-to-frame conversion and
+a separate preliminary AS 4055 housing assessment. The latter supports supplied site
+categories, simple flat/gable pressure zones, Table 4 anchoring and Tables 5.2(A-M)
+racking demand. See [API scope](docs/api.md) and the
+[independent review package](docs/review-packages/as4055-2021/README.md) for supported
+geometry, required review inputs and remaining approval gates.
 
 The obstruction inventory uses Microsoft Australia Building Footprints as the preferred source when
 cached regional data is available. OSM/Overpass is used as a fallback and to preserve useful

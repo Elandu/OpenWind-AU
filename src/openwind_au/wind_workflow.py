@@ -174,10 +174,17 @@ def run_wind_workflow(
     warnings.extend(direction_multipliers.warnings)
     warnings.extend(mzcat_lookup_warnings(mzcat_lookup))
     if request.structure_orientation_deg is None:
-        warnings.append(
-            "Structure orientation beta was not supplied, so Clause 2.3 building-orthogonal "
-            "Vdes,theta was not calculated."
-        )
+        if request.structure_class not in {None, "building", "house"}:
+            warnings.append(
+                "Clause 2.3 building-orthogonal Vdes,theta was not calculated for the "
+                f"non-building structure class {request.structure_class}; a separate "
+                "applicable design method is required."
+            )
+        else:
+            warnings.append(
+                "Structure orientation beta was not supplied, so Clause 2.3 building-orthogonal "
+                "Vdes,theta was not calculated."
+            )
     elif not design_wind_speeds:
         warnings.append(
             "Clause 2.3 building-orthogonal Vdes,theta is blocked until all eight final "

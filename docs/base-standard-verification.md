@@ -2,6 +2,69 @@
 
 Audit date: 2026-07-29
 
+## AS 4055:2021 implementation addendum — 2026-09-26
+
+A preliminary, distinct AS 4055:2021 classification and housing surface-load path has since
+been added. It is not an extension of the AS/NZS 1170.2 audit above and has not received
+independent engineering sign-off. Review evidence, source digest, regression cases, and open
+gates are in `docs/review-packages/as4055-2021/README.md`.
+
+### Software revalidation — 2026-09-26
+
+The current working-tree snapshot was tested from a local-disk copy with Python 3.12.10 and
+pytest 9.1.1. The focused AS 4055, calculation-registry, AS/NZS 1170.2 primitive, and lookup
+table suites passed **81 tests**. The complete Python suite passed **631 tests**, and the
+existing deterministic AS/NZS 1170.2 calculation-validation report returned **14 pass, 0
+fail**. Ruff passed for the affected calculation and test files. This run included uncommitted
+working-tree changes at revision `bc054f23d2645eb9dfe44b1b4b504a94ebec01db`; it is software
+regression evidence, not independent engineering sign-off.
+
+## Reverification Addendum — 2026-09-26
+
+The packaged Australian lookup values were visually compared with the base-edition
+AS/NZS 1170.2:2021 tables and the supported formula paths were reviewed against the
+applicable clauses, figures, and equations. The compared values matched for Tables
+3.1(A), 3.2(A), 3.3, 4.1, and 4.2. The reviewed method paths were Clause 2.2 site
+wind speed, Clause 2.3 building-orthogonal design speed, Clause 4.2.3 mixed-terrain
+weighting, Clause 4.3 shielding, and Clause 4.4 topography. This is a base-edition
+code audit, not independent engineer sign-off or a compliance certification.
+
+### Verification Finding
+
+- **Clause 2.3 non-building applicability is now guarded.** Supplying an orientation with
+  `monopole`, `tower`, or `other` as `structure_class` is rejected, and non-building
+  classes without an orientation receive a warning that no applicable design-speed method
+  is calculated. The four-face result remains limited to buildings and houses. The
+  `structure_class` field remains optional for compatibility, so callers that supply an
+  orientation without a class are presumed to be requesting building-orthogonal speeds.
+
+### Verification Status and Remaining Limits
+
+- Table values compared in the available 2021 base edition matched the packaged
+  Australian `VR`, `Md`, `Mc`, `Mz,cat`, and `Ms` values. Packaged JSON parsed
+  successfully and the existing lookup digest/schema checks remain in place.
+- The AS/NZS 1170.2 calculation primitive suite passed: 28 tests in
+  `tests/test_standard_calculations.py`.
+- Direct deterministic smoke checks of the implemented topographic equations passed
+  for Equation 4.4(3), Equation 4.4(4), the Region A0 rule, and the Region A4
+  elevation adjustment.
+- Model validation covers rejection of building orientation for explicit non-building
+  classes. The full project suite passed from a local-disk snapshot: 610 tests passed.
+- The initial mapped-drive test collection failed because NumPy and Shapely native
+  extensions could not load from the UNC-backed virtual environment. Re-running locally
+  avoided that environment failure. One Starlette/AnyIO deprecation warning remains.
+- The audit date above predates the AS 4055 implementation addendum. The current AS 4055
+  feature remains preliminary: site-category evidence derivation and independent acceptance
+  remain outstanding. Simple flat/gable automatic zones, Table 4 anchoring and Table 5.2
+  selection/interpolation were added on 2026-09-28, followed by a combined assessment.
+  These additions are outside the original audit result. See the linked
+  independent-review package; do not treat the implementation as independent verification.
+- Independent named engineer/date review remains pending for the packaged lookups.
+  The available standards library did not include amendment files, so this audit
+  covers only the 2021 base edition. Region C/D coastal interpolation, design
+  pressures/actions, automatic terrain-transition detection, and automatic
+  most-adverse topographic section selection remain unsupported as documented below.
+
 This record documents the calculation evidence checked against an access-controlled copy of the
 base AS/NZS 1170.2:2021 publication. It records clause and page references without reproducing
 licensed text or tables. No standards PDF or workstation path is stored in the repository.

@@ -1257,7 +1257,8 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
             "Engineering azimuth beta for the building theta=0/front axis, in degrees "
             "clockwise from true North in the range [0, 360). Right, back, and left "
             "are beta + 90, + 180, and + 270 degrees respectively. The four axes drive "
-            "the Clause 2.3 building-orthogonal ultimate design wind speeds."
+            "Clause 2.3 building-orthogonal ultimate design wind speeds for buildings and "
+            "houses only."
         ),
     )
     roof_shape: Literal["gable", "hip", "monoslope"] | None = None
@@ -1347,6 +1348,16 @@ class WindWorkflowRequest(TerrainCategoryEvidenceRequest):
             raise ValueError("reviewed_by is required for a reviewed preliminary assessment.")
         if self.assessment_status == "reviewed" and not self.engineer_notes:
             raise ValueError("engineer_notes are required for a reviewed preliminary assessment.")
+        if self.structure_orientation_deg is not None and self.structure_class not in {
+            None,
+            "building",
+            "house",
+        }:
+            raise ValueError(
+                "Clause 2.3 building-orthogonal design wind speeds are only supported for "
+                "building or house structure classes; remove structure_orientation_deg for "
+                "this non-building class."
+            )
         if self.building_dimensions is not None and (
             self.building_width_m is not None or self.building_length_m is not None
         ):

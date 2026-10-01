@@ -22,9 +22,24 @@ It does not:
 - assign a final terrain category from aggregate map evidence alone; reviewed single-category
   inputs or complete non-A0 Clause 4.2.3 transition profiles drive the workflow `Mz,cat` value;
 - calculate certified shielding multipliers;
-- calculate design wind pressures;
-- produce AS 4055 wind classifications;
+- automatically select pressure coefficients or load combinations for frame design;
+- produce independently reviewed AS 4055 classifications or certified design;
 - certify compliance for any project.
+
+The preliminary AS 4055:2021 path classifies supplied region/terrain/topographic/shielding
+categories, computes component pressures, and supports automatic zone areas for simple
+rectangular flat/gable roofs without overhangs, Table 4 roof anchoring and Tables 5.2(A-M)
+racking demand. The combined housing path requires reviewed elevation areas, both wind
+directions and every storey. It excludes subfloors. Tables B-M retain their stated geometry
+limits. Site categories, complex roofs and individual opening zones still need review. See the
+[AS 4055 independent review package](review-packages/as4055-2021/README.md) for the review
+matrix and release gates.
+
+The separate AS/NZS 1170.2 pressure-to-frame registry method accepts reviewed aggregate
+shape factors, external/internal speeds and tributary geometry. It preserves force resultants
+for aligned member axes, but does not project inclined normals or handle dynamically sensitive
+structures. Source references supplied directly to OpenWind are caller assertions; verified
+saved-run links are resolved by the authenticated OpenCalcs host.
 
 ## Data Limitations
 

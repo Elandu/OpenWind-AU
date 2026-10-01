@@ -84,6 +84,25 @@ def test_registry_preserves_existing_validation_errors() -> None:
         run_calculation("au.wind.climate_change_multiplier", {"region": "B"})
 
 
+@pytest.mark.parametrize("ari_years", [2, 3, 4])
+def test_regional_wind_schema_rejects_unsupported_ari_values(ari_years: int) -> None:
+    with pytest.raises(ValueError, match="Invalid calculation input"):
+        run_calculation(
+            "au.wind.regional_wind_speed",
+            {"region": "A2", "ari_years": ari_years},
+        )
+
+
+def test_calculation_schema_rejects_missing_and_unexpected_inputs() -> None:
+    with pytest.raises(ValueError, match="'region' is a required property"):
+        run_calculation("au.wind.climate_change_multiplier", {})
+    with pytest.raises(ValueError, match="Additional properties are not allowed"):
+        run_calculation(
+            "au.wind.climate_change_multiplier",
+            {"region": "A1", "unexpected": True},
+        )
+
+
 def test_unknown_calculation_is_rejected() -> None:
     with pytest.raises(KeyError, match="Unknown calculation"):
         get_calculation("au.wind.not-real")

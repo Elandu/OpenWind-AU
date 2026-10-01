@@ -28,9 +28,31 @@ from openwind_au.anonymized_reference_validation import (
     anonymized_reference_osm_footprints,
     compare_anonymized_reference,
 )
+from openwind_au.as4055 import (
+    AS4055AnchoringRequest,
+    AS4055ClassificationRequest,
+    AS4055HousingAssessmentRequest,
+    AS4055LoadsRequest,
+    AS4055RackingPressureRequest,
+    AS4055ZoneAreasRequest,
+    HousingGeometry,
+    HousingSurface,
+    SiteClassification,
+    SiteConditions,
+    calculate_housing_loads,
+    calculate_uplift,
+    classify_site,
+    validate_classification,
+)
 from openwind_au.calculation_validation import (
     CalculationValidationReport,
     run_calculation_validation_cases,
+)
+from openwind_au.calculations.as4055_extensions import (
+    housing_assessment,
+    racking_pressure,
+    roof_anchoring,
+    zone_areas,
 )
 from openwind_au.dem import OpenMeteoElevationProvider, SRTMProvider, configured_dem_provider
 from openwind_au.errors import ServiceNotReadyError
@@ -479,6 +501,98 @@ def create_app() -> FastAPI:
             return run_site_analysis(request, _dem_provider())
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/as4055/classification", response_model=dict[str, Any])
+    def as4055_classification(request: AS4055ClassificationRequest) -> dict[str, Any]:
+        """Run the separate AS 4055:2021 housing scope and site-class lookup."""
+        from dataclasses import asdict
+
+        try:
+            result = classify_site(
+                HousingGeometry(**request.geometry.model_dump()),
+                SiteConditions(**request.site_conditions.model_dump()),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return asdict(result)
+
+    @app.post("/api/as4055/housing-assessment", response_model=dict[str, Any])
+    def as4055_housing_assessment(request: AS4055HousingAssessmentRequest) -> dict[str, Any]:
+        try:
+            return housing_assessment(request.model_dump())
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/as4055/pressure-zones", response_model=dict[str, Any])
+    def as4055_pressure_zones(request: AS4055ZoneAreasRequest) -> dict[str, Any]:
+        try:
+            return zone_areas(request.model_dump())
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/as4055/roof-anchoring", response_model=dict[str, Any])
+    def as4055_roof_anchoring(request: AS4055AnchoringRequest) -> dict[str, Any]:
+        try:
+            return roof_anchoring(request.model_dump())
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/as4055/racking-pressure", response_model=dict[str, Any])
+    def as4055_racking_pressure(request: AS4055RackingPressureRequest) -> dict[str, Any]:
+        try:
+            return racking_pressure(request.model_dump())
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/as4055/housing-loads", response_model=dict[str, Any])
+    def as4055_housing_loads(request: AS4055LoadsRequest) -> dict[str, Any]:
+        """Calculate traced AS 4055 pressures and resultant surface loads."""
+        from dataclasses import asdict
+
+        try:
+            classification = validate_classification(SiteClassification(**request.classification))
+            loads = calculate_housing_loads(
+                classification=classification,
+                surfaces=tuple(
+                    HousingSurface(**surface.model_dump()) for surface in request.surfaces
+                ),
+                limit_state=request.limit_state,
+                roof_pitch_degrees=request.roof_pitch_degrees,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "standard": "AS 4055",
+            "edition": "2021",
+            "status": "preliminary_independent_review_required",
+            "site_wind_classification": classification.site_wind_classification,
+            "wall_classification": classification.wall_classification,
+            "roof_classification": classification.roof_classification,
+            "source_clauses": [*classification.source_clauses, "3.1", "3.2", "3.3", "3.4"],
+            "source_tables": [
+                *classification.source_tables,
+                "Table 3.2.1",
+                "Table 3.2.2(A)",
+                "Table 3.2.2(B)",
+            ],
+            "lookup_digest": classification.lookup_digest,
+            "surface_loads": [asdict(load) for load in loads],
+            "uplift_force_kn": {
+                "roof_structure_load_path": calculate_uplift(loads, "roof_structure"),
+                "roof_cladding_load_path": calculate_uplift(loads, "roof_cladding"),
+            },
+            "limitations": [
+                (
+                    "Areas are supplied by the caller and must reflect the actual "
+                    "pressure-zone tributary areas."
+                ),
+                (
+                    "Racking pressures in Tables 5.2(A) to 5.2(M) require separate "
+                    "selection; this endpoint does not derive them."
+                ),
+                "This result is not a member-capacity design or certification.",
+            ],
+        }
 
     @app.post(
         "/api/full-analysis",
